@@ -1,0 +1,207 @@
+{
+  "main": {
+    "id": "1b80cc25ca2bbd08",
+    "type": "split",
+    "children": [
+      {
+        "id": "2060490126dd34e8",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "1ccd4517b16412a8",
+            "type": "leaf",
+            "state": {
+              "type": "empty",
+              "state": {},
+              "icon": "lucide-file",
+              "title": "New tab"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "vertical"
+  },
+  "left": {
+    "id": "375c0946e6840b27",
+    "type": "split",
+    "children": [
+      {
+        "id": "2fef34954a5c2024",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "8ead72422ef9b48e",
+            "type": "leaf",
+            "state": {
+              "type": "file-explorer",
+              "state": {
+                "sortOrder": "alphabetical",
+                "autoReveal": false
+              },
+              "icon": "lucide-folder-closed",
+              "title": "Files"
+            }
+          },
+          {
+            "id": "b044a3b1aefadcba",
+            "type": "leaf",
+            "state": {
+              "type": "search",
+              "state": {
+                "query": "",
+                "matchingCase": false,
+                "explainSearch": false,
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical"
+              },
+              "icon": "lucide-search",
+              "title": "Search"
+            }
+          },
+          {
+            "id": "f4f97b54b0ea53c6",
+            "type": "leaf",
+            "state": {
+              "type": "bookmarks",
+              "state": {},
+              "icon": "lucide-bookmark",
+              "title": "Bookmarks"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300
+  },
+  "right": {
+    "id": "e4947cdee2633c42",
+    "type": "split",
+    "children": [
+      {
+        "id": "508e83a5ce30201b",
+        "type": "tabs",
+        "children": [
+          {
+            "id": "7d26ac22a238d092",
+            "type": "leaf",
+            "state": {
+              "type": "backlink",
+              "state": {
+                "file": "2026-04-14.md",
+                "collapseAll": false,
+                "extraContext": false,
+                "sortOrder": "alphabetical",
+                "showSearch": false,
+                "searchQuery": "",
+                "backlinkCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-coming-in",
+              "title": "Backlinks for 2026-04-14"
+            }
+          },
+          {
+            "id": "cda355812ebc03c3",
+            "type": "leaf",
+            "state": {
+              "type": "outgoing-link",
+              "state": {
+                "file": "2026-04-14.md",
+                "linksCollapsed": false,
+                "unlinkedCollapsed": true
+              },
+              "icon": "links-going-out",
+              "title": "Outgoing links from 2026-04-14"
+            }
+          },
+          {
+            "id": "49ba921d50835bb6",
+            "type": "leaf",
+            "state": {
+              "type": "tag",
+              "state": {
+                "sortOrder": "frequency",
+                "useHierarchy": true,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-tags",
+              "title": "Tags"
+            }
+          },
+          {
+            "id": "b6e7516feb030220",
+            "type": "leaf",
+            "state": {
+              "type": "all-properties",
+              "state": {
+                "sortOrder": "frequency",
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-archive",
+              "title": "All properties"
+            }
+          },
+          {
+            "id": "88215a8d630b5ebc",
+            "type": "leaf",
+            "state": {
+              "type": "outline",
+              "state": {
+                "file": "2026-04-14.md",
+                "followCursor": false,
+                "showSearch": false,
+                "searchQuery": ""
+              },
+              "icon": "lucide-list",
+              "title": "Outline of 2026-04-14"
+            }
+          }
+        ]
+      }
+    ],
+    "direction": "horizontal",
+    "width": 300,
+    "collapsed": true
+  },
+  "left-ribbon": {
+    "hiddenItems": {
+      "switcher:Open quick switcher": false,
+      "graph:Open graph view": false,
+      "canvas:Create new canvas": false,
+      "daily-notes:Open today's daily note": false,
+      "templates:Insert template": false,
+      "command-palette:Open command palette": false,
+      "bases:Create new base": false
+    }
+  },
+  "active": "8ead72422ef9b48e",
+  "lastOpenFiles": [
+    "2026-04-17.md",
+    "2026-04-14.md",
+    "Untitled.base",
+    "tool-use.md",
+    "EN/wiki/llm-inference/parallelism-strategies-deep-dive.md",
+    "EN/wiki/llm-serving-for-agents/agent-serving-challenges.md",
+    "EN/wiki/llm-inference/prefill-decode-disaggregation.md",
+    "EN/wiki/llm-inference/sglang.md",
+    "EN/wiki/llm-inference/kv-cache-optimization.md",
+    "EN/wiki/llm-inference/model-parallelism.md",
+    "EN/wiki/llm-inference/paged-attention.md",
+    "Untitled.canvas",
+    "CN/wiki/agentic-rl/tool-use-rl.md",
+    "CN/wiki/agentic-rl/agentic-rl-overview.md",
+    "CN/wiki/agentic-rl/environment-design.md",
+    "CN/wiki/llm-inference/vllm.md",
+    "量化入门/01-量化入门总体计划.md",
+    "CN/wiki/llm-inference/continuous-batching.md",
+    "CN/wiki/llm-inference/parallelism-strategies-deep-dive.md",
+    "CN/wiki/llm-inference/model-parallelism.md",
+    "CN/wiki/llm-inference/paged-attention.md",
+    "CN/wiki/llm-inference/speculative-decoding.md"
+  ]
+}
