@@ -60,7 +60,7 @@ Dense-and-sparse decomposition: outliers in full-precision sparse matrix, rest i
 
 ### QuIP / QuIP#
 
-Random orthogonal transforms make weights "incoherent" (no outliers), enabling better low-bit quantization. QuIP# uses lattice codebooks. Best theoretical quality at 2-bit. [arXiv:2402.04396](https://arxiv.org/abs/2402.04396)
+Random orthogonal transforms make weights "incoherent" (no outliers), enabling better low-bit quantization. QuIP# uses lattice codebooks. Best theoretical quality at 2-bit. [arXiv:2402.04396](https://arxiv.org/abs/2402.04396) This is the foundational paper for the **rotation-based quantization** family covered below.
 
 ### Comparison
 
@@ -70,6 +70,28 @@ Random orthogonal transforms make weights "incoherent" (no outliers), enabling b
 | AWQ | 4 | Required | <0.3 | Fastest (Marlin) | Best overall |
 | SqueezeLLM | 2-4 | Required | <1.0 (2-bit) | Medium | Extreme compression |
 | QuIP# | 2-4 | Required | <0.5 (2-bit) | Slower | Theoretical best |
+
+## Rotation-based Quantization (QuIP → QuaRot → SpinQuant → BDR)
+
+A coherent technique family where the contribution is **not** a new quantizer — it's an *orthogonal transformation* applied **before** standard quantization that flattens outliers and makes the resulting tensor much easier to quantize. Multiplying by an orthonormal matrix preserves the L2 norm but redistributes energy across all dimensions; the post-rotation tensor has a more uniform distribution and per-token (or per-channel) scale-and-zero quantization works much better.
+
+The lineage:
+
+| Year | Method | Where rotation lives | Rotation type | Note |
+|------|--------|---------------------|---------------|------|
+| 2023 | **QuIP** ([arXiv:2307.13304](https://arxiv.org/abs/2307.13304)) | Weights | Random orthogonal | Introduced "incoherence processing" — first to formalize that random rotations make low-bit quantization tractable. |
+| 2024 | **QuIP#** ([arXiv:2402.04396](https://arxiv.org/abs/2402.04396)) | Weights | Random Hadamard + lattice codebook | Improved QuIP with vector quantization on the rotated weights; SOTA at 2-bit weights. |
+| 2024 | **QuaRot** ([arXiv:2404.00456](https://arxiv.org/abs/2404.00456)) | Weights **and activations** | Random Hadamard fused into weight matrices | NeurIPS 2024. Showed the rotation can be *absorbed* into adjacent linear layers (so it's free at inference), enabling INT4 weight + INT4 activation Llama with little quality loss. |
+| 2024 | **SpinQuant** ([arXiv:2405.16406](https://arxiv.org/abs/2405.16406)) | Weights and activations | **Learned** rotation matrices | Replaced random Hadamard with rotations trained on a calibration set. Bigger accuracy gains; needs offline training. |
+| 2026 | **SAW-INT4 / BDR** ([arXiv:2604.19157](https://arxiv.org/abs/2604.19157)) | **KV cache** | Block-diagonal Hadamard, fused with INT4 write | First production-friendly KV-cache version. Recovers Qwen3-4B-Thinking GPQA from 0 % (plain INT4) to 65.82 %. See [[saw-int4]]. |
+
+A few cross-cutting observations:
+
+- **Where the rotation absorbs matters.** QuaRot's contribution over QuIP is fusing the rotation into adjacent linear-layer weights so inference cost is unchanged. SAW-INT4 instead fuses the rotation into the KV-write Triton kernel and the decode-side Q-attention kernel. Both are forms of "system-aware" rotation.
+- **Random vs. learned vs. block-diagonal.** Learned (SpinQuant) > random Hadamard > no rotation, on accuracy. Block-diagonal trades some rotation strength for kernel cache locality and paged-layout compatibility.
+- **Rotation is orthogonal to the quantizer.** GPTQ, AWQ, plain scale-and-zero, k-means — any quantizer can run on top of a rotation. The literature mostly stacks rotation with simple per-channel/per-token scale-zero because the rotation already does the hard work.
+
+See [[rotation-based-quantization]] for a deeper synthesis of this family with mathematical foundations and tradeoffs.
 
 ## FP8 Quantization
 
@@ -82,13 +104,15 @@ Random orthogonal transforms make weights "incoherent" (no outliers), enabling b
 
 ## KV Cache Quantization
 
-KV cache can consume 30-50% of inference memory for long sequences and large batches.
+KV cache can consume 30-50% of inference memory for long sequences and large batches. See [[kv-cache-optimization]] for the full landscape and [[saw-int4]] for the rotation-based INT4 KV story.
 
 | Method | Memory Saving | PPL Increase | Recommendation |
 |--------|--------------|-------------|----------------|
 | FP8 KV | 50% | <0.1 | Default on Hopper+ |
 | INT8 KV | 50% | <0.1 | Default on Ampere |
-| INT4 KV (g=64) | ~70% | 0.3-0.5 | Memory-constrained |
+| INT4 KV (plain, g=64) | ~70% | 0.3-0.5 (collapses on reasoning models) | Avoid alone |
+| **INT4 KV + BDR** | ~70% | <1 % on GPQA | New, MHA only — see [[saw-int4]] |
+| KIVI (2-bit, mixed-granularity) | ~80% | ~1-2% | Custom kernel needed |
 
 ```python
 # vLLM: enable FP8 KV cache
@@ -149,11 +173,16 @@ KV cache too large → FP8 KV cache (50% savings, negligible quality loss)
 - Kim et al., "SqueezeLLM: Dense-and-Sparse Quantization," ICML 2024. [arXiv:2306.07629](https://arxiv.org/abs/2306.07629)
 - Xiao et al., "SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models," ICML 2023. [arXiv:2211.10438](https://arxiv.org/abs/2211.10438)
 - Chee et al., "QuIP#: Even Better LLM Quantization with Hadamard Incoherence and Lattice Codebooks," ICML 2024. [arXiv:2402.04396](https://arxiv.org/abs/2402.04396)
+- Ashkboos et al., "QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs," NeurIPS 2024. [arXiv:2404.00456](https://arxiv.org/abs/2404.00456)
+- Liu et al., "SpinQuant: LLM Quantization with Learned Rotations," 2024. [arXiv:2405.16406](https://arxiv.org/abs/2405.16406)
+- Jia et al., "SAW-INT4: System-Aware 4-Bit KV-Cache Quantization for Real-World LLM Serving," 2026. [arXiv:2604.19157](https://arxiv.org/abs/2604.19157)
 - NVIDIA, "FP8 Formats for Deep Learning," 2022. [arXiv:2209.05433](https://arxiv.org/abs/2209.05433)
 
 ## Related Pages
 
 - [[kv-cache-optimization]] -- KV cache quantization details
+- [[saw-int4]] -- Block-diagonal Hadamard rotation + INT4 KV (paper review)
+- [[rotation-based-quantization]] -- QuIP / QuaRot / SpinQuant / BDR family overview
 - [[vllm]] -- Supports GPTQ, AWQ, FP8, and all major formats
 - [[tensorrt-llm]] -- NVIDIA-native quantization (FP8, NVFP4)
 - [[model-parallelism]] -- Quantization reduces parallelism needs

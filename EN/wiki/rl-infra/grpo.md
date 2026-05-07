@@ -9,13 +9,8 @@ status: mature
 
 # GRPO: Group Relative Policy Optimization
 
-## Overview
-
-GRPO (Group Relative Policy Optimization), introduced by DeepSeek in the DeepSeekMath paper (Shao et al., 2024) and made famous by DeepSeek-R1, is a **critic-free policy optimization algorithm**. Instead of training a value function (critic) to estimate advantages, GRPO samples a group of responses per prompt and uses within-group reward statistics as the baseline.
-
-**Core innovation**: replace PPO's learned critic with group-normalized rewards, reducing the four-model architecture to two-three models and cutting memory/compute by ~50% while matching or exceeding PPO performance on reasoning and alignment tasks.
-
-GRPO rapidly became the dominant algorithm for large-scale RL training in 2024-2025, especially for reasoning model training.
+> [!abstract]+ TL;DR
+> GRPO (DeepSeek, 2024) is a **critic-free policy optimization algorithm**: instead of training a value function, it samples a group of responses per prompt and uses **within-group reward statistics as the baseline**. Replaces [[ppo-for-llm|PPO]]'s 4-model architecture (actor + critic + ref + reward) with 2–3 models, cutting memory/compute by **~50 %** while matching or exceeding PPO on reasoning and alignment. Made famous by **DeepSeek-R1** and rapidly became the dominant algorithm for large-scale RL training in 2024–2025, especially for reasoning models.
 
 ---
 

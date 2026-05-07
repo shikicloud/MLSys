@@ -17,6 +17,8 @@ updated: 2026-04-14
 - [[model-parallelism]] — Model parallelism: pipeline parallelism & context parallelism
 - [[parallelism-strategies-deep-dive]] — Parallelism strategies deep dive: DP / TP / EP / EDP / ETP
 - [[prefill-decode-disaggregation]] — Prefill-decode disaggregation architectures
+- [[saw-int4]] — SAW-INT4: System-Aware 4-bit KV-cache quantization with block-diagonal Hadamard rotation (Together AI, arXiv 2604.19157) — paper review
+- [[rotation-based-quantization]] — Rotation-based quantization family overview (QuIP / QuaRot / SpinQuant / BDR)
 
 ## RL Infrastructure
 - [[rlhf-overview]] — RLHF: Reinforcement Learning from Human Feedback
@@ -45,6 +47,7 @@ updated: 2026-04-14
 - [[tool-use-rl]] — RL for tool use and API calling
 - [[multi-step-reasoning-rl]] — RL for multi-step reasoning
 - [[environment-design]] — Environment design for agentic RL
+- [[prorl-agent]] — ProRL Agent: Rollout-as-a-Service (NVIDIA, arXiv 2603.18815) — paper review
 
 ## AI Agents
 - [[ai-agent-overview]] — AI agent architectures and patterns

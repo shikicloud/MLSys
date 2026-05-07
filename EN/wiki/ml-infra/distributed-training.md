@@ -9,7 +9,8 @@ status: mature
 
 # Distributed Training: Data/Model/Pipeline Parallelism
 
-> **Companion page**: [[parallelism-strategies-deep-dive]] covers DP/TP/EP/EDP/ETP splitting mechanics and communication primitives (shared by training and inference). This page focuses on **training-specific** concerns: gradient synchronization, ZeRO memory optimization, mixed-precision training, activation checkpointing, communication optimization, and fault tolerance.
+> [!abstract]+ TL;DR
+> Modern LLMs (Llama 3.1 405B, DeepSeek-V3) require thousands of GPUs and trillions of tokens to train. Distributed training combines **data parallelism** (replicate model, shard data), **model parallelism** (tensor + pipeline + expert), and **memory optimizations** (ZeRO, FSDP, mixed-precision, activation checkpointing) to fit large models on accessible hardware. This page covers training-specific concerns; the companion [[parallelism-strategies-deep-dive]] covers the splitting mechanics shared with inference.
 
 ---
 

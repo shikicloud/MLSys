@@ -9,6 +9,9 @@ status: mature
 
 # 训练框架：Megatron-LM、DeepSpeed、FSDP
 
+> [!abstract]+ TL;DR
+> LLM 训练框架的使命是把 [[distributed-training]] 中的并行策略与优化整合为可用的工程系统。生态已收敛到三大主流选项：**Megatron-LM/Core**（NVIDIA，最高吞吐量，TP+PP+SP+CP+EP+DP）、**DeepSpeed**（Microsoft，显存效率，ZeRO 1-3+++ 与 PP/EP/Ulysses-SP）、**FSDP2/TorchTitan**（Meta/PyTorch，原生 PyTorch，FSDP+TP+PP+SP）。生产级超大规模训练通常通过 Megatron-DeepSpeed 同时使用 Megatron 的 TP/PP 和 DeepSpeed 的 ZeRO。
+
 ---
 
 ## 1. 概述

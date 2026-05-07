@@ -95,7 +95,9 @@ MLA:   Q1 Q2 Q3 Q4 Q5 Q6 Q7 Q8    Latent: c_t (compressed)  KV size: ~0.25x
 | FP8 E4M3 | 2x | Minimal (<0.5%) | Hopper+ | **Widely used** |
 | INT8 | 2x | Minimal | Any | Widely used |
 | NVFP4 | 4x | Small (<1%) | Blackwell | Emerging |
-| KIVI (2-bit) | 8x | Small (~1-2%) | Any (custom kernel) | Research |
+| INT4 (plain, scale+zero) | ~3.5x | **Catastrophic on reasoning models** | Any | Avoid alone |
+| **INT4 + BDR** ([[saw-int4]]) | ~3.5x | **<1 % on GPQA** | Any (Triton MHA only) | New |
+| KIVI (2-bit, per-channel K) | 8x | Small (~1-2%) | Any (custom kernel) | Research |
 
 **FP8 KV cache** is the easiest win — 2x compression with negligible quality loss:
 
@@ -105,9 +107,23 @@ llm = LLM(model="meta-llama/Llama-3.1-70B-Instruct", kv_cache_dtype="fp8")
 # Saves ~10GB on seq=4K, batch=16 → ~80% more concurrent requests
 ```
 
-**KIVI** (2-bit): per-channel quantization for Keys, per-token for Values, with recent tokens kept in FP16 as anchors.
+**KIVI** (Liu et al., 2024): asymmetric mixed-granularity quantization — per-channel scales for Keys (since K outliers are channel-aligned), per-token scales for Values, with the most recent tokens kept in FP16 as quantization-error anchors. Reaches 2-bit with ~1-2 % perplexity increase. Custom kernel required.
 
-**RoPE-aware quantization**: Key tensors have high variance across RoPE dimensions — keep RoPE-related dims in higher precision.
+**RoPE-aware quantization**: rotary positional embeddings concentrate energy in specific dimension pairs, giving K consistently larger values in those channels across all tokens — keeping the RoPE-related dimensions at higher precision while quantizing the rest is one mitigation.
+
+### Rotation-based KV cache quantization
+
+The deeper fix for the K outlier problem is to **rotate** K (and optionally V) before quantization so the per-channel outliers are smeared across the head dimension and the resulting tensor becomes uniformly quantization-friendly. Multiplying by an orthonormal matrix preserves the L2 norm but redistributes energy; per-token scale-and-zero quantization then has a much easier job.
+
+This is the same idea as QuIP/QuIP# and QuaRot for **weight + activation** quantization (see [[quantization#Rotation-based quantization]] and [[rotation-based-quantization]] for the family) — the SAW-INT4 paper specializes it to **KV cache** under serving constraints:
+
+- **Block-diagonal Hadamard rotation** along the head dimension, in fixed-size blocks (e.g., 16 or 128) → kernel-friendly and paged-layout-compatible.
+- **Fused with the INT4 write**: rotation + normalization + per-token scale/zero + INT4 pack happen in one Triton kernel, so the rotation overhead is amortized into the memory pass that INT4 already needed.
+- **Q-correction at decode**: the same rotation is applied to Q inside the decode kernel so attention math is unchanged.
+
+Concrete impact (Qwen3-4B-Thinking-2507, GPQA): plain INT4 collapses the model to 0 %; INT4 + BDR recovers to 65.82 % (vs. 66.67 % BF16). End-to-end throughput is indistinguishable from plain INT4. See [[saw-int4]] for the full paper review with kernel walkthrough.
+
+**Caveats.** Currently MHA-only (MLA architectures need a different formulation), Triton GQA decode backend, and validated on a single accuracy benchmark.
 
 ---
 
@@ -180,7 +196,7 @@ Memory-bound?
 ├─ FP8 KV enabled? (No → easiest 2x win)
 ├─ PagedAttention? (No → use vLLM/SGLang)
 ├─ Long sequences (>32K)? → sliding window, H2O eviction, CPU offload
-└─ Still constrained? → INT4 KV (KIVI), add GPUs
+└─ Still constrained? → INT4 KV with rotation (BDR / [[saw-int4]]) or KIVI; or add GPUs
 
 High TTFT?
 ├─ Repeated prefixes? → enable prefix caching
@@ -208,13 +224,17 @@ Low throughput?
 8. **Zheng et al.** "SGLang" — 2024. (RadixAttention)
 9. **Qin et al.** "Mooncake" — FAST 2025 Best Paper.
 10. **Panwar et al.** "vAttention" — ASPLOS 2025. [Paper](https://arxiv.org/abs/2405.04437)
+11. **Jia et al.** "SAW-INT4: System-Aware 4-Bit KV-Cache Quantization for Real-World LLM Serving" — 2026. [Paper](https://arxiv.org/abs/2604.19157) — block-diagonal Hadamard rotation makes plain INT4 KV viable for reasoning models.
+12. **Ashkboos et al.** "QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs" — NeurIPS 2024. [Paper](https://arxiv.org/abs/2404.00456) — full-Hadamard rotation for weights + activations; foundation for BDR's KV variant.
 
 ## Related Pages
 
 - [[paged-attention]] — Block-based memory management deep dive
 - [[vllm]] — Prefix caching & FP8 KV implementation
 - [[sglang]] — RadixAttention prefix caching
-- [[quantization]] — Broader quantization techniques
+- [[quantization]] — Broader quantization techniques (incl. weight/activation rotation)
+- [[saw-int4]] — Block-diagonal Hadamard rotation + INT4 KV (paper review)
+- [[rotation-based-quantization]] — The QuIP / QuaRot / SpinQuant / BDR lineage
 - [[continuous-batching]] — Scheduling & KV cache interaction
 - [[prefill-decode-disaggregation]] — KV cache transfer challenges
 - [[long-context-serving]] — Long context KV cache challenges

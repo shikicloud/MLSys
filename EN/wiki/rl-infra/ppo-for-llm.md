@@ -9,11 +9,8 @@ status: mature
 
 # PPO for LLM Alignment
 
-## Overview
-
-Proximal Policy Optimization (PPO), proposed by Schulman et al. (2017), is the RL algorithm that made [[rlhf-overview|RLHF]] practical for LLMs. Its clipped surrogate objective prevents destructively large policy updates -- critical when the policy is a billion-parameter language model where a single bad update can permanently damage capabilities.
-
-PPO powered InstructGPT, ChatGPT, and early Claude models. While increasingly supplemented by [[grpo]] and DPO, PPO remains essential for online RL tasks requiring exploration (reasoning, code generation, tool use).
+> [!abstract]+ TL;DR
+> Proximal Policy Optimization (Schulman et al., 2017) is the RL algorithm that made [[rlhf-overview|RLHF]] practical for LLMs. Its **clipped surrogate objective** prevents destructively large policy updates — critical when the policy is a billion-parameter LM where a single bad update can permanently damage capabilities. Powered InstructGPT, ChatGPT, and early Claude. Increasingly supplemented by [[grpo|GRPO]] and DPO for memory efficiency, but PPO remains essential for online RL tasks requiring exploration (reasoning, code generation, tool use).
 
 ---
 

@@ -9,13 +9,8 @@ status: mature
 
 # PagedAttention：KV 缓存的虚拟内存管理
 
-## 概述
-
-PagedAttention 是 2023 年由 UC Berkeley 的 Kwon 等人提出的 KV 缓存内存管理算法，灵感来源于操作系统的**虚拟内存分页机制**。它解决了 LLM 推理中最关键的资源瓶颈之一——KV 缓存的内存碎片化和浪费问题。
-
-在 PagedAttention 出现之前，LLM 服务系统因为内存管理低效，实际可用 GPU 内存中有 **60-80%** 被浪费。PagedAttention 将这一浪费降低到 **不足 4%**，使得相同硬件上可以服务的并发请求数量大幅增加，吞吐量提升可达 **2-4 倍**。
-
-PagedAttention 是 [[vllm|vLLM]] 的核心创新，并已被几乎所有主流 LLM 服务框架采用，包括 [[sglang|SGLang]]、[[tensorrt-llm|TensorRT-LLM]]、HuggingFace TGI 等。它与 [[continuous-batching|连续批处理]] 的结合使得现代 LLM 服务系统的效率达到了全新水平。
+> [!abstract]+ TL;DR
+> PagedAttention（Kwon 等，SOSP 2023）把**操作系统虚拟内存分页**机制应用到 KV 缓存管理。此前 LLM 服务系统因碎片化和预分配浪费 **60–80 %** 的 GPU 内存；PagedAttention 把浪费降到 **< 4 %**，相同硬件吞吐量提升 **2–4 倍**。它是 [[vllm|vLLM]] 的核心创新，已被几乎所有主流服务框架采用（包括 [[sglang|SGLang]]、[[tensorrt-llm|TensorRT-LLM]]、HuggingFace TGI）；与 [[continuous-batching|连续批处理]] 结合定义了现代 LLM 服务的效率基线。
 
 ---
 

@@ -9,11 +9,8 @@ status: mature
 
 # PagedAttention: Virtual Memory for KV Cache
 
-## Overview
-
-PagedAttention (Kwon et al., SOSP 2023) applies **OS virtual memory paging** to KV cache management. Before PagedAttention, LLM serving systems wasted **60-80%** of GPU memory due to fragmentation and pre-allocation. PagedAttention reduces this waste to **<4%**, enabling 2-4x higher throughput on the same hardware.
-
-It is the foundational innovation behind [[vllm|vLLM]] and has been adopted by virtually every serving framework including [[sglang|SGLang]], [[tensorrt-llm|TensorRT-LLM]], and HuggingFace TGI. Combined with [[continuous-batching]], it defines the efficiency baseline for modern LLM serving.
+> [!abstract]+ TL;DR
+> PagedAttention (Kwon et al., SOSP 2023) applies **OS virtual memory paging** to KV cache management. Before PagedAttention, LLM serving systems wasted **60–80 %** of GPU memory due to fragmentation and pre-allocation. PagedAttention reduces this waste to **< 4 %**, enabling **2–4× higher throughput** on the same hardware. It is the foundational innovation behind [[vllm|vLLM]] and has been adopted by virtually every serving framework including [[sglang|SGLang]], [[tensorrt-llm|TensorRT-LLM]], and HuggingFace TGI. Combined with [[continuous-batching]], it defines the efficiency baseline for modern LLM serving.
 
 ---
 

@@ -1,9 +1,19 @@
 ---
 title: 变更日志
-updated: 2026-04-13
+updated: 2026-05-06
 ---
 
 # 变更日志
+
+## 2026-05-06
+- [摄入] arXiv:2603.18815 "ProRL Agent"（NVIDIA, 2026 年 3 月）— 论文精读已添加于 `wiki/agentic-rl/` 下的 [[prorl-agent]]。引用元数据位于 `sources/papers/prorl-agent/`。报告涵盖论文分析以及源码阅读：`start_server.py`（FastAPI + multiprocessing）、`openhands/nvidia/registry.py`（AgentHandler ABC + JobDetails dataclass + 注册表模式）、`openhands/nvidia/async_server.py`（三队列流水线、min-heap 负载均衡器、统一 _worker）、`openhands/llm/nvidia/`（token-in/out 动机）。已交叉链接至 [[agentic-rl-overview]]、[[environment-design]]、[[rl-training-frameworks]]、[[grpo]]、[[kv-cache-optimization]]、[[multi-turn-optimization]]。
+- [摄入] arXiv:2604.19157 "SAW-INT4"（Together AI 等, 2026 年 5 月）— 论文精读已添加于 `wiki/llm-inference/` 下的 [[saw-int4]]。引用元数据位于 `sources/papers/saw-int4/`。报告涵盖论文分析以及 SGLang fork 源码阅读：`memory_pool.py` 的 env-var 门控与 `set_kv_buffer` 的 BDR 分支、融合 Triton 内核 `quantized_set_kv_int4_hadamard_fused_triton`、`tools/fit_kv_centroids.py` k-means 校准。块对角 Hadamard 旋转使 Qwen3-4B-Thinking 的 GPQA 从原始 INT4 的 0% 恢复到 65.82%。已交叉链接至 [[kv-cache-optimization]]、[[quantization]]、[[sglang]]、[[long-context-serving]]、[[paged-attention]]、[[vllm]]。
+- [新增] [[rotation-based-quantization]] —— 综合页，涵盖 QuIP / QuIP# / QuaRot / SpinQuant / SAW-INT4-BDR 家族，含数学基础、对比表、"旋转吸收位置"分析、实践指南与开放问题。已交叉链接至 [[saw-int4]]、[[quantization]]、[[kv-cache-optimization]]。
+- [扩展] [[quantization]] —— 增加"基于旋转的量化"章节综合 QuIP/QuaRot/SpinQuant/BDR。与已有 QuIP# 内容打通。更新 KV 缓存表区分原始 INT4 vs INT4+BDR。在参考文献与相关页面里加入 QuaRot/SpinQuant/SAW-INT4。
+- [扩展] [[kv-cache-optimization]] —— 增加"基于旋转的 KV 缓存量化"子章节并引用 [[saw-int4]]。更新量化表加入 INT4（原始）和 INT4 + BDR 两行展示 GPQA 崩溃与恢复。改进 KIVI 描述（非对称混合粒度，per-channel K + per-token V + FP16 锚点）。更新决策树与参考文献。
+
+## 2026-05-07
+- [Q&A] [[saw-int4]] —— Shiki 询问"离群通道"段落的含义。Q&A 以 Obsidian `[!question]+` callout 格式**就地嵌入**于 Background 章节里 GPQA 崩溃表格之后（不再放页面末尾的统一 Q&A 节）。紧凑段落格式（4 段）解释离群通道三类来源（RoPE / massive activations / 专用头）、per-token scale-zero 失效模式（~95% 通道塌缩到 0）、为什么表面任务能撑住但多步推理累积误差崩溃、以及 BDR 如何修复。约定记录到记忆里：论文 Q&A 就地放在被讨论的位置、callout 格式、紧凑段落。
 
 ## 2026-04-14
 - [扩展] [[distributed-training]] — 全面扩展为深度文章（~1090行），涵盖训练显存分析、DDP 梯度同步与 Ring AllReduce 算法图解、ZeRO 1/2/3 各阶段显存公式与 ASCII 图、混合精度训练（FP16/BF16/FP8）、3D/4D/5D 并行组合与硬件拓扑映射、梯度检查点、通信优化（Bucketing/NCCL）、容错与弹性训练、代码示例、LLaMA 3.1 / DeepSeek-V3 训练案例

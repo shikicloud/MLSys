@@ -9,20 +9,20 @@ status: mature
 
 # vLLM：高吞吐量 LLM 服务引擎
 
-## 概述
+> [!abstract]+ TL;DR
+> vLLM 是开源、高吞吐量、内存高效的 LLM 推理与服务引擎，由 UC Berkeley Sky Computing Lab 于 2023 年推出。核心创新是 [[paged-attention|PagedAttention]] —— 借鉴操作系统虚拟内存分页思想管理 KV 缓存，把碎片化降到接近零。截至 2026 年 4 月（v0.19.0）已是最广泛部署的服务框架之一（50k+ GitHub Star），硬件支持最广（NVIDIA / AMD / TPU / Gaudi / Trainium），V1 重写带来**最高 1.7× 吞吐量**提升。
 
-vLLM 是一个开源、高吞吐量、内存高效的大语言模型（LLM）推理与服务引擎，由加州大学伯克利分校的 Sky Computing Lab 于 2023 年推出。它的核心创新是 [[paged-attention|PagedAttention]] 算法，借鉴操作系统虚拟内存的分页思想来管理 KV 缓存，从根本上解决了 LLM 推理中的内存碎片化问题。
+> [!info] 相关链接
+> [GitHub](https://github.com/vllm-project/vllm) · [官方文档](https://docs.vllm.ai/) · [vLLM Blog](https://vllm.ai/blog)
 
-截至 2026 年 4 月，vLLM 已成为最广泛部署的 LLM 服务框架之一，GitHub Star 数超过 50k，被众多企业和云服务商（如 AWS、GCP、Azure、Cloudflare、Coreweave 等）用于生产环境。vLLM 的核心竞争力在于：
+**核心竞争力**：
 
-- **极致的内存效率**：通过 PagedAttention 将 KV 缓存浪费降低到接近零
-- **高吞吐量**：[[continuous-batching|连续批处理]] + 前缀缓存 + 分块预填充，最大化 GPU 利用率
-- **最广泛的硬件支持**：NVIDIA（Ampere/Hopper/Blackwell）、AMD、Intel Gaudi、Google TPU、AWS Trainium
-- **OpenAI 兼容 API**：开箱即用的 REST API，可直接替换 OpenAI 后端
-- **丰富的模型支持**：Transformer、MoE、多模态、LoRA 适配器批处理
-- **活跃的社区生态**：两周一个版本的发布节奏，最新版本 v0.19.0（2026 年 4 月）
-
-[GitHub](https://github.com/vllm-project/vllm) | [官方文档](https://docs.vllm.ai/) | [vLLM Blog](https://vllm.ai/blog)
+- **极致的内存效率**：通过 PagedAttention 把 KV 缓存浪费降到接近零
+- **高吞吐量**：[[continuous-batching|连续批处理]] + 前缀缓存 + 分块预填充
+- **最广硬件支持**：NVIDIA（Ampere/Hopper/Blackwell）、AMD、Intel Gaudi、Google TPU、AWS Trainium
+- **OpenAI 兼容 API**：可直接替换 OpenAI 后端
+- **丰富模型生态**：Transformer、MoE、多模态、多 LoRA
+- **活跃社区**：两周一版本，最新 v0.19.0（2026 年 4 月）
 
 ---
 

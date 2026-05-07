@@ -9,7 +9,8 @@ status: mature
 
 # 分布式训练：数据/模型/流水线并行
 
-> **姊妹页面**: [[parallelism-strategies-deep-dive]] 详细介绍了 DP / TP / EP / EDP / ETP 的切分原理与通信原语（训练 + 推理通用）。本页聚焦于**训练专有**的核心问题：梯度同步、ZeRO 显存优化、混合精度训练、激活检查点、通信优化与容错。
+> [!abstract]+ TL;DR
+> 现代 LLM（Llama 3.1 405B、DeepSeek-V3）需要数千 GPU 和数万亿 token 才能训练。分布式训练通过**数据并行**（复制模型、切分数据）、**模型并行**（张量 + 流水线 + 专家）和**显存优化**（ZeRO、FSDP、混合精度、激活检查点）让大模型在可获得的硬件上训练。本页聚焦训练专有问题；姊妹页 [[parallelism-strategies-deep-dive]] 详述与推理共用的切分机制。
 
 ---
 

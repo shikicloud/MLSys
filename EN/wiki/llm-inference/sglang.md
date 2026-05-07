@@ -9,15 +9,8 @@ status: mature
 
 # SGLang: Fast Structured Generation and Serving
 
-## Overview
-
-SGLang (Structured Generation Language), developed by LMSYS (UC Berkeley), is a high-performance LLM inference and serving framework. First published in December 2023 (NeurIPS 2024), it combines a **frontend DSL** for programming LLM applications with a **backend runtime (SRT)** featuring novel optimizations.
-
-Core positioning: efficient execution of complex LLM workloads through frontend-backend co-design. Excels at multi-turn conversations, structured output, and agent workloads.
-
-**Key innovations**: RadixAttention (cross-request KV cache reuse via radix tree), compressed FSM (jump-forward constrained decoding), and XGrammar integration.
-
-As of 2026, SGLang powers xAI (Grok 3), Microsoft Azure, LinkedIn, Cursor, and runs across 400,000+ GPUs. Delivers 29% higher throughput than [[vllm|vLLM]] on H100s (16,200 vs 12,500 tok/s) and up to 6.4x gains on prefix-heavy workloads.
+> [!abstract]+ TL;DR
+> SGLang (Structured Generation Language) from LMSYS (UC Berkeley) combines a **frontend DSL** for programming LLM applications with a **backend runtime (SRT)** featuring novel optimizations: **RadixAttention** (cross-request KV reuse via radix tree), compressed FSM (jump-forward constrained decoding), XGrammar integration. First published Dec 2023 (NeurIPS 2024). As of 2026 powers xAI (Grok 3), Microsoft Azure, LinkedIn, Cursor — 400,000+ GPUs in production. Delivers **29 % higher throughput than [[vllm|vLLM]]** on H100 (16,200 vs 12,500 tok/s) and up to **6.4× gains** on prefix-heavy workloads. Excels at multi-turn conversations, structured output, and agent workloads.
 
 [GitHub](https://github.com/sgl-project/sglang) | [Paper](https://arxiv.org/abs/2312.07104)
 

@@ -9,16 +9,8 @@ status: mature
 
 # RLHF: Reinforcement Learning from Human Feedback
 
-## Overview
-
-RLHF is the dominant paradigm for aligning large language models with human intent. The core insight:
-
-1. **Rewards for language tasks cannot be defined programmatically** -- "helpful", "truthful", "harmless" have no simple formula.
-2. **Humans can compare** -- while hard to give absolute scores, humans reliably judge "A is better than B".
-3. **Train a reward model from comparisons** -- distill human preferences into a differentiable reward function.
-4. **Optimize with RL** -- fine-tune the LLM to maximize the reward model's score.
-
-The landmark result: InstructGPT (Ouyang et al., 2022) showed a 1.3B RLHF model was preferred over 175B GPT-3.
+> [!abstract]+ TL;DR
+> RLHF is the dominant paradigm for aligning LLMs with human intent. Core insight: rewards for "helpful / truthful / harmless" can't be programmed, but **humans can reliably compare A vs. B**, so train a reward model from preference comparisons and fine-tune the LLM with RL to maximize that reward. Landmark result: InstructGPT (Ouyang et al., 2022) — a **1.3B RLHF model preferred over 175B GPT-3**. Three-stage pipeline: SFT → reward modeling (Bradley-Terry) → PPO/GRPO with KL penalty. Modern variants: [[grpo|GRPO]] (critic-free), [[dpo|DPO]] (no RL loop), RLAIF, RLVR.
 
 ### Why Not Just Supervised Learning?
 

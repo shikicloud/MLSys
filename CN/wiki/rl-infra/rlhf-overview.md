@@ -9,16 +9,8 @@ status: mature
 
 # RLHF：基于人类反馈的强化学习
 
-## 概述
-
-RLHF（Reinforcement Learning from Human Feedback）是当前将大语言模型（LLM）与人类意图对齐的核心技术范式。其基本思想是：
-
-1. **语言任务的奖励无法程序化定义** — 对于"有帮助"、"真实"、"无害"这样的属性，不存在简单的数学公式。
-2. **人类可以比较** — 虽然人类很难给回复打绝对分数，但可以可靠地判断"A 比 B 好"。
-3. **用比较数据训练奖励模型** — 将人类的比较偏好蒸馏为可微分的奖励函数。
-4. **用 RL 优化奖励** — 在奖励模型的引导下，通过强化学习微调语言模型。
-
-RLHF 产出的模型更有帮助（helpful）、更真实（truthful）、更安全（harmless），是 ChatGPT、Claude、Gemini 等现代对话模型背后的关键技术。
+> [!abstract]+ TL;DR
+> RLHF 是把 LLM 与人类意图对齐的主导范式。核心洞察：'有帮助/真实/无害'无法程序化定义，但**人类能可靠地比较 A 和 B**，所以用比较数据训练奖励模型，再用 RL 微调 LLM 最大化奖励。里程碑：InstructGPT（Ouyang et al., 2022）—— **1.3B RLHF 模型被人类评估为优于 175B GPT-3**。三阶段流水线：SFT → 奖励建模（Bradley-Terry）→ PPO/GRPO + KL 惩罚。现代变体：[[grpo|GRPO]]（无 critic）、[[dpo|DPO]]（无 RL 循环）、RLAIF、RLVR。
 
 ### 为什么不能只用监督学习？
 

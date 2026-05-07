@@ -9,6 +9,9 @@ status: mature
 
 # Agentic RL Overview
 
+> [!abstract]+ TL;DR
+> Agentic RL is a class of reinforcement learning methods designed to train AI agents that interact with external environments and tools — optimizing **action sequences, tool use, and task completion** over multi-turn interactions, rather than single-turn text quality like classical [[rlhf-overview|RLHF]]. Treats the LLM as a policy in an MDP where state = conversation history + environment, action = text/tool calls, reward = task completion. **Paradigm shift**: from "training models to say things" to "training models to do things." Powers DeepSeek-R1-style reasoning, WebGPT-style search, ReTool-style code-interpreter agents.
+
 ## Overview
 
 Agentic RL is a class of reinforcement learning methods specifically designed to train AI agents that interact with external environments and tools. Unlike traditional [[rlhf-overview|RLHF]] (which optimizes single-turn text quality), Agentic RL focuses on optimizing action sequences, tool use, and task completion over multi-turn interactions.

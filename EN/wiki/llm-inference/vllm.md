@@ -9,15 +9,13 @@ status: mature
 
 # vLLM: High-Throughput LLM Serving Engine
 
-## Overview
+> [!abstract]+ TL;DR
+> vLLM is an open-source, high-throughput, memory-efficient LLM inference and serving engine from UC Berkeley's Sky Computing Lab (2023). Its core innovation is [[paged-attention|PagedAttention]] — borrowing OS virtual memory paging to manage KV cache and virtually eliminating memory fragmentation. As of April 2026 (v0.19.0), it's one of the most widely deployed serving frameworks (50k+ GitHub stars), with broad hardware support (NVIDIA/AMD/TPU/Gaudi/Trainium) and the V1 rewrite delivering **up to 1.7× throughput** over V0.
 
-vLLM is an open-source, high-throughput, memory-efficient LLM inference and serving engine from UC Berkeley's Sky Computing Lab (2023). Its core innovation is [[paged-attention|PagedAttention]], which borrows OS virtual memory paging to manage KV cache, virtually eliminating memory fragmentation.
+> [!info] Links
+> [GitHub](https://github.com/vllm-project/vllm) · [Docs](https://docs.vllm.ai/) · [Blog](https://vllm.ai/blog)
 
-As of April 2026, vLLM is one of the most widely deployed LLM serving frameworks (50k+ GitHub stars), used in production by AWS, GCP, Azure, Cloudflare, Coreweave, and many others. Latest version: v0.19.0 (April 2026).
-
-**Key strengths**: near-zero KV cache waste via PagedAttention, [[continuous-batching]] + prefix caching + chunked prefill for maximum GPU utilization, broadest hardware support (NVIDIA/AMD/TPU/Gaudi/Trainium), OpenAI-compatible API, and a rich model ecosystem (Transformer, MoE, multimodal, multi-LoRA).
-
-[GitHub](https://github.com/vllm-project/vllm) | [Docs](https://docs.vllm.ai/) | [Blog](https://vllm.ai/blog)
+**Key strengths**: near-zero KV cache waste via PagedAttention; [[continuous-batching]] + prefix caching + chunked prefill for maximum GPU utilization; broadest hardware support; OpenAI-compatible API; rich model ecosystem (Transformer, MoE, multimodal, multi-LoRA).
 
 ---
 

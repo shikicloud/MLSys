@@ -9,11 +9,8 @@ status: mature
 
 # SGLang：快速结构化生成与服务
 
-## 概述
-
-SGLang（Structured Generation Language）由 LMSYS（UC Berkeley）团队开发，是一个高性能的 LLM 推理与服务框架。项目由 Ying Sheng、Lianmin Zheng 等人主导，于 2023 年 12 月首次发布论文，2024 年在 NeurIPS 会议上正式发表。
-
-SGLang 的核心定位是：**通过前端 DSL + 后端运行时的协同设计（co-design），实现 LLM 复杂工作负载的高效执行**。它在多轮对话、结构化输出、智能体工具调用等场景中表现尤其突出。
+> [!abstract]+ TL;DR
+> SGLang（Structured Generation Language）由 LMSYS（UC Berkeley）开发，结合**前端 DSL** 与**后端运行时（SRT）** 的协同设计：**RadixAttention**（基数树驱动的跨请求 KV 复用）、压缩 FSM（jump-forward 约束解码）、XGrameur 集成。2023 年 12 月发布，NeurIPS 2024 正式发表。截至 2026 年驱动 xAI（Grok 3）、Microsoft Azure、LinkedIn、Cursor —— 生产部署超 40 万 GPU。H100 上吞吐量比 [[vllm|vLLM]] **高 29 %**（16,200 vs 12,500 tok/s），前缀密集工作负载提升达 **6.4 倍**。在多轮对话、结构化输出、智能体工具调用场景表现尤其突出。
 
 **关键特性**：
 - **RadixAttention**：基于基数树的跨请求 [[kv-cache-optimization|KV 缓存]]自动复用

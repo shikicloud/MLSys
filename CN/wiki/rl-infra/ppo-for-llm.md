@@ -9,6 +9,9 @@ status: mature
 
 # PPO 用于 LLM 对齐
 
+> [!abstract]+ TL;DR
+> 近端策略优化（PPO，Schulman et al., 2017）是让 [[rlhf-overview|RLHF]] 在 LLM 上切实可行的 RL 算法。其**裁剪替代目标**防止破坏性的大幅策略更新 —— 在数十亿参数策略网络上，一次坏更新就可能永久损坏模型能力。驱动了 InstructGPT、ChatGPT 和早期 Claude。在显存效率上正逐步被 [[grpo|GRPO]] 和 DPO 替代，但在需要在线探索的复杂任务（推理、代码生成、工具使用）上仍不可替代。
+
 ## 概述
 
 近端策略优化（Proximal Policy Optimization, PPO），由 Schulman et al. (2017) 提出，是使 [[rlhf-overview|RLHF]] 在大语言模型上切实可行的核心 RL 算法。它通过裁剪替代目标（clipped surrogate objective）提供稳定的策略更新，防止破坏性的大幅参数变动。PPO 驱动了 InstructGPT、ChatGPT 和早期的 Claude 模型。

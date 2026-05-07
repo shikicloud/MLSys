@@ -9,6 +9,9 @@ status: mature
 
 # Training Frameworks: Megatron-LM, DeepSpeed, FSDP
 
+> [!abstract]+ TL;DR
+> LLM training frameworks integrate the parallelism strategies and optimizations from [[distributed-training]] into usable engineering systems. The ecosystem has converged to three main options: **Megatron-LM/Core** (NVIDIA, max throughput, TP+PP+SP+CP+EP+DP), **DeepSpeed** (Microsoft, memory efficiency, ZeRO 1-3+++ and PP/EP/Ulysses-SP), **FSDP2/TorchTitan** (Meta/PyTorch, native PyTorch, FSDP+TP+PP+SP). Production large-scale runs typically combine Megatron's TP/PP with DeepSpeed's ZeRO via Megatron-DeepSpeed.
+
 ---
 
 ## 1. Overview

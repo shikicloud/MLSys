@@ -17,6 +17,8 @@ updated: 2026-04-14
 - [[model-parallelism]] — 模型并行：流水线并行与上下文并行
 - [[parallelism-strategies-deep-dive]] — LLM 并行策略深度解析：DP / TP / EP / EDP / ETP
 - [[prefill-decode-disaggregation]] — 预填充-解码分离架构
+- [[saw-int4]] — SAW-INT4：基于块对角 Hadamard 旋转的系统感知 4 位 KV 缓存量化（Together AI, arXiv 2604.19157）— 论文精读
+- [[rotation-based-quantization]] — 基于旋转的量化家族综览（QuIP / QuaRot / SpinQuant / BDR）
 
 ## 强化学习基础设施
 - [[rlhf-overview]] — RLHF：基于人类反馈的强化学习
@@ -45,6 +47,7 @@ updated: 2026-04-14
 - [[tool-use-rl]] — 工具使用与 API 调用的 RL
 - [[multi-step-reasoning-rl]] — 多步推理的 RL
 - [[environment-design]] — 智能体 RL 的环境设计
+- [[prorl-agent]] — ProRL Agent：Rollout 即服务（NVIDIA, arXiv 2603.18815）— 论文精读
 
 ## AI 智能体
 - [[ai-agent-overview]] — AI 智能体架构与模式

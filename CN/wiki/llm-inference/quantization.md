@@ -251,6 +251,8 @@ W_sparse: 稀疏矩阵, 保存异常值（全精度）
 - 在 2-bit 量化时质量显著优于 GPTQ/AWQ
 - 实际推理速度受限于解码开销
 
+QuIP/QuIP# 是 **基于旋转的量化** 家族的奠基论文，相关后续工作（QuaRot、SpinQuant、SAW-INT4/BDR）见下文专门章节。
+
 ### 方法对比
 
 | 方法 | 位宽 | 校准数据 | 量化时间 (70B) | Perplexity 增加 | 推理速度 | 特点 |
@@ -261,6 +263,28 @@ W_sparse: 稀疏矩阵, 保存异常值（全精度）
 | QuIP# | 2-4 bit | 需要 | ~6h | <0.5 (2-bit) | 较慢 | 理论最优 |
 | Round-to-nearest | 任意 | 不需要 | 即时 | 较大 | 快 | 基线 |
 
+
+## 基于旋转的量化（QuIP → QuaRot → SpinQuant → BDR）
+
+这是一个连贯的技术家族，贡献**不**是新的量化器，而是在标准量化**之前**应用一个*正交变换*，把异常值打平，让结果张量更易量化。乘上一个正交矩阵保持 L2 范数不变，但把能量重新分布到所有维度上；旋转后的张量分布更均匀，per-token（或 per-channel）的 scale-and-zero 量化效果好得多。
+
+家族脉络：
+
+| 年份 | 方法 | 旋转作用位置 | 旋转类型 | 备注 |
+|------|------|-------------|---------|------|
+| 2023 | **QuIP** ([arXiv:2307.13304](https://arxiv.org/abs/2307.13304)) | 权重 | 随机正交 | 引入"非相干处理"，首次形式化"随机旋转使低位量化变得可行"。 |
+| 2024 | **QuIP#** ([arXiv:2402.04396](https://arxiv.org/abs/2402.04396)) | 权重 | 随机 Hadamard + lattice codebook | 在旋转后的权重上做向量量化；2-bit 权重的 SOTA。 |
+| 2024 | **QuaRot** ([arXiv:2404.00456](https://arxiv.org/abs/2404.00456)) | 权重**与激活** | 随机 Hadamard，融合进相邻线性层权重 | NeurIPS 2024。展示旋转可以*被吸收*进相邻线性层（推理时零成本），从而做 INT4 权重 + INT4 激活 Llama 而几乎无质量损失。 |
+| 2024 | **SpinQuant** ([arXiv:2405.16406](https://arxiv.org/abs/2405.16406)) | 权重和激活 | **学习的**旋转矩阵 | 把随机 Hadamard 换成在校准集上训练的旋转。精度增益更大；需要离线训练。 |
+| 2026 | **SAW-INT4 / BDR** ([arXiv:2604.19157](https://arxiv.org/abs/2604.19157)) | **KV 缓存** | 块对角 Hadamard，与 INT4 写入融合 | 首个生产友好的 KV 缓存版本。把 Qwen3-4B-Thinking 的 GPQA 从原始 INT4 的 0% 恢复到 65.82%。见 [[saw-int4]]。 |
+
+几个跨越家族的观察：
+
+- **旋转吸收的位置很关键。** QuaRot 相对 QuIP 的贡献是把旋转融合进相邻线性层权重，使推理成本不变。SAW-INT4 则把旋转融合进 KV 写入的 Triton 内核与解码侧 Q-attention 内核。两者都是"系统感知"旋转的形式。
+- **随机 vs. 学习 vs. 块对角。** 学习（SpinQuant）> 随机 Hadamard > 不旋转，在精度上。块对角用一些旋转强度换内核缓存局部性和分页布局兼容性。
+- **旋转与量化器正交。** GPTQ、AWQ、原始 scale-and-zero、k-means —— 任何量化器都可以叠在旋转之上。文献里多数把旋转与简单的 per-channel/per-token scale-zero 叠加，因为旋转已经把硬活干完了。
+
+更深入的家族综合（含数学基础与权衡）见 [[rotation-based-quantization]]。
 
 ## FP8 量化
 
@@ -677,6 +701,9 @@ Perplexity
 - Xiao et al., "SmoothQuant: Accurate and Efficient Post-Training Quantization for Large Language Models," ICML 2023. [arXiv:2211.10438](https://arxiv.org/abs/2211.10438)
 - Chee et al., "QuIP: 2-Bit Quantization of Large Language Models with Guarantees," NeurIPS 2023. [arXiv:2307.13304](https://arxiv.org/abs/2307.13304)
 - Chee et al., "QuIP#: Even Better LLM Quantization with Hadamard Incoherence and Lattice Codebooks," ICML 2024. [arXiv:2402.04396](https://arxiv.org/abs/2402.04396)
+- Ashkboos et al., "QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs," NeurIPS 2024. [arXiv:2404.00456](https://arxiv.org/abs/2404.00456)
+- Liu et al., "SpinQuant: LLM Quantization with Learned Rotations," 2024. [arXiv:2405.16406](https://arxiv.org/abs/2405.16406)
+- Jia et al., "SAW-INT4: System-Aware 4-Bit KV-Cache Quantization for Real-World LLM Serving," 2026. [arXiv:2604.19157](https://arxiv.org/abs/2604.19157)
 - Dettmers et al., "LLM.int8(): 8-bit Matrix Multiplication for Transformers at Scale," NeurIPS 2022. [arXiv:2208.07339](https://arxiv.org/abs/2208.07339)
 - NVIDIA, "FP8 Formats for Deep Learning," 2022. [arXiv:2209.05433](https://arxiv.org/abs/2209.05433)
 
@@ -684,6 +711,8 @@ Perplexity
 ## 相关页面
 
 - [[kv-cache-optimization]] -- KV 缓存量化的详细讨论
+- [[saw-int4]] -- 块对角 Hadamard 旋转 + INT4 KV 量化（论文精读）
+- [[rotation-based-quantization]] -- QuIP / QuaRot / SpinQuant / BDR 家族综览
 - [[vllm]] -- 支持 GPTQ、AWQ、FP8 等所有主要量化格式
 - [[tensorrt-llm]] -- NVIDIA 原生量化支持（FP8、NVFP4）
 - [[model-parallelism]] -- 量化可减少模型并行的需求

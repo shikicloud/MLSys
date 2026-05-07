@@ -9,13 +9,8 @@ status: mature
 
 # GRPO：组相对策略优化
 
-## 概述
-
-GRPO（Group Relative Policy Optimization），由 DeepSeek 在 DeepSeekMath 论文（Shao et al., 2024）中首次提出，并因 DeepSeek-R1 的巨大成功而广为人知。它是一种**无需 Critic 模型的策略优化算法**，通过在同一 prompt 的一组采样输出中进行相对比较来估计优势函数。
-
-**核心创新**：用组内归一化的奖励替代学习的价值函数（Critic），将 [[ppo-for-llm|PPO]] 的四模型架构简化为两模型（策略 + 参考模型）+ 在线奖励评估，内存和计算量减少约 50%，同时在推理和对齐任务上达到相当或更优的性能。
-
-GRPO 迅速成为 2024-2025 年大规模 RL 训练的主流选择，尤其是在推理模型（reasoning model）训练领域。
+> [!abstract]+ TL;DR
+> GRPO（DeepSeek, 2024）是**无 Critic 的策略优化算法**：不再训练价值函数，而是对同一 prompt 采样一组回复，**用组内奖励统计作为基线**。把 [[ppo-for-llm|PPO]] 的 4 模型架构（actor + critic + ref + reward）简化为 2–3 模型，内存和计算量减少 **~50 %**，推理和对齐任务上达到相当或更优的性能。因 **DeepSeek-R1** 大放异彩，迅速成为 2024–2025 大规模 RL 训练的主流，尤其是推理模型训练。
 
 ---
 

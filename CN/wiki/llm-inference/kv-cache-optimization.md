@@ -474,16 +474,32 @@ NVIDIA Blackwell 架构引入的 4-bit 浮点格式：
 | FP8 E4M3 | 2x | 极小 (<0.5%) | Hopper+ | 广泛使用 |
 | INT8 | 2x | 极小 | 任何 | 广泛使用 |
 | NVFP4 | 4x | 小 (<1%) | Blackwell | 新兴 |
-| KIVI (2-bit) | 8x | 较小 (~1-2%) | 任何（需自定义内核） | 研究阶段 |
+| INT4（原始 scale+zero） | ~3.5x | **在推理模型上灾难性崩溃** | 任何 | 不要单独用 |
+| **INT4 + BDR**（[[saw-int4]]） | ~3.5x | **GPQA <1 %** | 任何（仅 Triton MHA） | 新 |
+| KIVI (2-bit, 混合粒度) | 8x | 较小 (~1-2%) | 任何（需自定义内核） | 研究阶段 |
 
 ### RoPE-aware 量化
 
-一个重要的实现细节：RoPE（旋转位置编码）会使 Key 张量不同维度的值域差异很大，影响量化精度。
+一个重要的实现细节：RoPE（旋转位置编码）会把能量集中到特定的维度对上，让 Key 在这些通道上跨所有 token 携带显著更大的值。
 
 解决方案：
 - 将 Key 分为 RoPE 相关维度和非 RoPE 维度
 - RoPE 维度保持较高精度或使用特殊量化
 - 非 RoPE 维度可以更激进地量化
+
+### 基于旋转的 KV 缓存量化
+
+K 离群点问题更深层的修复方法是在量化**之前**对 K（可选 V）做**旋转**，把 per-channel 的离群点跨 head 维度摊平，让结果张量对量化均匀友好。乘上一个正交矩阵保持 L2 范数不变，但把能量重新分布；接下来的 per-token scale-and-zero 量化任务就轻松得多。
+
+这与 QuIP/QuIP# 和 QuaRot 用于**权重 + 激活**量化的思想是同一回事（参见 [[quantization#基于旋转的量化（QuIP → QuaRot → SpinQuant → BDR）]] 和 [[rotation-based-quantization]]） —— SAW-INT4 论文把它具体化到了**KV 缓存**在服务约束下：
+
+- **沿头维度的块对角 Hadamard 旋转**，固定块大小（如 16 或 128）→ 内核友好且与分页布局兼容。
+- **与 INT4 写入融合**：旋转 + 归一化 + per-token scale/zero + INT4 打包发生在一个 Triton 内核里，所以旋转开销摊薄进 INT4 本来就需要的内存通过。
+- **解码时的 Q 修正**：同一旋转在解码内核内对 Q 应用，注意力数学保持不变。
+
+具体效果（Qwen3-4B-Thinking-2507，GPQA）：原始 INT4 把模型崩到 0%；INT4 + BDR 恢复到 65.82%（vs. BF16 的 66.67%）。端到端吞吐与原始 INT4 不可区分。完整的论文精读与内核走读见 [[saw-int4]]。
+
+**注意事项。** 目前仅 MHA（MLA 架构需要不同的形式化）、Triton GQA 解码后端，且仅在单一精度基准上验证。
 
 ---
 
@@ -949,7 +965,7 @@ KV 缓存优化决策树：
 │   │   │   ├─ 滑动窗口模型 (Mistral)
 │   │   │   ├─ KV 驱逐 (H2O)
 │   │   │   └─ KV 卸载到 CPU (LMCache)
-│   │   └─ 否 → 考虑 INT4 KV 量化 (KIVI)
+│   │   └─ 否 → 考虑 INT4 KV 量化（旋转 + INT4 见 [[saw-int4]] / BDR，或 KIVI）
 │   │
 │   └─ 以上都用了？→ 加 GPU 或用模型并行
 │
@@ -1000,6 +1016,8 @@ KV 缓存优化决策树：
    - Multi-head Latent Attention (MLA)
 
 5. **Liu et al.** "KIVI: A Tuning-Free Asymmetric 2bit Quantization for KV Cache" — 2024. [论文](https://arxiv.org/abs/2402.02750)
+12. **Jia et al.** "SAW-INT4: System-Aware 4-Bit KV-Cache Quantization for Real-World LLM Serving" — 2026. [论文](https://arxiv.org/abs/2604.19157) —— 块对角 Hadamard 旋转让原始 INT4 KV 在推理模型上变得可用。
+13. **Ashkboos et al.** "QuaRot: Outlier-Free 4-Bit Inference in Rotated LLMs" — NeurIPS 2024. [论文](https://arxiv.org/abs/2404.00456) —— 用于权重 + 激活的完整 Hadamard 旋转；BDR 的 KV 变体的源流。
 
 6. **Zhang et al.** "H2O: Heavy-Hitter Oracle for Efficient Generative Inference of Large Language Models" — NeurIPS 2023. [论文](https://arxiv.org/abs/2306.14048)
 
@@ -1020,7 +1038,9 @@ KV 缓存优化决策树：
 - [[paged-attention]] — 基于块的内存管理深度解析
 - [[vllm]] — 前缀缓存与 FP8 KV 的实现
 - [[sglang]] — RadixAttention 前缀缓存
-- [[quantization]] — 更广泛的量化技术
+- [[quantization]] — 更广泛的量化技术（含权重/激活旋转）
+- [[saw-int4]] — 块对角 Hadamard 旋转 + INT4 KV（论文精读）
+- [[rotation-based-quantization]] — QuIP / QuaRot / SpinQuant / BDR 家族脉络
 - [[continuous-batching]] — 调度与 KV 缓存管理的交互
 - [[prefill-decode-disaggregation]] — KV 缓存传输挑战
 - [[long-context-serving]] — 长上下文场景的 KV 缓存挑战
