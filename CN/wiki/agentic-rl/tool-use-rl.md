@@ -3,11 +3,14 @@ title: "工具使用与 API 调用的强化学习"
 category: agentic-rl
 tags: [工具使用, rl, retool, 代码解释器, api调用, toolformer, gorilla, function-calling]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # 工具使用与 API 调用的强化学习
+
+> [!abstract]+ TL;DR
+> [[agentic-rl-overview|智能体 RL]] 的核心方向之一 —— 通过 RL 与执行反馈训练 LLM 学习**何时**调用工具、**调用哪个**、**如何**格式化参数、**如何解读**结果，而非依赖专家 SFT。里程碑系统：**ReTool**（2025）—— RL 训练的 32B 在 **AIME 达到 72.5 %**，超越 OpenAI o1-preview 27.9 pp；通过 [[rl-training-frameworks#veRL|veRL]] + PPO 训练，两阶段冷启动 SFT + 工具增强 RL。涌现行为：代码自我修正（自适应工具使用的"顿悟时刻"）。EMNLP 2025 Findings 表明纯 RL（无 SFT）从零训练也可行。
 
 ## 概述
 

@@ -3,11 +3,14 @@ title: "DPO：直接偏好优化"
 category: rl-infra
 tags: [dpo, 偏好优化, 对齐, 离线rl, simpo, kto, ipo, orpo]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # DPO：直接偏好优化
+
+> [!abstract]+ TL;DR
+> DPO（Rafailov et al., 2023）**完全跳过奖励模型训练**：不再 SFT → 训 RM → [[ppo-for-llm|PPO]]，而是直接在偏好对上用监督学习目标优化 LM。仅需 **2 个模型**（策略 + 冻结参考），相比 PPO 的 4 个模型（actor + critic + ref + reward）—— 显存更省、无 RL 不稳定性、实现更简。变体：**IPO**（正则化）、**KTO**（未配对二元反馈）、**ORPO**（无参考模型）、**SimPO**（无参考，AlpacaEval 2 比 DPO 高 6.4 分）。ICML 2024 发现：充分调优的 PPO 可匹配或超越 DPO 精度，但 DPO 实现复杂度低得多。
 
 ## 概述
 

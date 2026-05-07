@@ -3,15 +3,14 @@ title: "Compound AI Systems Architecture"
 category: llm-serving-for-agents
 tags: [compound-ai, dspy, rag, llm-cascades, orchestration, retrieval-augmented, routing, verifier]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # Compound AI Systems Architecture
 
-## Overview
-
-A compound AI system orchestrates multiple interacting components -- LLMs, retrievers, tools, specialized models, symbolic engines. The concept was systematized by Matei Zaharia et al. (BAIR, Feb 2024): **state-of-the-art AI results increasingly come from combining components, not improving single models**.
+> [!abstract]+ TL;DR
+> A compound AI system orchestrates multiple components — LLMs, retrievers, tools, specialized models, symbolic engines. Systematized by Matei Zaharia et al. (BAIR, Feb 2024): *"state-of-the-art AI results increasingly come from combining components, not improving single models."* **60 % of enterprise LLM apps use RAG; 30 % employ multi-step chains.** Gartner predicts 40 % of enterprise apps will embed agents by end of 2026. Key patterns: **RAG** (production 2026: semantic chunking, parent-child retrieval, hybrid search + cross-encoder reranking, Self-RAG / Corrective RAG), **LLM cascades** (FrugalGPT matches GPT-4 quality at 98 % cost reduction), **DSPy** (Stanford, "programming not prompting" with auto-optimizers).
 
 ```
 Monolithic LLM:         Input -> [Single LLM] -> Output

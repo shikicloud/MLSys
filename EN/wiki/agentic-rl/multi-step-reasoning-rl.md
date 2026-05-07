@@ -3,17 +3,14 @@ title: "RL for Multi-Step Reasoning"
 category: agentic-rl
 tags: [reasoning, chain-of-thought, prm, orm, mcts, deepseek-r1, o1, o3, grpo, star, rest]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # RL for Multi-Step Reasoning
 
-## Overview
-
-Multi-Step Reasoning RL trains LLMs to generate extended chains of thought (CoT) for solving complex problems, with RL providing the learning signal. This is the core technique behind reasoning models like OpenAI o1/o3 and [[grpo#DeepSeek-R1|DeepSeek-R1]].
-
-**Key insight**: RL can incentivize models to spontaneously develop sophisticated reasoning strategies -- self-verification, backtracking, decomposition, multi-angle analysis -- without explicitly teaching these patterns through demonstrations. When rewarded for "correct reasoning -> correct answer," the model autonomously learns how to think more effectively.
+> [!abstract]+ TL;DR
+> RL trains LLMs to generate extended chains of thought (CoT) for solving complex problems, with **correct-answer reward** as the learning signal. Core technique behind **OpenAI o1/o3 and [[grpo#DeepSeek-R1|DeepSeek-R1]]**. Key insight: RL can incentivize models to *spontaneously* develop self-verification, backtracking, decomposition, multi-angle analysis — without explicitly teaching these patterns. DeepSeek-R1-Zero showed this works **with no SFT** when rewards are RLVR-based. Modern stack: long-CoT (32K+ tokens) + [[grpo|GRPO]] + verifiable rewards. Active research: **PRM** (process reward, +6 pp on MATH vs ORM), **PRIME** (implicit per-token Q from ORMs, 2.5× sample efficiency), MCTS-guided self-training (ReST-MCTS*).
 
 ### Training Loop
 

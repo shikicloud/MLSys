@@ -3,17 +3,14 @@ title: "Speculative Decoding: Draft-Verify Acceleration"
 category: llm-inference
 tags: [speculative-decoding, draft-model, eagle, medusa, lossless-acceleration]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # Speculative Decoding: Draft-Verify Acceleration
 
-## Overview
-
-Autoregressive LLM generation produces one token per step, each requiring a full model weight load from GPU memory. For large models (e.g., 70B), decoding is **memory-bandwidth-bound** -- the GPU's compute is vastly underutilized.
-
-**Speculative decoding** exploits this: verifying K tokens in one forward pass costs roughly the same as generating 1 token. A lightweight draft mechanism proposes K candidate tokens; the target model verifies all K in parallel. Strict rejection sampling guarantees the output distribution is **mathematically identical** to the target model -- lossless speedup.
+> [!abstract]+ TL;DR
+> Autoregressive LLM decoding is **memory-bandwidth-bound** — the GPU's compute is vastly underutilized while waiting on weight loads. Speculative decoding exploits this: verifying $K$ candidate tokens in one forward pass costs about the same as generating 1, so a lightweight draft mechanism proposes $K$ tokens and the target model verifies them in parallel via rejection sampling. **Output distribution is mathematically identical** to the target model — lossless speedup. Independently proposed by Leviathan et al. (2023) and Chen et al. (2023). State of the art: **EAGLE-3** (NeurIPS 2025) at 3–6× speedup; production deployments in [[vllm|vLLM]] and [[sglang|SGLang]].
 
 ```
 Traditional:  5 forward passes → 5 tokens

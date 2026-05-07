@@ -3,11 +3,14 @@ title: "KV 缓存优化技术"
 category: llm-inference
 tags: [kv-cache, mqa, gqa, mla, 量化, 稀疏注意力, 内存优化]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # KV 缓存优化技术
+
+> [!abstract]+ TL;DR
+> KV 缓存是 LLM 服务的**首要内存瓶颈** —— 可达 **GPU 总显存的 70 %** —— 大小随序列长度 × 批量大小线性增长。优化栈从架构到字节：**架构层**（MHA → GQA → MQA → MLA，~MHA 的 3 %）、**内存管理**（[[paged-attention|PagedAttention]] 把浪费从 60–80 % 降到 < 4 %）、**量化**（FP8 → INT4 → INT4+BDR 旋转）、**压缩与驱逐**（H2O、StreamingLLM、KVTC）、**前缀缓存**（[[vllm|vLLM]] 哈希、[[sglang|SGLang]] RadixAttention）、**分布式**（LMCache、Mooncake）。现代生产栈：GQA + PagedAttention + FP8 KV + 前缀缓存。
 
 ## 概述
 

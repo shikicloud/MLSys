@@ -3,11 +3,14 @@ title: "多轮对话服务优化"
 category: llm-serving-for-agents
 tags: [多轮, kv-cache复用, 前缀缓存, 会话管理, lmcache, 提示缓存, 上下文管理, 粘性会话]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # 多轮对话服务优化
+
+> [!abstract]+ TL;DR
+> 智能体会话天然多轮。每轮向对话历史追加 LLM 输出 + 工具结果，每次 LLM 调用都必须重新处理完整上下文。**无优化时预填充成本随轮次二次增长**；KV 缓存复用让每轮只处理新增 token —— 线性扩展。核心系统：**[[vllm|vLLM]]**（块级前缀缓存）、**[[sglang|SGLang]] RadixAttention**（token 级基数树，多轮吞吐比 vLLM 高 10 %）、**LMCache**（跨引擎 KV 共享 GPU/CPU/磁盘/S3，**吞吐 15 倍 / 延迟降 2 倍**）、**Continuum**（工具执行期间的 KV 缓存 TTL，延迟降 1.12–3.66 倍）。
 
 ## 概述
 

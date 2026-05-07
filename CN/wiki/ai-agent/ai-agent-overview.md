@@ -3,11 +3,14 @@ title: "AI 智能体架构与模式"
 category: ai-agent
 tags: [智能体, react, 规划执行, 思维树, reflexion, 认知架构, 多智能体, 框架, 编码智能体, 记忆, 评估]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # AI 智能体架构与模式
+
+> [!abstract]+ TL;DR
+> AI 智能体是以 LLM 为核心推理引擎、在**感知-推理-行动循环**中自主运行的系统。不同于聊天机器人，智能体能分解目标、调用工具、处理观察、迭代修正。核心架构：**ReAct**（ICLR 2023，推理与行动交替）、**Plan-and-Execute**（规划器与执行器解耦，省成本）、**Tree of Thoughts**（NeurIPS 2023，多路径 + 回溯）、**LATS**（ICML 2024，MCTS + LLM 价值函数）、**Reflexion**（无需权重更新的语言自我反思，编程基准 +10–20 pp）。2025–2026 趋势：推理模型集成（o1/o3、[[grpo#DeepSeek-R1|DeepSeek-R1]]）—— 推理时计算扩展将在 2030 年占 AI 总算力 75 %。
 
 ## 概述
 

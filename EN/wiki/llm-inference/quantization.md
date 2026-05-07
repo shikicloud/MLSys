@@ -3,15 +3,14 @@ title: "Quantization for LLM Inference"
 category: llm-inference
 tags: [quantization, gptq, awq, fp8, int4, weight-quantization, kv-cache-quantization]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # Quantization for LLM Inference
 
-## Overview
-
-LLM weights in FP16/BF16 consume 2 bytes per parameter. A 70B model needs ~140GB -- exceeding single-GPU capacity. **Quantization** reduces precision (FP16 -> INT8/INT4/FP8), cutting memory 2-4x and boosting throughput. The single most impactful optimization for fitting larger models on fewer GPUs.
+> [!abstract]+ TL;DR
+> LLM weights in FP16/BF16 cost 2 bytes/param — a 70B model needs ~140 GB, exceeding single-GPU capacity. Quantization reduces precision (FP16 → INT8/INT4/FP8/NVFP4), cutting memory 2–4× and boosting throughput. **The single most impactful optimization** for fitting larger models on fewer GPUs. Methods covered: weight-only (**GPTQ**, **AWQ**, **SqueezeLLM**, **QuIP#**), weight+activation (**SmoothQuant**, **QuaRot**, **SpinQuant**), hardware-native formats (**FP8 E4M3** on Hopper+, **NVFP4** on Blackwell), KV cache quantization (FP8/INT8/INT4 + [[saw-int4|BDR]]). See [[rotation-based-quantization]] for the QuIP / QuaRot / SpinQuant / BDR rotation family.
 
 ```
 Llama-3.3-70B memory footprint:

@@ -3,17 +3,14 @@ title: "Continuous Batching: Dynamic Request Scheduling"
 category: llm-inference
 tags: [continuous-batching, scheduling, iteration-level, dynamic-batching, throughput]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # Continuous Batching: Dynamic Request Scheduling
 
-## Overview
-
-Batching is essential for GPU utilization in LLM inference. GPUs are massively parallel -- a single request uses only a fraction of available compute. Batching multiple requests together amortizes the cost of loading model weights from memory.
-
-However, LLM outputs vary wildly in length (a few tokens to thousands). **Continuous batching** (iteration-level scheduling) solves this by dynamically adjusting batch composition at every decode step -- inserting new requests as old ones finish. It is the core scheduling mechanism in [[vllm|vLLM]], [[sglang|SGLang]], and [[tensorrt-llm|TensorRT-LLM]].
+> [!abstract]+ TL;DR
+> Batching amortizes the cost of loading model weights but LLM outputs vary wildly in length (few tokens to thousands), making **static batching** waste GPU on whichever request finished first. **Continuous batching** (iteration-level scheduling) dynamically adjusts batch composition at every decode step, inserting new requests as old ones finish — eliminating the convoy effect. Introduced by **Orca (OSDI 2022)**, now the core scheduling mechanism in [[vllm|vLLM]], [[sglang|SGLang]], [[tensorrt-llm|TensorRT-LLM]]. Production deployments see **2–5× throughput** vs. static batching.
 
 ## The Problem with Static Batching
 

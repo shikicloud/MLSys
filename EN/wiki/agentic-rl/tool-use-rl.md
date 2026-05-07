@@ -3,17 +3,14 @@ title: "RL for Tool Use and API Calling"
 category: agentic-rl
 tags: [tool-use, rl, retool, code-interpreter, api-calling, toolformer, gorilla, function-calling]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # RL for Tool Use and API Calling
 
-## Overview
-
-Tool-Use RL is a core research direction within [[agentic-rl-overview|Agentic RL]], focused on training LLMs via reinforcement learning to decide **when** to invoke tools, **which** tool to call, **how** to format arguments, and **how to interpret** results.
-
-Traditional SFT approaches train on expert-annotated tool call examples, but suffer from distribution shift, inability to discover novel strategies, and error compounding in multi-step chains. RL overcomes these by learning from trial-and-error with actual execution feedback.
+> [!abstract]+ TL;DR
+> A core direction within [[agentic-rl-overview|Agentic RL]] — training LLMs to decide **when** to invoke tools, **which** tool, **how** to format arguments, and **how to interpret** results, all via RL with execution feedback rather than expert SFT. Landmark system: **ReTool** (2025) — RL-trained 32B reaches **72.5% AIME**, surpassing OpenAI o1-preview by 27.9 pp; trained via [[rl-training-frameworks#veRL|veRL]] + PPO with two-stage cold-start SFT then tool-enhanced RL. Emergent behavior: code self-correction (the "aha moment" of adaptive tool use). Pure RL from scratch (no SFT) shown viable in EMNLP 2025 Findings.
 
 ## Formal MDP for Tool Use
 

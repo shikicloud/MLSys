@@ -3,11 +3,14 @@ title: "RL 训练框架"
 category: rl-infra
 tags: [openrlhf, verl, trl, deepspeed-chat, nemo-aligner, 训练框架, rlhf基础设施]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # RL 训练框架
+
+> [!abstract]+ TL;DR
+> LLM RL 训练（RLHF/RLAIF/RLVR）是 AI 工程中最复杂的训练范式之一 —— 协调多个大模型、交替生成与训练、跨分布式环境管理 GPU。2025–2026 三大框架主导生态：**OpenRLHF**（Ray + vLLM + DeepSpeed ZeRO-3，生产级大规模）、**veRL**（字节跳动，FSDP/Megatron + 多 rollout 后端，EP 扩展到 671B，DAPO 官方训练器）、**TRL**（HuggingFace，入门门槛最低，v1.0 于 2026 年 4 月统一后训练栈）。对比：veRL 最重（32K 行），OpenRLHF 最轻（8.5K 行）且比替代方案快 1.22–1.68 倍。
 
 ## 概述
 

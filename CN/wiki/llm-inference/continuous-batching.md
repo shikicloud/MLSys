@@ -3,19 +3,14 @@ title: "连续批处理：动态请求调度"
 category: llm-inference
 tags: [continuous-batching, 调度, iteration-level, 动态批处理, 吞吐量]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # 连续批处理：动态请求调度
 
-## 概述
-
-在 LLM 推理中，**批处理**（batching）是提高 GPU 利用率和吞吐量的核心手段。GPU 的大规模并行架构意味着：单个请求只能利用 GPU 算力的一小部分，只有将多个请求组合成一个批次并行处理，才能充分利用硬件资源。
-
-然而，LLM 推理有一个独特挑战：**不同请求的输出长度差异巨大**（可能从几个 token 到数千 token）。传统的静态批处理在面对这种长度差异时会造成严重的 GPU 资源浪费。
-
-**连续批处理**（Continuous Batching），也称为**迭代级调度**（Iteration-Level Scheduling），通过在每个解码步骤动态调整批次组成来解决这个问题。它是现代 LLM 服务系统（[[vllm|vLLM]]、[[sglang|SGLang]]、[[tensorrt-llm|TensorRT-LLM]]）的核心调度机制。
+> [!abstract]+ TL;DR
+> 批处理通过摊薄权重加载成本提升 GPU 利用率，但 LLM 输出长度差异巨大（几 token 到数千 token），**静态批处理**会被最先完成的请求拖累。**连续批处理**（迭代级调度）在每个解码步骤动态调整批次组成 —— 旧请求完成时立刻插入新请求 —— 消除护航效应。由 **Orca（OSDI 2022）** 提出，现已成为 [[vllm|vLLM]]、[[sglang|SGLang]]、[[tensorrt-llm|TensorRT-LLM]] 的核心调度机制。生产部署相比静态批处理通常获得 **2–5 倍吞吐**。
 
 ```
 核心思想：不再等待整个批次完成，而是在每个 token 生成步骤

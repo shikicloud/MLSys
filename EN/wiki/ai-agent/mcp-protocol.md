@@ -3,15 +3,14 @@ title: "Model Context Protocol (MCP)"
 category: ai-agent
 tags: [mcp, anthropic, protocol, tool-integration, standard, agent-interop, json-rpc, open-standard]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # Model Context Protocol (MCP)
 
-## Overview
-
-MCP is an open standard by Anthropic (Nov 2024) that standardizes how AI systems integrate with tools, data sources, and services. Often called **"USB for AI agents"** -- a universal interface eliminating the N x M custom integration problem.
+> [!abstract]+ TL;DR
+> Open standard by Anthropic (Nov 2024) standardizing how AI systems integrate with tools, data sources, and services — **"USB for AI agents."** Built on JSON-RPC 2.0 with two transports (stdio for local, Streamable HTTP for production). MCP servers expose three capability types: **Resources** (injectable context), **Tools** (callable functions), **Prompts** (parameterized templates). Adoption: OpenAI (Mar 2025), Google DeepMind (Apr 2025), Microsoft (May 2025); donated to **Agentic AI Foundation** (Linux Foundation, Dec 2025). 2026: 10,000+ public servers; ChatGPT, Cursor, Gemini, Copilot, VS Code all support. Companion protocols: **A2A** (agent-to-agent), **ACP** — together form the agentic-AI interoperability backbone.
 
 ```
 Before MCP (N x M):          After MCP (N + M):

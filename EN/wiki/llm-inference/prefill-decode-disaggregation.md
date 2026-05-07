@@ -3,17 +3,14 @@ title: "Prefill-Decode Disaggregation"
 category: llm-inference
 tags: [prefill-decode, disaggregation, splitwise, distserve, mooncake, kv-transfer]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # Prefill-Decode Disaggregation
 
-## Overview
-
-LLM inference has two phases with fundamentally different compute profiles: **prefill** (compute-bound, processes full prompt) and **decode** (memory-bandwidth-bound, generates tokens one at a time). When colocated on the same GPUs, prefill operations block concurrent decode requests, inflating TPOT by 2-30x.
-
-**PD disaggregation** physically separates these phases onto different GPU pools, enabling independent optimization, scaling, and eliminating interference. By 2025-2026, it became the default production architecture, supported natively by NVIDIA Dynamo, llm-d, [[vllm|vLLM]], and [[sglang|SGLang]].
+> [!abstract]+ TL;DR
+> LLM inference has two phases with fundamentally different compute profiles: **prefill** (compute-bound, processes full prompt) and **decode** (memory-bandwidth-bound, generates tokens one at a time). Colocated on the same GPUs, prefill operations block concurrent decode requests, inflating TPOT by **2–30×**. PD disaggregation physically separates these phases onto different GPU pools, enabling independent optimization and scaling. By 2025–2026 it became the default production architecture — supported natively by **NVIDIA Dynamo, llm-d, [[vllm|vLLM]], [[sglang|SGLang]]**. Key systems: **DistServe** (OSDI 2024), **Splitwise** (ISCA 2024), **Mooncake** (FAST 2025).
 
 ```
 Colocated:                    Disaggregated:

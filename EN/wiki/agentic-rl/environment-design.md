@@ -3,17 +3,14 @@ title: "Environment Design for Agentic RL"
 category: agentic-rl
 tags: [environment, sandbox, openreward, ares, agent-training, simulation, swe-bench, webarena, curriculum]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # Environment Design for Agentic RL
 
-## Overview
-
-Environment design is the foundation of [[agentic-rl-overview|Agentic RL]] -- the environment determines what an agent can learn, how well it learns, and whether it generalizes to the real world. A good training environment must satisfy: **high fidelity** (close to real scenarios), **high efficiency** (massively parallelizable), **safety** (isolate dangerous actions), and **diversity** (cover many tasks and scenarios).
-
-**Core insight**: The quality ceiling of the RL environment determines the capability ceiling of the agent. Model scaling laws require corresponding environment scaling laws.
+> [!abstract]+ TL;DR
+> Environment design determines what an agentic-RL agent can learn, how well, and whether it generalizes — must balance **high fidelity** (close to real scenarios), **high efficiency** (massively parallelizable), **safety** (isolate dangerous actions), and **diversity** (many tasks/scenarios). **Brain vs. body** architecture decouples the LLM policy from sandbox execution. 2025–2026 brought infrastructure platforms: **OpenReward** (330+ environments via API, ORS standard extending [[mcp-protocol|MCP]] for RL), **ARES** (Martian, RL-first for coding), **Daytona** (sub-90ms sandbox creation). Environment scaling law mirrors model scaling law — bigger models need more diverse training environments.
 
 ### Brain vs. Body Architecture
 

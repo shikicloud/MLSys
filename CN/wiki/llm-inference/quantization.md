@@ -3,11 +3,14 @@ title: "LLM 推理量化"
 category: llm-inference
 tags: [量化, gptq, awq, fp8, int4, 权重量化, kv缓存量化]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # LLM 推理量化
+
+> [!abstract]+ TL;DR
+> LLM 权重 FP16/BF16 占 2 字节/参数 —— 70B 模型需 ~140 GB，超出单 GPU 容量。量化把精度从 FP16 降到 INT8/INT4/FP8/NVFP4，内存减 2–4×、吞吐提升。**在更少 GPU 上运行更大模型的最有效单一优化**。覆盖方法：仅权重（**GPTQ**、**AWQ**、**SqueezeLLM**、**QuIP#**）、权重 + 激活（**SmoothQuant**、**QuaRot**、**SpinQuant**）、硬件原生格式（Hopper+ 的 **FP8 E4M3**、Blackwell 的 **NVFP4**）、KV 缓存量化（FP8/INT8/INT4 + [[saw-int4|BDR]]）。家族综览见 [[rotation-based-quantization]]。
 
 ## 概述
 

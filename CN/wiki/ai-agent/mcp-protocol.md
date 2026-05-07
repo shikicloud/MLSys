@@ -3,11 +3,14 @@ title: "模型上下文协议 (MCP)"
 category: ai-agent
 tags: [mcp, anthropic, 协议, 工具集成, 标准, 智能体互操作, json-rpc, 开放标准]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # 模型上下文协议 (MCP)
+
+> [!abstract]+ TL;DR
+> Anthropic 于 2024 年 11 月推出的开放标准，标准化 AI 系统与外部工具、数据源和服务的集成 —— **"AI 智能体的 USB"**。基于 JSON-RPC 2.0，两种传输（stdio 本地、Streamable HTTP 生产）。MCP 服务器暴露三类能力：**Resources**（可注入上下文）、**Tools**（可调用函数）、**Prompts**（参数化模板）。采用历程：OpenAI（2025/03）、Google DeepMind（2025/04）、Microsoft（2025/05）；2025/12 捐赠给 **Agentic AI Foundation**（Linux Foundation）。2026：10,000+ 公共服务器；ChatGPT、Cursor、Gemini、Copilot、VS Code 全部支持。配套协议：**A2A**（智能体间通信）、**ACP** —— 共同构成智能体 AI 互操作骨干。
 
 ## 概述
 

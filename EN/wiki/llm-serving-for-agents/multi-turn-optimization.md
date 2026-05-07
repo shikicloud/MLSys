@@ -3,15 +3,14 @@ title: "Multi-Turn Conversation Serving Optimization"
 category: llm-serving-for-agents
 tags: [multi-turn, kv-cache-reuse, prefix-caching, session-management, lmcache, prompt-caching, context-management, sticky-sessions]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # Multi-Turn Conversation Serving Optimization
 
-## Overview
-
-Agent sessions are multi-turn by definition. Each step adds to conversation history (LLM output + tool results), and every LLM call must reprocess the full context. **Without optimization, prefill cost grows quadratically with turns.**
+> [!abstract]+ TL;DR
+> Agent sessions are multi-turn by definition. Each turn adds LLM output + tool results to the conversation history, and every LLM call must reprocess the full context. **Without optimization, prefill cost grows quadratically with turns.** With KV cache reuse, each turn only processes new tokens — linear scaling. Core systems: **[[vllm|vLLM]]** (block-level prefix caching), **[[sglang|SGLang]] RadixAttention** (token-level radix tree, +10 % multi-turn throughput vs vLLM), **LMCache** (cross-engine KV sharing GPU/CPU/disk/S3, **15× throughput / 2× lower latency**), **Continuum** (KV cache TTL during tool execution, 1.12–3.66× delay reduction).
 
 ```
 Turn 1:  prefill 2K tokens

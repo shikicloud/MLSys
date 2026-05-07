@@ -3,11 +3,14 @@ title: "LLM Parallelism Strategies Complete Guide: DP / TP / PP / SP / CP / EP /
 category: llm-inference
 tags: [tensor-parallelism, data-parallelism, expert-parallelism, pipeline-parallelism, sequence-parallelism, context-parallelism, moe, multi-gpu, distributed-inference, distributed-training]
 created: 2026-04-14
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # LLM Parallelism Strategies Complete Guide: DP / TP / PP / SP / CP / EP / EDP / ETP
+
+> [!abstract]+ TL;DR
+> A comprehensive guide to the eight parallelism strategies used to scale LLMs across GPUs: **DP** (data), **TP** (tensor / intra-layer weights), **PP** (pipeline / inter-layer), **SP** (sequence in non-TP regions), **CP** (context / sequence in attention), **EP** (expert / MoE), **EDP** (expert data), **ETP** (expert tensor), plus **ZeRO/FSDP** (sharded data) and **DP Attention** (inference KV partitioning). Covers what each shards, the core collective primitive, and how to compose them in 3D / 4D / 5D parallel training and inference. Production-grade case study: DeepSeek-V3 deployment.
 
 ## 1. Overview
 

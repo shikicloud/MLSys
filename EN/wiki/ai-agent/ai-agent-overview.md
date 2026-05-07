@@ -3,15 +3,14 @@ title: "AI Agent Architectures and Patterns"
 category: ai-agent
 tags: [agent, react, plan-and-execute, tree-of-thought, reflexion, cognitive-architecture, multi-agent, frameworks, coding-agents, memory, evaluation]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # AI Agent Architectures and Patterns
 
-## Overview
-
-AI agents are systems powered by LLMs that operate autonomously in a perceive-reason-act loop. Unlike single-turn chatbots, agents decompose goals into subtasks, invoke external tools, process observations, and iteratively refine their approach.
+> [!abstract]+ TL;DR
+> AI agents are LLM-powered systems operating autonomously in a **perceive-reason-act loop**. Unlike chatbots, agents decompose goals into subtasks, invoke tools, process observations, and iteratively refine. Core architectures: **ReAct** (ICLR 2023, interleaved reasoning + actions), **Plan-and-Execute** (decoupled planner/executor for cost efficiency), **Tree of Thoughts** (NeurIPS 2023, multiple reasoning paths with backtracking), **LATS** (ICML 2024, MCTS + LLM value functions), **Reflexion** (verbal self-reflection without weight updates, +10–20 pp on coding). 2025–2026 trend: reasoning-model integration (o1/o3, [[grpo#DeepSeek-R1|DeepSeek-R1]]) — inference-time compute scaling will claim 75 % of total AI compute by 2030.
 
 ```
 ┌────────────────────────────────┐

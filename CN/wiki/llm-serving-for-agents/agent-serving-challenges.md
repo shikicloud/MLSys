@@ -3,11 +3,14 @@ title: "AI 智能体的独特服务挑战"
 category: llm-serving-for-agents
 tags: [智能体服务, kv-cache-ttl, continuum, 多轮, 延迟, 可靠性, 成本, 调度]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # AI 智能体的独特服务挑战
+
+> [!abstract]+ TL;DR
+> 为智能体服务 LLM 与聊天机器人服务**根本不同** —— 智能体每任务 5–50+ 次 LLM 调用、推理与工具执行交织、上下文非线性累积、需要长期 KV 缓存状态。生产瓶颈：32 % 组织把**质量**列为首要障碍（token 限制 + 误差累积）；朴素的 prompt 缓存反而可能*增加*延迟。专用系统：**Continuum**（工具暂停期间的 KV 缓存 TTL，延迟降低 1.12–3.66 倍）、**Pie**（SOSP 2025，可编程服务）、**KVFlow**（工作流感知的 KV 驱逐）。关键发现：仅缓存系统提示优于全上下文缓存，节省 45–80 % 成本。
 
 ## 概述
 

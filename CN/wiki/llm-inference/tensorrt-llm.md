@@ -3,11 +3,17 @@ title: "TensorRT-LLM：NVIDIA 优化推理引擎"
 category: llm-inference
 tags: [tensorrt-llm, nvidia, 推理优化, 编译, 量化, inflight-batching]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # TensorRT-LLM：NVIDIA 优化推理引擎
+
+> [!abstract]+ TL;DR
+> NVIDIA 专为 LLM 推理构建的高性能库：Python 模型定义 API + 高度优化的 C++/CUDA 运行时，通过图级优化、算子融合和自定义 CUDA 内核在 NVIDIA GPU 上实现**最高原始内核性能**。核心能力：原生 **FP8/NVFP4** 量化、In-Flight Batching、分页 KV 缓存、TP/PP/EP 并行、**EAGLE-3 / MTP / N-gram** 投机解码。与 [[vllm|vLLM]]/[[sglang|SGLang]] 的权衡：单 GPU 性能最高，但仅限 NVIDIA、定制成本高。
+
+> [!info] 相关链接
+> [GitHub](https://github.com/NVIDIA/TensorRT-LLM) · [文档](https://nvidia.github.io/TensorRT-LLM/)
 
 ## 概述
 

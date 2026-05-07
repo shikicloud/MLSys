@@ -3,19 +3,14 @@ title: "预填充-解码分离架构"
 category: llm-inference
 tags: [prefill-decode, 分离部署, splitwise, distserve, mooncake, kv传输]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # 预填充-解码分离架构
 
-## 概述
-
-LLM 推理包含两个截然不同的阶段：**预填充**（Prefill）和**解码**（Decode）。这两个阶段的计算特性差异巨大 —— 预填充是**计算密集型**（compute-bound），解码是**内存带宽密集型**（memory-bound）。
-
-当两个阶段共置在同一组 GPU 上时，它们会互相干扰：长预填充操作会阻塞并发的解码请求，导致解码延迟（TPOT）膨胀 2-30 倍。即使使用了 [[continuous-batching|连续批处理]] 和分块预填充，这种干扰仍然无法完全消除。
-
-**预填充-解码分离**（Prefill-Decode Disaggregation / PD Disaggregation）的核心思想是：将两个阶段**物理分离**到不同的 GPU 池，每个池针对其阶段特性独立优化和扩展。
+> [!abstract]+ TL;DR
+> LLM 推理两阶段计算特性差异巨大：**预填充**（计算密集型，处理完整 prompt）vs. **解码**（内存带宽密集型，逐 token 生成）。共置在同一 GPU 池时，长预填充会阻塞并发解码，导致 TPOT 膨胀 **2–30 倍**。预填充-解码分离把两阶段物理分到不同 GPU 池，独立优化和扩展。2025–2026 成为生产默认架构 —— **NVIDIA Dynamo、llm-d、[[vllm|vLLM]]、[[sglang|SGLang]]** 原生支持。关键系统：**DistServe**（OSDI 2024）、**Splitwise**（ISCA 2024）、**Mooncake**（FAST 2025）。
 
 ```
 分离架构的核心思想：

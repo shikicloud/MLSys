@@ -3,15 +3,18 @@ title: "KV Cache Optimization Techniques"
 category: llm-inference
 tags: [kv-cache, mqa, gqa, mla, quantization, sparse-attention, memory-optimization]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # KV Cache Optimization Techniques
 
+> [!abstract]+ TL;DR
+> The KV cache is the **primary memory bottleneck** in LLM serving — up to **70 % of GPU memory** — growing linearly with sequence length × batch size. Optimization stack from architecture down to bytes: **architecture** (MHA → GQA → MQA → MLA, ~3 % of MHA size), **memory management** ([[paged-attention|PagedAttention]] reduces waste from 60–80 % to <4 %), **quantization** (FP8 → INT4 → INT4+BDR via rotation), **compression and eviction** (H2O, StreamingLLM, KVTC), **prefix caching** ([[vllm|vLLM]] hash, [[sglang|SGLang]] RadixAttention), **distributed** (LMCache, Mooncake). Modern production stack: GQA + PagedAttention + FP8 KV + prefix caching.
+
 ## Overview
 
-The KV cache stores Key and Value vectors from computed tokens, avoiding recomputation during autoregressive decoding. It is the **primary memory bottleneck** in LLM serving — consuming up to **70% of GPU memory** — and grows linearly with both sequence length and batch size, directly limiting concurrency and context length.
+The KV cache stores Key and Value vectors from computed tokens, avoiding recomputation during autoregressive decoding. It is the **primary memory bottleneck** in LLM serving — consuming up to **70 % of GPU memory** — and grows linearly with both sequence length and batch size, directly limiting concurrency and context length.
 
 This page surveys the full stack of KV cache optimizations: architecture-level, memory management, quantization, compression, caching/sharing, and distributed strategies.
 

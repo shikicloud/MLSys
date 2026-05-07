@@ -3,11 +3,14 @@ title: "奖励建模"
 category: rl-infra
 tags: [奖励模型, prm, orm, rlvr, 奖励黑客, 过程奖励, bradley-terry]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # 奖励建模
+
+> [!abstract]+ TL;DR
+> 奖励模型（RM）是 [[rlhf-overview|RLHF]] 流水线中连接人类偏好与 RL 优化的桥梁 —— 通过 **Bradley-Terry** 目标把主观判断转为标量信号。**RM 质量从根本上决定对齐模型上限**：系统性 RM 偏差会被策略学到（奖励黑客）。2025-2026 格局已超越"学一个打分模型"：**过程奖励模型**（PRM，对每步推理打分）在 MATH 上比 **结果奖励模型**（ORM）高 6+ pp；**RLVR**（可验证程序化奖励，[[grpo#DeepSeek-R1|DeepSeek-R1]] 使用）在数学/代码场景跳过学习的 RM；**PRIME**（2025）从 ORM 提取隐式 per-token Q 值，样本效率提升 2.5 倍。
 
 ## 概述
 

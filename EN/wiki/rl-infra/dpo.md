@@ -3,17 +3,14 @@ title: "DPO: Direct Preference Optimization"
 category: rl-infra
 tags: [dpo, preference-optimization, alignment, offline-rl, simpo, kto, ipo, orpo]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # DPO: Direct Preference Optimization
 
-## Overview
-
-DPO (Rafailov et al., 2023) is a landmark alignment method whose key insight is: **bypass reward model training entirely**. Instead of the 3-stage RLHF pipeline (SFT → train RM → PPO), DPO directly optimizes the LM on preference pairs using a supervised learning objective.
-
-Only **2 models** needed (policy + frozen reference), vs. [[ppo-for-llm|PPO]]'s 4 (actor, critic, reference, reward model). This yields major engineering wins: less GPU memory, no RL instability, and simpler implementation.
+> [!abstract]+ TL;DR
+> DPO (Rafailov et al., 2023) **bypasses reward-model training entirely**: instead of SFT → train RM → [[ppo-for-llm|PPO]], it directly optimizes the LM on preference pairs using a supervised learning objective. Only **2 models** needed (policy + frozen reference) vs. PPO's 4 (actor + critic + ref + reward) — less GPU memory, no RL instability, simpler implementation. Variants: **IPO** (regularization), **KTO** (unpaired binary feedback), **ORPO** (no reference model), **SimPO** (reference-free, +6.4 AlpacaEval 2 vs DPO). ICML 2024 finding: properly-tuned PPO can match or exceed DPO on accuracy, but DPO is dramatically simpler.
 
 ```
 RLHF pipeline:     Preference Data → Train RM → PPO (4 models, unstable)

@@ -3,19 +3,17 @@ title: "TensorRT-LLM: NVIDIA's Optimized Inference Engine"
 category: llm-inference
 tags: [tensorrt-llm, nvidia, inference-optimization, compilation, quantization, inflight-batching]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # TensorRT-LLM: NVIDIA's Optimized Inference Engine
 
-## Overview
+> [!abstract]+ TL;DR
+> NVIDIA's purpose-built library for high-performance LLM inference: Python model-definition API + highly optimized C++/CUDA runtime, achieving the **highest raw kernel performance** on NVIDIA GPUs via graph-level optimization, operator fusion, and custom CUDA kernels. Key capabilities: native **FP8/NVFP4** quantization, in-flight batching, paged KV cache, TP/PP/EP parallelism, **EAGLE-3 / MTP / N-gram** speculative decoding. Trade-offs vs. [[vllm|vLLM]]/[[sglang|SGLang]]: highest single-GPU perf but NVIDIA-only and harder to customize.
 
-TensorRT-LLM is NVIDIA's purpose-built library for high-performance LLM inference, combining a Python model-definition API with a highly optimized C++/CUDA runtime. It achieves the **highest raw kernel performance** on NVIDIA GPUs through graph-level optimization, operator fusion, and custom CUDA kernels.
-
-Key capabilities: graph optimization and kernel fusion, native FP8/NVFP4 quantization, in-flight batching, paged KV cache, multi-GPU parallelism (tensor/pipeline/expert), and speculative decoding (EAGLE-3, MTP, N-gram).
-
-[GitHub](https://github.com/NVIDIA/TensorRT-LLM) | [Docs](https://nvidia.github.io/TensorRT-LLM/)
+> [!info] Links
+> [GitHub](https://github.com/NVIDIA/TensorRT-LLM) · [Docs](https://nvidia.github.io/TensorRT-LLM/)
 
 ## Architecture
 

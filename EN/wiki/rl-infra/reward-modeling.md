@@ -3,15 +3,14 @@ title: "Reward Modeling"
 category: rl-infra
 tags: [reward-model, prm, orm, rlvr, reward-hacking, process-reward, bradley-terry]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # Reward Modeling
 
-## Overview
-
-Reward models (RMs) are the bridge between human preferences and RL optimization in the [[rlhf-overview|RLHF]] pipeline. They transform subjective judgments into scalar signals that drive policy optimization. **RM quality fundamentally caps aligned model quality** — systematic RM biases are learned by the policy (reward hacking).
+> [!abstract]+ TL;DR
+> Reward models (RMs) bridge human preferences and RL optimization in the [[rlhf-overview|RLHF]] pipeline — they transform subjective judgments into scalar signals via the **Bradley-Terry** objective. **RM quality fundamentally caps aligned model quality**: systematic RM biases get learned by the policy (reward hacking). The 2025-2026 landscape extends beyond "learn a scoring model": **Process Reward Models** (PRM, score each reasoning step) outperform **Outcome RMs** by 6+ pp on MATH; **RLVR** (verifiable programmatic rewards, used by [[grpo#DeepSeek-R1|DeepSeek-R1]]) bypasses learned RMs for math/code; **PRIME** (2025) extracts implicit per-token Q-values from ORMs achieving 2.5× sample efficiency.
 
 The RM landscape in 2025-2026 extends well beyond "learn a scoring model":
 - **Traditional RM**: Scalar model trained on human preferences

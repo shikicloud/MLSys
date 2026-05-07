@@ -3,17 +3,18 @@ title: "多步推理的强化学习"
 category: agentic-rl
 tags: [推理, 思维链, prm, orm, mcts, deepseek-r1, o1, o3, grpo, star, rest]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # 多步推理的强化学习
 
+> [!abstract]+ TL;DR
+> RL 训练 LLM 生成扩展思维链（CoT）解决复杂问题，**正确答案奖励**作为学习信号。**OpenAI o1/o3 和 [[grpo#DeepSeek-R1|DeepSeek-R1]]** 背后的核心技术。关键洞察：RL 能激励模型*自发*发展出自我验证、回溯、分解、多角度分析 —— 无需显式教授这些模式。DeepSeek-R1-Zero 证明 **无 SFT 也可行**（基于 RLVR 奖励）。现代栈：长 CoT（32K+ token）+ [[grpo|GRPO]] + 可验证奖励。活跃研究方向：**PRM**（过程奖励，MATH 上比 ORM 高 6 pp）、**PRIME**（从 ORM 提取隐式 per-token Q，样本效率 2.5 倍）、MCTS 引导的自我训练（ReST-MCTS*）。
+
 ## 概述
 
 多步推理 RL（Multi-Step Reasoning RL）通过强化学习训练 LLM 生成扩展的思维链（Chain-of-Thought, CoT）来解决复杂问题。这是 OpenAI o1/o3 和 [[grpo#DeepSeek-R1|DeepSeek-R1]] 等推理模型背后的核心技术。
-
-**核心洞察**：RL 可以激励模型自发发展出复杂的推理策略——自我验证、回溯、分解、探索——而无需通过示范显式教授这些模式。当模型因"正确推理 → 正确答案"获得奖励时，它会自主学习如何更有效地思考。
 
 ### 推理 RL 与普通 RL 的关系
 

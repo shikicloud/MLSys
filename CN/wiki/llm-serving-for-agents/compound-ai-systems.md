@@ -3,11 +3,14 @@ title: "复合 AI 系统架构"
 category: llm-serving-for-agents
 tags: [复合ai, dspy, rag, llm级联, 编排, 检索增强, 路由, 验证器]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # 复合 AI 系统架构
+
+> [!abstract]+ TL;DR
+> 复合 AI 系统编排多个交互组件 —— LLM、检索器、工具、专用模型、符号引擎。Matei Zaharia 等（BAIR, 2024/02）系统阐述：*"最先进的 AI 成果越来越多来自多组件组合，而非单模型改进。"* **60 % 企业 LLM 应用使用 RAG，30 % 用多步链。** Gartner 预测 2026 年底 40 % 企业应用嵌入智能体。关键模式：**RAG**（2026 生产版：语义分块、父子检索、混合搜索 + 交叉编码器重排序、Self-RAG / Corrective RAG）、**LLM 级联**（FrugalGPT 以 98 % 成本降低匹配 GPT-4 质量）、**DSPy**（斯坦福，"编程而非提示" + 自动优化器）。
 
 ## 概述
 

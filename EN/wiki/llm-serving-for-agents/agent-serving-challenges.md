@@ -3,15 +3,14 @@ title: "Unique Serving Challenges for AI Agents"
 category: llm-serving-for-agents
 tags: [agent-serving, kv-cache-ttl, continuum, multi-turn, latency, reliability, cost, scheduling]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # Unique Serving Challenges for AI Agents
 
-## Overview
-
-Serving LLMs for agents is fundamentally different from chatbot serving. Agent workloads feature multiple LLM calls per task (5-50+), interleaved reasoning and tool execution, unpredictable compute patterns, and long-running sessions requiring persistent KV cache state.
+> [!abstract]+ TL;DR
+> Serving LLMs for agents is **fundamentally different** from chatbot serving — agent workloads make 5–50+ LLM calls per task, interleave reasoning with tool execution, accumulate context nonlinearly, and demand long-lived KV cache state. Production killers: 32 % of organizations cite **quality** as the top barrier (token limits + error compounding); naive prompt caching can paradoxically *increase* latency. Specialized systems: **Continuum** (KV cache TTL for tool-pause windows, 1.12–3.66× delay reduction), **Pie** (SOSP 2025, programmable serving), **KVFlow** (workflow-aware KV eviction). Critical finding: system-prompt-only caching beats full-context caching, delivering 45–80 % cost savings.
 
 ```
 Chatbot:   User ─[req]─> LLM ─[resp]─> User  (~2s)

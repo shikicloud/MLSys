@@ -3,13 +3,14 @@ title: "LLM 并行策略完全指南：DP / TP / PP / SP / CP / EP / EDP / ETP"
 category: llm-inference
 tags: [张量并行, 数据并行, 专家并行, 流水线并行, 序列并行, 上下文并行, moe, 多gpu, 分布式推理, 分布式训练]
 created: 2026-04-14
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
-
-
 # LLM 并行策略完全指南：DP / TP / PP / SP / CP / EP / EDP / ETP
+
+> [!abstract]+ TL;DR
+> 系统覆盖大模型多 GPU 扩展的八大并行策略：**DP**（数据）、**TP**（张量/层内权重）、**PP**（流水线/层间）、**SP**（非 TP 区域的序列）、**CP**（注意力的序列）、**EP**（专家/MoE）、**EDP**（专家数据）、**ETP**（专家张量），加上 **ZeRO/FSDP**（分片数据）与 **DP Attention**（推理 KV 分区）。讲清每种策略切分什么、核心通信原语，以及如何组合 3D / 4D / 5D 并行训练与推理。生产级案例：DeepSeek-V3 部署。
 
 ## 1. 概述
 

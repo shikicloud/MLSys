@@ -3,15 +3,14 @@ title: "RL Training Frameworks"
 category: rl-infra
 tags: [openrlhf, verl, trl, deepspeed-chat, nemo-aligner, training-framework, rlhf-infrastructure]
 created: 2026-04-13
-updated: 2026-04-14
+updated: 2026-05-07
 status: mature
 ---
 
 # RL Training Frameworks
 
-## Overview
-
-RL training for LLMs (RLHF/RLAIF/RLVR) is one of the most complex training paradigms in AI engineering. Unlike standard pretraining or fine-tuning, it requires coordinating multiple large models, alternating between generation and training, and efficiently managing GPU resources across distributed environments. Three major open-source frameworks dominate as of 2025-2026: **OpenRLHF**, **veRL**, and **TRL**.
+> [!abstract]+ TL;DR
+> LLM RL training (RLHF/RLAIF/RLVR) is one of the most complex training paradigms in AI engineering — coordinates multiple large models, alternates generation and training, and manages GPU across distributed envs. Three frameworks dominate 2025–2026: **OpenRLHF** (Ray + vLLM + DeepSpeed ZeRO-3, production-grade scale), **veRL** (ByteDance, FSDP/Megatron + multiple rollout backends, scales to 671B with EP, official DAPO trainer), **TRL** (HuggingFace, lowest barrier to entry, v1.0 unified post-training stack April 2026). Comparison: veRL is bulkiest (32K LoC), OpenRLHF leanest (8.5K LoC) and 1.22–1.68× faster than alternatives.
 
 ---
 
