@@ -47,6 +47,16 @@ ProRL Agent's response is the obvious move from web-systems land: **separate con
 
 The "rootless sandbox" column is the deployment-realism contribution that lets the first column actually run on shared HPC clusters where research happens.
 
+> [!question]+ Shiki — Glossary: scaffold, stable HTTP contract, rootless sandbox (2026-05-08)
+>
+> Three terms in this Background section that show up across agentic-RL literature and warrant precise definitions, since the paper's claims rest on them.
+>
+> **Scaffold** — In agentic-RL terminology, the *scaffold* is everything between the user's task and the LLM's `model.generate()` call: the agent loop (ReAct, plan-and-execute), tool definitions, prompt templates, memory management, parsing of tool calls, retry logic. It's the application layer that turns text-out into actions-in-environment. ProRL's "scaffold-independent" column means the rollout server's HTTP API doesn't bake in any specific scaffold — you can plug in OpenHands's CodeAct, an in-house ReAct loop, or anything else, as long as it implements [[#AgentHandler the plugin interface|`AgentHandler`]]. Other agentic-RL frameworks bake a specific scaffold into the trainer process; switching scaffolds means refactoring the trainer.
+>
+> **Stable HTTP contract** — A versioned, well-defined HTTP API where the request/response schemas are fixed and documented (here via Pydantic models like `ProcessRequest`). "Stable" means: (1) the schema doesn't break in incompatible ways without version negotiation, (2) different versions of trainer and server can interop. It's the only coupling between the two processes — at any moment one team can rewrite the server, switch its language, or move it across machines, and the trainer doesn't care, as long as `POST /process` still accepts a `ProcessRequest` and returns `(token_ids, logprobs, reward)`. Same pattern that makes microservices work in 2014 web stacks; ProRL's claim is that it also works for the latency-sensitive RL inner loop.
+>
+> **Rootless sandbox** — A container/sandbox that runs entirely as an unprivileged user — no root anywhere in the chain. Docker is famously *not* rootless: it requires a daemon running as root (or `docker`-group membership, which is root-equivalent on Linux). On HPC clusters managed by Slurm you don't have root and there's no Docker daemon, so Docker simply can't run. **Singularity** (now called **Apptainer**) was designed for this: containers execute in user space using user namespaces, and `--fakeroot` gives the *appearance* of root *inside* the container without actually escalating privileges *outside*. ProRL Agent uses Singularity Image Files (`.sif`) so it can deploy on the same shared HPC clusters the rest of training infrastructure already lives on. "Rootless" is what unlocks "actually deployable in production research clusters" — a serving framework that requires Docker daemons can't run there.
+
 ---
 
 ## The key idea: rollout-as-a-service
@@ -66,19 +76,54 @@ Remove any one: the system becomes off-policy unstable (no token-in/out), throug
 
 ## How it works
 
-### The three-component architecture
+### System architecture
 
+The diagram below uses Mermaid (rendered natively by Obsidian and GitHub). It shows the FastAPI parent / multiprocessing child split, the three-stage pipeline inside the worker, the AgentHandler dispatch, and the two external resources (sandbox + vLLM pool).
+
+```mermaid
+flowchart TB
+    classDef ext fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
+    classDef svc fill:#e1f5ff,stroke:#01579b,stroke-width:2px,color:#000
+    classDef state fill:#fff3e0,stroke:#e65100,stroke-width:1px,color:#000
+
+    Trainer["<b>RL Trainer</b><br/>verl · NeMo-RL · OpenRLHF · TRL<br/><i>① /add_llm_server &nbsp; ② /start &nbsp; ③ /process &nbsp; ④ ← (token_ids, logprobs, reward)</i>"]:::ext
+
+    subgraph Server["ProRL Agent Server"]
+        direction TB
+        FastAPI["<b>FastAPI parent process</b><br/>futures map: job_id → asyncio.Future<br/>+ _response_listener (background thread)"]:::svc
+        MQ["3 × multiprocessing.Queue<br/>(request / result / control)"]:::state
+        Worker["<b>server_worker</b> (mp child, os.setsid)<br/>OpenHandsServer<br/>ThreadPoolExecutor (init + run + eval + 30)"]:::svc
+
+        FastAPI <--> MQ
+        MQ <--> Worker
+    end
+
+    subgraph Pipeline["3-stage async pipeline (inside worker)"]
+        direction LR
+        INIT["<b>INIT queue</b><br/>N init workers<br/>──<br/>build .sif<br/>install deps<br/>prepare env"]:::svc
+        RUN["<b>RUN queue</b><br/>N run workers<br/>──<br/>multi-turn<br/>agent loop<br/>LLM ↔ tools"]:::svc
+        EVAL["<b>EVAL queue</b><br/>N eval workers<br/>──<br/>score traj<br/>reward fn"]:::svc
+
+        INIT -->|"job_id<br/>(after init)"| RUN
+        RUN -->|"job_id<br/>(after RUN, free container)"| EVAL
+    end
+
+    AHandler["<b>AgentHandler</b> dispatch<br/>registry lookup by data_source<br/>.init / .run / .eval / .final_result"]:::state
+    State[("<b>per-job</b>: JobDetails · PausableTimer · Event<br/><b>shared</b>: weighted_addresses (min-heap LB)")]:::state
+
+    Sandbox["<b>Singularity Sandbox</b> (per job)<br/>──<br/>• .sif rootless image<br/>• --fakeroot, --network none<br/>• per-job 127.x.x.x loopback IP<br/>• bash via ptyprocess, IPython kernel<br/>• SIGTERM → SIGKILL cleanup"]:::ext
+
+    vLLM["<b>vLLM Backend Pool</b><br/>──<br/>• registered via /add_llm_server<br/>• min-heap by in-flight count<br/>• one rollout → one backend<br/>&nbsp; (prefix-cache affinity)<br/>• /clear_llm_server hot-rotates"]:::ext
+
+    Trainer <-->|"HTTP /process<br/>(blocks for result)"| Server
+    Worker --> Pipeline
+    Pipeline --> AHandler
+    Pipeline -.uses.-> State
+    Worker -->|sandbox exec| Sandbox
+    Worker -->|sticky LLM calls| vLLM
 ```
-┌────────────┐  HTTP  ┌─────────────────┐  exec  ┌──────────────────┐
-│ RL Trainer │◄──────►│ ProRL Agent     │◄──────►│ Sandbox Envs     │
-│ (verl/NeMo)│ /proc  │ Server (FastAPI)│        │ (Singularity .sif)│
-└────────────┘        └─────────────────┘        └──────────────────┘
-                              │
-                              ▼
-                       ┌──────────────┐
-                       │ vLLM backends│  (load-balanced via min-heap)
-                       └──────────────┘
-```
+
+**Reading the diagram:** the trainer talks to the server only through the HTTP API (top); inside the server, FastAPI is just a thin parent forwarding requests via `multiprocessing.Queue` to a child process where the real work happens. The child runs three queues with their own worker pools, dispatches through `AgentHandler`, and reaches out to two external resources (the per-job sandbox and the load-balanced vLLM pool).
 
 ### HTTP API
 
@@ -306,6 +351,16 @@ new_message['token_ids'] = convert_messages_to_tokens(
 A small but practical reward-shaping detail: `ngram_repetition_reward(output_ids, ngram_size=64, penalty=-0.001)` applies a per-token penalty at the start position of every repeated 64-gram. This rides along with `token_ids` so the trainer can apply an off-policy-safe penalty against degenerate looping without a separate evaluation pass.
 
 There's also a corner case the code handles explicitly: when a Qwen3 model emits `<think>\n` followed immediately by tool calls but never closes with `</think>`, the HuggingFace tokenizer breaks. The agent post-processes this by compressing the tool-call content back into the `content` string and appending a synthetic `</think>` so the canonical token IDs stay parseable. This is the kind of detail that tells you the authors actually trained models — the same bug shows up in other [[grpo|GRPO]] divergence reports as a reason for instability.
+
+> [!question]+ Shiki — What is token-in/token-out, and why does removing it cause off-policy instability? (2026-05-08)
+>
+> The token-in/token-out wire format makes `token_ids` (along with `logprobs`, `input_ids`) the canonical representation throughout training, never decoded text. When the server samples a reply at turn $t$, it returns the *exact* token IDs vLLM produced plus per-token logprobs at sample time; turn $t+1$'s prompt reuses those same IDs without ever re-encoding through a tokenizer. The four extra fields (`token_ids`, `input_ids`, `logprobs`, `repetition_penalty`) on every message are how the trainer consumes this stream directly.
+>
+> If you go text-in/text-out instead — which many early agentic-RL frameworks did — you face **re-tokenization drift**. The server logs the decoded text of turn $t$. At turn $t+1$ the trainer rebuilds the conversation history by tokenizing the decoded text again, but the chat template (system/tool prefixes, spaces, XML wrappers) makes the resulting token sequence *different* from what the model originally produced. Two textually-identical strings can tokenize to different IDs depending on what came before them.
+>
+> The consequence is brutal for off-policy methods. Actor and reference now disagree about where token boundaries fall; per-token logprobs misalign; the importance ratio $\pi_\theta(y_t \mid s_t) / \pi_\text{old}(y_t \mid s_t)$ is computed over *different tokenizations of "the same" text*. KL between actor and reference becomes meaningless or spikes to NaN. PPO's clipped surrogate and GRPO's advantage normalization both rely on a well-defined importance ratio, so the gradient becomes garbage and training diverges within a few iterations.
+>
+> Token-in/out makes this impossible by construction. The canonical state throughout training is the original sampled token IDs — there is no decode-then-reencode step, so there is no opportunity for drift. Off-policy methods stay valid because every turn's tokens are exactly the tokens the previous-policy model produced. This is why the SGLang fork's `openhands/llm/nvidia/qwen3.py` deliberately operates on `prompt_ids`/`response_ids` rather than `messages` of decoded strings — and why the kernel docstring warns *"KL/entropy can spike to NaN"* if you bypass it.
 
 ### LLM backend load balancing
 

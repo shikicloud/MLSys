@@ -1,9 +1,14 @@
 ---
 title: Change Log
-updated: 2026-05-06
+updated: 2026-05-08
 ---
 
 # Change Log
+
+## 2026-05-08
+- [Q&A] [[prorl-agent]] — Shiki asked four conceptual questions about the paper: (1) what is "scaffold", (2) what does "stable HTTP contract" mean, (3) what is token-in/token-out and why does removing it break off-policy training, (4) what is a "rootless sandbox". Q1+Q2+Q4 logged inline as a single `[!question]+` callout right after the comparison table in Background; Q3 logged inline in the Token-in/token-out subsection. Both EN and CN.
+- [EXPANDED] [[prorl-agent]] — replaced the 3-box ASCII architecture diagram with a richer Mermaid `flowchart TB` showing the FastAPI parent / multiprocessing child split, the 3-stage queue pipeline with worker pools, AgentHandler dispatch, per-job/shared state, and the two external resources (Singularity sandbox + vLLM backend pool). Section heading renamed *The three-component architecture* → *System architecture*. Both EN and CN.
+- [EXPANDED] WIKI-Format-Skill (skills/wiki-format-skill/SKILL.md) — added a *Diagrams* subsection in *Visual hierarchy* covering: when to use Mermaid vs. ASCII, required content for system architecture diagrams (external actors, process boundaries, concrete components, labeled communication edges, numbered call sequences, color/style classes, multi-line labels), reference Mermaid template, anti-patterns ("three boxes connected by arrows", bare flowchart, identifier-only labels), ASCII box-drawing character set, and detail expectations.
 
 ## 2026-05-06
 - [INGEST] arXiv:2603.18815 "ProRL Agent: Rollout-as-a-Service for RL Training of Multi-Turn LLM Agents" (NVIDIA, March 2026) — paper review at [[prorl-agent]] in `wiki/agentic-rl/`. Citation under `sources/papers/prorl-agent/`. Report-style page with concrete source code from `openhands/nvidia/registry.py` (AgentHandler ABC + JobDetails dataclass), `openhands/nvidia/async_server.py` (3-queue pipeline, min-heap LB, unified _worker), `scripts/start_server.py` (FastAPI + multiprocessing), `openhands/llm/nvidia/` (token-in/out). Cross-linked from [[agentic-rl-overview]], [[environment-design]], [[rl-training-frameworks]], [[grpo]], [[kv-cache-optimization]], [[multi-turn-optimization]].

@@ -512,9 +512,88 @@ Rules:
 - **`####` sub-subsections** inside long `###` sections. Example: in [[saw-int4]], "Inside the fused Triton kernel" splits into `#### The butterfly`, `#### The full kernel body`, `#### The launcher`.
 - **Tables** for: file → role lists, comparison matrices, mode matrices, parameter values. Max ~10 rows.
 - **Right-align numeric columns** in tables: `| ----: |`. Multiplexed numeric columns (e.g. "throughput / TTFT") right-align too.
-- **Code blocks** with language hints — `python`, `bash`, `toml`, `yaml`, `cpp`, `rust`, `markdown`, etc. **Never** untyped fences (` ``` `) for code; they're allowed only for ASCII diagrams.
-- **ASCII diagrams** are fine for architecture overviews. Use Mermaid only when the diagram is dense enough to benefit (rare). Box-drawing characters: `┌ ┐ └ ┘ │ ─ ◄ ► ▲ ▼`.
+- **Code blocks** with language hints — `python`, `bash`, `toml`, `yaml`, `cpp`, `rust`, `markdown`, etc. **Never** untyped fences (` ``` `) for code; they're allowed only for inline ASCII diagrams.
 - **Inline code** for identifiers (`AgentHandler`, `head_dim`, `--kv-cache-dtype`); math for expressions; bold for emphasis on prose nouns.
+
+### Diagrams
+
+Diagrams are how a reader gets the structure of a system in 5 seconds. Spend the time to make them informative — show queues, workers, communication channels, and key state objects, not just three boxes-and-arrows.
+
+#### When to use Mermaid (preferred for system architecture)
+
+Use a `mermaid` fenced code block for any **system-level** diagram with more than ~3 components. Both Obsidian and GitHub render Mermaid natively as SVG.
+
+Required content for a system architecture diagram:
+
+1. **External actors** at the boundaries (e.g. RL Trainer, vLLM Backend Pool, Sandbox).
+2. **Process boundaries** as `subgraph` blocks (e.g. FastAPI parent, multiprocessing child).
+3. **Concrete components** inside each process — queues, worker pools, dispatch tables, state objects — not just one box per process.
+4. **Communication edges labeled** with the actual transport (`HTTP /process`, `multiprocessing.Queue`, `sandbox exec`, `sticky LLM calls`).
+5. **Numbered call sequences** (`①`, `②`, `③`) when the API has a defined call order.
+6. **Color/style classes** to distinguish kinds of nodes (external / service / state). Define them with `classDef` at the top.
+7. **Multi-line node labels** with `<br/>` and `<b>...</b>` to fit substantial detail per node — file names, knob counts, behavioral notes.
+
+Reference example (the canonical [[prorl-agent#System architecture]] diagram):
+
+```mermaid
+flowchart TB
+    classDef ext fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
+    classDef svc fill:#e1f5ff,stroke:#01579b,stroke-width:2px,color:#000
+    classDef state fill:#fff3e0,stroke:#e65100,stroke-width:1px,color:#000
+
+    Trainer["<b>External Actor</b><br/>concrete examples<br/><i>① /endpoint &nbsp; ② /endpoint</i>"]:::ext
+
+    subgraph Server["Containing Process"]
+        direction TB
+        Component1["<b>Component name</b><br/>state owned<br/>side notes"]:::svc
+        Component2["concrete IPC / data structure<br/>(named here)"]:::state
+        Component1 <--> Component2
+    end
+
+    Trainer <-->|"transport name"| Server
+```
+
+Anti-patterns:
+
+- **Three boxes connected by arrows.** Strip layout for a real-time system that has 12 components is missing structure. The 5-component "Trainer ↔ Server ↔ Sandbox + vLLM" diagram from the original ProRL Agent draft was rewritten precisely because it didn't show the FastAPI/multiprocessing split or the three-queue pipeline — the very things the page was trying to explain.
+- **Bare `flowchart`** with no `classDef` styling. Default white-on-white is hard to scan; named classes for `external` / `service` / `state` make the diagram self-explaining.
+- **Identifier-only labels** (`Worker1`, `Q2`) that the reader has to map back to prose. Use multi-line labels with the component's actual purpose.
+
+#### When to use ASCII
+
+Reserve ASCII for **inline simple flows** that don't merit a separate Mermaid block:
+
+- Sequence flows in 1–3 steps (`Time → ────────►`)
+- Terminal output samples
+- Stack/heap layouts with byte offsets
+- Memory layouts where rectangle proportions carry information
+
+Box-drawing character set:
+
+- Light corners and lines: `┌ ┐ └ ┘ ├ ┤ ┬ ┴ ┼ │ ─`
+- Heavy corners (use sparingly for emphasis): `┏ ┓ ┗ ┛ ┃ ━`
+- Double lines (use for outermost boundary in nested ASCII): `╔ ╗ ╚ ╝ ║ ═`
+- Arrows: `◄ ► ▲ ▼ ↑ ↓ ← →`
+- Bullets and dividers: `• · ─── ════`
+
+ASCII diagrams go inside an untyped triple-fence so they render verbatim:
+
+````markdown
+```
+Light pseudo-diagram for a quick flow
+─────────────────────────────────────
+  Stage A  ──►  Stage B  ──►  Stage C
+                  │
+                  ▼
+              side note
+```
+````
+
+#### Detail expectations
+
+For a system architecture diagram in a paper-review page, assume the reader has read the TL;DR but not yet the prose. The diagram should answer: **what are the components, what are the boundaries, and what flows between them?** A reader who stops at the diagram should walk away with the right mental model.
+
+Concrete: if the page describes a server with a 3-stage pipeline, the diagram MUST show the three queues, their worker pools, and the dispatch mechanism — not just a single "Server" box. If the page describes IPC between two processes, the diagram MUST name the transport (e.g. `multiprocessing.Queue`) — not a generic arrow.
 
 ### File and slug naming
 

@@ -1,9 +1,14 @@
 ---
 title: 变更日志
-updated: 2026-05-06
+updated: 2026-05-08
 ---
 
 # 变更日志
+
+## 2026-05-08
+- [Q&A] [[prorl-agent]] —— Shiki 提了 4 个关于论文的概念性问题：(1) scaffold 是什么、(2) "稳定的 HTTP 契约"指什么、(3) token-in/token-out 是什么以及去掉之后为什么 off-policy 不稳、(4) "rootless 沙箱"是什么。Q1+Q2+Q4 合并为一个 `[!question]+` callout，置于 Background 章节比较表之后；Q3 单独 callout 置于 Token-in/token-out 子节。EN/CN 双语对齐。
+- [扩展] [[prorl-agent]] —— 把原本 3 框 ASCII 架构图替换为更丰富的 Mermaid `flowchart TB`，展示 FastAPI 父进程 / multiprocessing 子进程拆分、三阶段队列流水线与各自的 worker 池、AgentHandler 分派、per-job 与共享状态，以及两个外部资源（Singularity 沙箱 + vLLM 后端池）。章节标题从 *三组件架构* 改为 *系统架构*。EN/CN 双语对齐。
+- [扩展] WIKI-Format-Skill（skills/wiki-format-skill/SKILL.md）—— 在 *Visual hierarchy* 下新增 *Diagrams* 子节：何时用 Mermaid vs. ASCII、系统架构图必备元素（外部 actor、进程边界、具体组件、有标注的通信边、编号的调用序列、color/style 类、多行标签）、参考 Mermaid 模板、反模式（"三框加箭头"、裸 flowchart、仅标识符标签）、ASCII 制表符集合、详细程度期望。
 
 ## 2026-05-06
 - [摄入] arXiv:2603.18815 "ProRL Agent"（NVIDIA, 2026 年 3 月）— 论文精读已添加于 `wiki/agentic-rl/` 下的 [[prorl-agent]]。引用元数据位于 `sources/papers/prorl-agent/`。报告涵盖论文分析以及源码阅读：`start_server.py`（FastAPI + multiprocessing）、`openhands/nvidia/registry.py`（AgentHandler ABC + JobDetails dataclass + 注册表模式）、`openhands/nvidia/async_server.py`（三队列流水线、min-heap 负载均衡器、统一 _worker）、`openhands/llm/nvidia/`（token-in/out 动机）。已交叉链接至 [[agentic-rl-overview]]、[[environment-design]]、[[rl-training-frameworks]]、[[grpo]]、[[kv-cache-optimization]]、[[multi-turn-optimization]]。
