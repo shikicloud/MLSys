@@ -78,52 +78,46 @@ Remove any one: the system becomes off-policy unstable (no token-in/out), throug
 
 ### System architecture
 
-The diagram below uses Mermaid (rendered natively by Obsidian and GitHub). It shows the FastAPI parent / multiprocessing child split, the three-stage pipeline inside the worker, the AgentHandler dispatch, and the two external resources (sandbox + vLLM pool).
+The diagram below uses Mermaid. The trainer's API contract is `① /add_llm_server → ② /start → ③ POST /process { instance, sampling_params }` (blocks) `→ ④ ← (token_ids, logprobs, reward, timing)`. Detail per component lives in the prose under [[#How it works]]; the diagram is a structural map only.
 
 ```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 40, "rankSpacing": 50}, "themeVariables": {"fontSize": "13px"}}}%%
 flowchart TB
     classDef ext fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
     classDef svc fill:#e1f5ff,stroke:#01579b,stroke-width:2px,color:#000
     classDef state fill:#fff3e0,stroke:#e65100,stroke-width:1px,color:#000
 
-    Trainer["<b>RL Trainer</b><br/>verl · NeMo-RL · OpenRLHF · TRL<br/><i>① /add_llm_server &nbsp; ② /start &nbsp; ③ /process &nbsp; ④ ← (token_ids, logprobs, reward)</i>"]:::ext
+    Trainer["<b>RL Trainer</b><br/>verl · NeMo-RL · OpenRLHF"]:::ext
 
     subgraph Server["ProRL Agent Server"]
-        direction TB
-        FastAPI["<b>FastAPI parent process</b><br/>futures map: job_id → asyncio.Future<br/>+ _response_listener (background thread)"]:::svc
-        MQ["3 × multiprocessing.Queue<br/>(request / result / control)"]:::state
-        Worker["<b>server_worker</b> (mp child, os.setsid)<br/>OpenHandsServer<br/>ThreadPoolExecutor (init + run + eval + 30)"]:::svc
-
-        FastAPI <--> MQ
-        MQ <--> Worker
+        FastAPI["FastAPI parent<br/>+ futures map<br/>+ response_listener"]:::svc
+        MQ["3 × multiprocessing.Queue"]:::state
+        Worker["server_worker (mp child)<br/>OpenHandsServer +<br/>ThreadPoolExecutor"]:::svc
+        FastAPI <--> MQ <--> Worker
     end
 
-    subgraph Pipeline["3-stage async pipeline (inside worker)"]
+    subgraph Pipeline["3-stage pipeline (in worker)"]
         direction LR
-        INIT["<b>INIT queue</b><br/>N init workers<br/>──<br/>build .sif<br/>install deps<br/>prepare env"]:::svc
-        RUN["<b>RUN queue</b><br/>N run workers<br/>──<br/>multi-turn<br/>agent loop<br/>LLM ↔ tools"]:::svc
-        EVAL["<b>EVAL queue</b><br/>N eval workers<br/>──<br/>score traj<br/>reward fn"]:::svc
-
-        INIT -->|"job_id<br/>(after init)"| RUN
-        RUN -->|"job_id<br/>(after RUN, free container)"| EVAL
+        INIT["<b>INIT</b><br/>build .sif"]:::svc
+        RUN["<b>RUN</b><br/>multi-turn loop"]:::svc
+        EVAL["<b>EVAL</b><br/>score / reward"]:::svc
+        INIT -->|"job_id"| RUN -->|"job_id"| EVAL
     end
 
-    AHandler["<b>AgentHandler</b> dispatch<br/>registry lookup by data_source<br/>.init / .run / .eval / .final_result"]:::state
-    State[("<b>per-job</b>: JobDetails · PausableTimer · Event<br/><b>shared</b>: weighted_addresses (min-heap LB)")]:::state
+    AHandler["AgentHandler dispatch<br/>(by data_source)"]:::state
+    State[("per-job: JobDetails · timer · event<br/>shared: min-heap LB")]:::state
+    Sandbox["Singularity sandbox<br/>(rootless, --fakeroot,<br/>per-job 127.x.x.x)"]:::ext
+    vLLM["vLLM pool<br/>(min-heap LB, sticky)"]:::ext
 
-    Sandbox["<b>Singularity Sandbox</b> (per job)<br/>──<br/>• .sif rootless image<br/>• --fakeroot, --network none<br/>• per-job 127.x.x.x loopback IP<br/>• bash via ptyprocess, IPython kernel<br/>• SIGTERM → SIGKILL cleanup"]:::ext
-
-    vLLM["<b>vLLM Backend Pool</b><br/>──<br/>• registered via /add_llm_server<br/>• min-heap by in-flight count<br/>• one rollout → one backend<br/>&nbsp; (prefix-cache affinity)<br/>• /clear_llm_server hot-rotates"]:::ext
-
-    Trainer <-->|"HTTP /process<br/>(blocks for result)"| Server
+    Trainer <-->|"HTTP /process"| Server
     Worker --> Pipeline
     Pipeline --> AHandler
     Pipeline -.uses.-> State
-    Worker -->|sandbox exec| Sandbox
-    Worker -->|sticky LLM calls| vLLM
+    Worker --> Sandbox
+    Worker --> vLLM
 ```
 
-**Reading the diagram:** the trainer talks to the server only through the HTTP API (top); inside the server, FastAPI is just a thin parent forwarding requests via `multiprocessing.Queue` to a child process where the real work happens. The child runs three queues with their own worker pools, dispatches through `AgentHandler`, and reaches out to two external resources (the per-job sandbox and the load-balanced vLLM pool).
+**Reading the diagram.** The trainer talks to the server only via HTTP. Inside the server, FastAPI is a thin parent forwarding requests via `multiprocessing.Queue` to a child process where the real work happens. The child runs three queues with their own worker pools, dispatches through `AgentHandler`, and reaches out to two external resources (per-job sandbox + load-balanced vLLM pool). All concrete details — how exactly each stage works, the kernel constraints, the load-balancer math — are in the subsections below.
 
 ### HTTP API
 

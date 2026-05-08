@@ -529,35 +529,56 @@ Required content for a system architecture diagram:
 2. **Process boundaries** as `subgraph` blocks (e.g. FastAPI parent, multiprocessing child).
 3. **Concrete components** inside each process — queues, worker pools, dispatch tables, state objects — not just one box per process.
 4. **Communication edges labeled** with the actual transport (`HTTP /process`, `multiprocessing.Queue`, `sandbox exec`, `sticky LLM calls`).
-5. **Numbered call sequences** (`①`, `②`, `③`) when the API has a defined call order.
-6. **Color/style classes** to distinguish kinds of nodes (external / service / state). Define them with `classDef` at the top.
-7. **Multi-line node labels** with `<br/>` and `<b>...</b>` to fit substantial detail per node — file names, knob counts, behavioral notes.
+5. **Color/style classes** via `classDef` at the top (external / service / state).
 
-Reference example (the canonical [[prorl-agent#System architecture]] diagram):
+#### Sizing — the lean-node rule
+
+> [!warning] Validated by Shiki 2026-05-08: nodes packed with `<br/>` lines render *huge* in Obsidian
+> The first ProRL Agent diagram (now rewritten) had nodes with 5–6 `<br/>` lines each, plus the Trainer node embedded the whole `① ② ③ ④` API sequence. Obsidian's Mermaid renderer sized each box to fit its tallest content, then sized the whole diagram to fit the largest box — the rendered SVG was several screens tall and most of it was whitespace. Verdict: **the diagram had become a kitchen sink, not a structural map.**
+
+Concrete rules to keep diagrams compact:
+
+1. **Maximum 2–3 short lines per node.** If you need more, push detail to prose around the diagram. The diagram is for *structure*; prose is for *content*.
+2. **Move call sequences out of node labels.** Put `① /endpoint → ② /endpoint → ③ /endpoint → ④ ← response` in a sentence above the diagram, not inside the actor's box.
+3. **Use `<b>...</b>` for the component name only**, not for every emphasized word inside the body. One bold phrase per node max.
+4. **Drop bullet decorations** (`•`, `──`, `─────`) inside node labels — they add visual noise and force taller boxes. Use `·` between items if you need a separator: `rootless · --fakeroot · per-job IP`.
+5. **Add an init directive** at the top of complex Mermaid blocks to control font size and spacing:
+
+```text
+%%{init: {"flowchart": {"nodeSpacing": 40, "rankSpacing": 50}, "themeVariables": {"fontSize": "13px"}}}%%
+```
+
+The default `fontSize` is 16 px; dropping to 13 px with `nodeSpacing: 40` typically halves the rendered height.
+
+6. **If the diagram still feels too big**, split it into two: a high-level *map* (Trainer ↔ Server ↔ {Sandbox, vLLM}) and a detail-level *internals* diagram (the 3-stage pipeline) on its own. Don't try to show everything in one figure.
+
+#### Reference template — compact system diagram
 
 ```mermaid
+%%{init: {"flowchart": {"nodeSpacing": 40, "rankSpacing": 50}, "themeVariables": {"fontSize": "13px"}}}%%
 flowchart TB
     classDef ext fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
     classDef svc fill:#e1f5ff,stroke:#01579b,stroke-width:2px,color:#000
     classDef state fill:#fff3e0,stroke:#e65100,stroke-width:1px,color:#000
 
-    Trainer["<b>External Actor</b><br/>concrete examples<br/><i>① /endpoint &nbsp; ② /endpoint</i>"]:::ext
+    Trainer["<b>External Actor</b><br/>2–3 short lines max"]:::ext
 
     subgraph Server["Containing Process"]
-        direction TB
-        Component1["<b>Component name</b><br/>state owned<br/>side notes"]:::svc
-        Component2["concrete IPC / data structure<br/>(named here)"]:::state
+        Component1["<b>Component A</b><br/>one-liner role"]:::svc
+        Component2["concrete IPC<br/>(named transport)"]:::state
         Component1 <--> Component2
     end
 
     Trainer <-->|"transport name"| Server
 ```
 
-Anti-patterns:
+#### Anti-patterns
 
-- **Three boxes connected by arrows.** Strip layout for a real-time system that has 12 components is missing structure. The 5-component "Trainer ↔ Server ↔ Sandbox + vLLM" diagram from the original ProRL Agent draft was rewritten precisely because it didn't show the FastAPI/multiprocessing split or the three-queue pipeline — the very things the page was trying to explain.
-- **Bare `flowchart`** with no `classDef` styling. Default white-on-white is hard to scan; named classes for `external` / `service` / `state` make the diagram self-explaining.
-- **Identifier-only labels** (`Worker1`, `Q2`) that the reader has to map back to prose. Use multi-line labels with the component's actual purpose.
+- **Three boxes connected by arrows.** Strip layout for a real-time system that has 12 components is missing structure. The original ProRL Agent draft was rewritten because the diagram didn't show the FastAPI/multiprocessing split or the three-queue pipeline.
+- **Six lines per node.** The opposite extreme. Nodes balloon, the SVG stretches to fit the largest box, the page becomes a vertical scroll-fest. See the lean-node rule above.
+- **Bare `flowchart`** with no `classDef` styling. Default monochrome is hard to scan; named classes for `ext` / `svc` / `state` make the diagram self-explaining.
+- **Identifier-only labels** (`Worker1`, `Q2`) that the reader has to map back to prose. Use 2–3-line labels with the component's actual purpose.
+- **No init directive on complex diagrams.** A 10+ node Mermaid block at default font size will render larger than necessary — set `fontSize: "13px"` and tune `nodeSpacing` / `rankSpacing`.
 
 #### When to use ASCII
 
