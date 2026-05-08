@@ -531,54 +531,76 @@ Required content for a system architecture diagram:
 4. **Communication edges labeled** with the actual transport (`HTTP /process`, `multiprocessing.Queue`, `sandbox exec`, `sticky LLM calls`).
 5. **Color/style classes** via `classDef` at the top (external / service / state).
 
-#### Sizing — the lean-node rule
+#### Layout — single-direction, single-column inside subgraphs
 
-> [!warning] Validated by Shiki 2026-05-08: nodes packed with `<br/>` lines render *huge* in Obsidian
-> The first ProRL Agent diagram (now rewritten) had nodes with 5–6 `<br/>` lines each, plus the Trainer node embedded the whole `① ② ③ ④` API sequence. Obsidian's Mermaid renderer sized each box to fit its tallest content, then sized the whole diagram to fit the largest box — the rendered SVG was several screens tall and most of it was whitespace. Verdict: **the diagram had become a kitchen sink, not a structural map.**
+> [!warning] Validated by Shiki 2026-05-08: two iterations of the ProRL Agent diagram both failed
+> 1. **First iteration**: rich content but each node had 5–6 `<br/>` lines, and the Trainer node embedded the whole `① ② ③ ④` API sequence. Obsidian's renderer sized the SVG to fit the tallest box → multi-screen vertical scroll.
+> 2. **Second iteration**: compressed to 2–3 lines per node, **but** the 3-stage pipeline was a separate `subgraph Pipeline` with `direction LR` while the rest was `flowchart TB`. Mermaid's auto-layout placed the LR sub-flow *off to the side* instead of in-line, requiring left–right scrolling to see EVAL.
+>
+> The lesson: **Mermaid does NOT lay out nested subgraphs with mixed directions cleanly.** Either everything is TB or everything is LR. If you need a horizontal-looking sub-flow inside a vertical layout, *unroll* it into TB sequential nodes — don't wrap it in its own `direction LR` subgraph.
 
-Concrete rules to keep diagrams compact:
+The reliable layout rules:
 
-1. **Maximum 2–3 short lines per node.** If you need more, push detail to prose around the diagram. The diagram is for *structure*; prose is for *content*.
-2. **Move call sequences out of node labels.** Put `① /endpoint → ② /endpoint → ③ /endpoint → ④ ← response` in a sentence above the diagram, not inside the actor's box.
-3. **Use `<b>...</b>` for the component name only**, not for every emphasized word inside the body. One bold phrase per node max.
-4. **Drop bullet decorations** (`•`, `──`, `─────`) inside node labels — they add visual noise and force taller boxes. Use `·` between items if you need a separator: `rootless · --fakeroot · per-job IP`.
-5. **Add an init directive** at the top of complex Mermaid blocks to control font size and spacing:
+1. **One direction throughout.** If the page is `flowchart TB`, every subgraph and every flow stays TB. Don't put `direction LR` inside a TB diagram (or vice versa) — the renderer will sprawl the inner block off to the side.
+2. **Unroll horizontal sub-flows into vertical sequences.** A pipeline that is conceptually `INIT → RUN → EVAL` (left-to-right) renders as three sequential TB nodes inside the parent TB layout. The arrows still convey the sequence; you don't need an LR subgraph to express it.
+3. **At most one subgraph level.** Nested subgraphs frequently lay out badly. Prefer one wrapping subgraph (e.g. `Server`) with all components flat inside it, including pipeline stages.
+4. **Single column inside subgraphs.** Components inside one subgraph form a single vertical column with sequential edges. Branching out to side resources (Sandbox, vLLM) happens *outside* the subgraph from one anchor node.
+5. **3–4 lines per node is fine.** The earlier "max 2–3 lines" rule was the wrong target — the real failure was layout, not content. Restoring richer per-node content (3–4 lines: `<b>name</b>` + role + key knobs) is good for understanding; the height stays controlled because nodes don't have to fit the whole call sequence.
+6. **Move call sequences out of node labels.** The `① /endpoint → ② /endpoint → ③ /endpoint → ④ ← response` API contract belongs in a sentence above the diagram, not crammed into the actor's box.
+7. **Drop bullet decorations** (`•`, `──`, `─────`) inside node labels. Use `·` between items if you need a separator: `rootless · --fakeroot · per-job IP`. Bullets force more vertical space than they're worth.
+8. **Add an init directive** at the top of complex Mermaid blocks to control font size and spacing. The default `fontSize` is 16 px; dropping to 12–13 px with `nodeSpacing: 30` and `rankSpacing: 40` keeps the rendered area reasonable:
 
 ```text
-%%{init: {"flowchart": {"nodeSpacing": 40, "rankSpacing": 50}, "themeVariables": {"fontSize": "13px"}}}%%
+%%{init: {"flowchart": {"nodeSpacing": 30, "rankSpacing": 40}, "themeVariables": {"fontSize": "12px"}}}%%
 ```
 
-The default `fontSize` is 16 px; dropping to 13 px with `nodeSpacing: 40` typically halves the rendered height.
+9. **If the diagram still doesn't fit on one screen,** split it: a high-level *map* (Trainer ↔ Server ↔ {Sandbox, vLLM}) and a separate *internals* diagram (the 3-stage pipeline). Don't try to fit everything into one figure with creative nesting — that's exactly what failed twice on ProRL Agent.
 
-6. **If the diagram still feels too big**, split it into two: a high-level *map* (Trainer ↔ Server ↔ {Sandbox, vLLM}) and a detail-level *internals* diagram (the 3-stage pipeline) on its own. Don't try to show everything in one figure.
-
-#### Reference template — compact system diagram
+#### Reference template — single-column TB diagram
 
 ```mermaid
-%%{init: {"flowchart": {"nodeSpacing": 40, "rankSpacing": 50}, "themeVariables": {"fontSize": "13px"}}}%%
+%%{init: {"flowchart": {"nodeSpacing": 30, "rankSpacing": 40}, "themeVariables": {"fontSize": "12px"}}}%%
 flowchart TB
     classDef ext fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
     classDef svc fill:#e1f5ff,stroke:#01579b,stroke-width:2px,color:#000
     classDef state fill:#fff3e0,stroke:#e65100,stroke-width:1px,color:#000
 
-    Trainer["<b>External Actor</b><br/>2–3 short lines max"]:::ext
+    Trainer["<b>External Actor</b><br/>concrete examples<br/>3 lines max"]:::ext
 
     subgraph Server["Containing Process"]
-        Component1["<b>Component A</b><br/>one-liner role"]:::svc
-        Component2["concrete IPC<br/>(named transport)"]:::state
-        Component1 <--> Component2
+        direction TB
+        FrontEnd["<b>Front-end</b><br/>state owned · responsibilities"]:::svc
+        IPC["named transport<br/>(concrete impl)"]:::state
+        Worker["<b>Worker</b><br/>core role · sizing"]:::svc
+        Stage1["<b>Stage 1</b> · N workers<br/>concrete actions"]:::svc
+        Stage2["<b>Stage 2</b> · N workers<br/>concrete actions"]:::svc
+        State[("per-job state · shared state")]:::state
+
+        FrontEnd <--> IPC
+        IPC <--> Worker
+        Worker --> Stage1
+        Stage1 -->|"transition reason"| Stage2
+        Worker -.uses.-> State
     end
 
-    Trainer <-->|"transport name"| Server
+    SideResource1["<b>Side resource A</b><br/>role · key params"]:::ext
+    SideResource2["<b>Side resource B</b><br/>role · key params"]:::ext
+
+    Trainer <-->|"HTTP /endpoint"| Server
+    Worker --> SideResource1
+    Worker --> SideResource2
 ```
+
+Note how everything inside `Server` lays out vertically (`direction TB` set explicitly), the pipeline stages are inline with the Worker rather than wrapped in a `direction LR` subgraph, and the side resources hang off Worker *outside* the Server subgraph. This renders predictably as a single vertical column with two side branches at the bottom.
 
 #### Anti-patterns
 
 - **Three boxes connected by arrows.** Strip layout for a real-time system that has 12 components is missing structure. The original ProRL Agent draft was rewritten because the diagram didn't show the FastAPI/multiprocessing split or the three-queue pipeline.
-- **Six lines per node.** The opposite extreme. Nodes balloon, the SVG stretches to fit the largest box, the page becomes a vertical scroll-fest. See the lean-node rule above.
+- **Five-or-more lines per node.** Nodes balloon, the SVG stretches to fit the largest box, the page becomes a vertical scroll-fest. 3–4 lines is the comfortable max.
+- **Nested subgraphs with mixed directions.** A `direction LR` subgraph nested inside a `flowchart TB` parent will be placed off to the side by Mermaid's auto-layout, requiring horizontal scroll. Unroll the inner flow into the parent's direction.
 - **Bare `flowchart`** with no `classDef` styling. Default monochrome is hard to scan; named classes for `ext` / `svc` / `state` make the diagram self-explaining.
-- **Identifier-only labels** (`Worker1`, `Q2`) that the reader has to map back to prose. Use 2–3-line labels with the component's actual purpose.
-- **No init directive on complex diagrams.** A 10+ node Mermaid block at default font size will render larger than necessary — set `fontSize: "13px"` and tune `nodeSpacing` / `rankSpacing`.
+- **Identifier-only labels** (`Worker1`, `Q2`) that the reader has to map back to prose. Use 3–4-line labels with the component's actual purpose.
+- **No init directive on complex diagrams.** A 10+ node Mermaid block at default font size will render larger than necessary — set `fontSize: "12px"` (or `"13px"`) and tune `nodeSpacing` / `rankSpacing`.
 
 #### When to use ASCII
 
