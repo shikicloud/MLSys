@@ -1,9 +1,12 @@
 ---
 title: Change Log
-updated: 2026-05-08
+updated: 2026-05-13
 ---
 
 # Change Log
+
+## 2026-05-13
+- [INGEST] arXiv:2511.13841 "Beat the long tail: Distribution-Aware Speculative Decoding for RL Training" (Shao, Srivatsa, Srivastava et al., 2025-11-17, MLSys submission) — paper review at [[das-spec-rl]] in `wiki/llm-inference/`. Citation under `sources/papers/das-spec-rl/`. Report-style page covering: (1) the per-problem online suffix-tree drafter via Ukkonen with prefix-trie routing and sliding-window refresh — drafter has no GPU footprint and tracks the policy automatically; (2) the length-aware speculation policy derived from an explicit makespan model `t_total = c_base · N_fwd + c_tok · N_toks + C`, with the closed-form optimal-budget formula `p_i* = -(l_i/α_i) · ln(1 - k_i(1 - N_fwd/l_i))` (Eq. 7) and exponential acceptance decay `a_{i,k} = a_{i,0} · e^(-β_i(k-1))`, packaged as a Long/Med/Short three-bucket heuristic where Short disables speculation entirely; (3) experimental results — >50 % rollout-time reduction on math RL (DeepSeek-R1-Distill-Qwen-7B on DSR-sub, 1× 8×H100, batch 128, 30 steps), ~25 % on code RL (Qwen3-8B on DeepCoder, 2× 8×H100); ablations show distribution-aware budget beats unlimited budget by up to 15 %, >30 % speedup at 8K seq len. Mermaid diagram of the DAS-instrumented rollout loop (single-column TB, Signals subgraph on the side per the diagram rules learned during ProRL Agent). Cross-linked from [[speculative-decoding]], [[prorl-agent]], [[grpo]], [[continuous-batching]], [[kv-cache-optimization]], [[vllm]], [[sglang]], [[long-context-serving]]. Both EN and CN.
 
 ## 2026-05-08
 - [Q&A] [[prorl-agent]] — Shiki asked four conceptual questions about the paper: (1) what is "scaffold", (2) what does "stable HTTP contract" mean, (3) what is token-in/token-out and why does removing it break off-policy training, (4) what is a "rootless sandbox". Q1+Q2+Q4 logged inline as a single `[!question]+` callout right after the comparison table in Background; Q3 logged inline in the Token-in/token-out subsection. Both EN and CN.

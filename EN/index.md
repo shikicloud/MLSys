@@ -1,6 +1,6 @@
 ---
 title: Index
-updated: 2026-04-14
+updated: 2026-05-13
 ---
 
 # Wiki Index
@@ -19,6 +19,7 @@ updated: 2026-04-14
 - [[prefill-decode-disaggregation]] — Prefill-decode disaggregation architectures
 - [[saw-int4]] — SAW-INT4: System-Aware 4-bit KV-cache quantization with block-diagonal Hadamard rotation (Together AI, arXiv 2604.19157) — paper review
 - [[rotation-based-quantization]] — Rotation-based quantization family overview (QuIP / QuaRot / SpinQuant / BDR)
+- [[das-spec-rl]] — DAS: Distribution-Aware Speculative Decoding for RL Training (suffix-tree drafter + length-aware budget; arXiv 2511.13841) — paper review
 
 ## RL Infrastructure
 - [[rlhf-overview]] — RLHF: Reinforcement Learning from Human Feedback

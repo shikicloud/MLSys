@@ -1,6 +1,6 @@
 ---
 title: 目录索引
-updated: 2026-04-14
+updated: 2026-05-13
 ---
 
 # Wiki 目录索引
@@ -19,6 +19,7 @@ updated: 2026-04-14
 - [[prefill-decode-disaggregation]] — 预填充-解码分离架构
 - [[saw-int4]] — SAW-INT4：基于块对角 Hadamard 旋转的系统感知 4 位 KV 缓存量化（Together AI, arXiv 2604.19157）— 论文精读
 - [[rotation-based-quantization]] — 基于旋转的量化家族综览（QuIP / QuaRot / SpinQuant / BDR）
+- [[das-spec-rl]] — DAS：面向 RL 训练的分布感知投机解码（suffix tree drafter + 长度感知预算；arXiv 2511.13841）— 论文精读
 
 ## 强化学习基础设施
 - [[rlhf-overview]] — RLHF：基于人类反馈的强化学习

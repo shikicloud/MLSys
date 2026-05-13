@@ -1,9 +1,12 @@
 ---
 title: 变更日志
-updated: 2026-05-08
+updated: 2026-05-13
 ---
 
 # 变更日志
+
+## 2026-05-13
+- [摄入] arXiv:2511.13841 "Beat the long tail: Distribution-Aware Speculative Decoding for RL Training"（Shao, Srivatsa, Srivastava 等，2025-11-17，MLSys 投稿）—— 论文精读已添加于 `wiki/llm-inference/` 下的 [[das-spec-rl]]。引用元数据位于 `sources/papers/das-spec-rl/`。报告涵盖三块：(1) **基于 Ukkonen 在线 suffix tree 的 per-problem drafter**，配 prefix trie 路由与滑动窗口刷新 —— drafter 不占 GPU 显存且自动跟随策略；(2) **长度感知投机策略**，从显式 makespan 模型 `t_total = c_base · N_fwd + c_tok · N_toks + C` 推导出闭式最优预算 `p_i* = -(l_i/α_i) · ln(1 - k_i(1 - N_fwd/l_i))`（Eq. 7）与每位置 acceptance 指数衰减 `a_{i,k} = a_{i,0} · e^(-β_i(k-1))`，打包成 Long/Med/Short 三桶启发式（Short 桶完全关掉投机）；(3) **实验结果** —— 数学 RL（DeepSeek-R1-Distill-Qwen-7B on DSR-sub, 1× 8×H100, batch 128, 30 步）rollout 时间下降 >50 %，代码 RL（Qwen3-8B on DeepCoder, 2× 8×H100）下降 ~25 %；消融显示分布感知预算比无限预算最多快 15 %，8K 序列长度下仍能 >30 % 加速。Mermaid 图展示 DAS 装配后的 rollout 循环（单列 TB，按 ProRL 课上学到的规则把 Signals 放成侧边子图）。已交叉链接至 [[speculative-decoding]]、[[prorl-agent]]、[[grpo]]、[[continuous-batching]]、[[kv-cache-optimization]]、[[vllm]]、[[sglang]]、[[long-context-serving]]。EN/CN 双语对齐。
 
 ## 2026-05-08
 - [Q&A] [[prorl-agent]] —— Shiki 提了 4 个关于论文的概念性问题：(1) scaffold 是什么、(2) "稳定的 HTTP 契约"指什么、(3) token-in/token-out 是什么以及去掉之后为什么 off-policy 不稳、(4) "rootless 沙箱"是什么。Q1+Q2+Q4 合并为一个 `[!question]+` callout，置于 Background 章节比较表之后；Q3 单独 callout 置于 Token-in/token-out 子节。EN/CN 双语对齐。
