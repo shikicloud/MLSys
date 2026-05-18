@@ -3,7 +3,7 @@ title: "Continuous Batching: Dynamic Request Scheduling"
 category: llm-inference
 tags: [continuous-batching, scheduling, iteration-level, dynamic-batching, throughput]
 created: 2026-04-13
-updated: 2026-05-07
+updated: 2026-05-13
 status: mature
 ---
 
@@ -93,6 +93,26 @@ Decode:│batch │ │batch │ │batch │ │batch │ │batch │
 **Token budget model**: each step has a fixed token budget (e.g., 2048). Prefill chunks and decode tokens share this budget, keeping per-step compute predictable.
 
 **TTFT vs TBT trade-off**: Large chunks → lower TTFT (prefill finishes faster) but higher TBT (decode blocked). Small chunks → lower TBT but higher TTFT. Typical sweet spot: 512-2048 tokens.
+
+### What chunked prefill is NOT
+
+The name suggests "splitting" and "chunks" — easy to confuse with parallelism techniques. Three mix-ups worth nailing down, in increasing order of how badly they mislead:
+
+**It does not split one sequence across multiple GPUs.** Chunked prefill keeps the entire request on one GPU (or one TP group). What it splits is the *work* for that request across multiple scheduler iterations on the *same* GPU. The 32K-token prefill still lives in one device's memory; it just isn't computed in a single forward pass.
+
+**It is not a parallelism technique.** [[parallelism-strategies-deep-dive|Parallelism]] (TP, PP, DP, CP, EP) decides *which GPU* computes *which part* — a **spatial** split. Chunked prefill decides *which iteration* computes *which token* — a **temporal** split. The two are orthogonal and compose: a 1M-token request can run with CP=8 across GPUs *and* chunked prefill on each GPU's local slice, simultaneously.
+
+**It is not the only way to solve "prefill blocks decode."** The orthogonal alternative is [[prefill-decode-disaggregation|PD disaggregation]] — put prefill workers and decode workers on *different physical nodes* so they never share a forward pass. Chunked prefill says *mix them smartly*; PD disaggregation says *don't mix them at all*. The trade-offs:
+
+| | Chunked prefill | PD disaggregation |
+|---|---|---|
+| Where prefill and decode run | Same GPU(s), different iterations | Different nodes |
+| Primary cost | Higher TTFT (prefill split into more passes) | KV cache transfer between nodes |
+| Best when | Small / medium deployments; mixed traffic | Large deployments; well-characterized traffic |
+| Memory pressure | Single shared pool, contended | Two pools, dedicated per role |
+| Throughput scaling | One stage's stall hurts the other | Stages scale independently |
+
+Production systems often use both — chunked prefill *within* a prefill-dedicated node group to smooth its internal load, plus PD disaggregation *across* prefill/decode node groups to eliminate cross-role interference.
 
 ## Scheduling Strategies
 

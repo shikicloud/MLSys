@@ -3,7 +3,7 @@ title: "LLM 并行策略完全指南：DP / TP / PP / SP / CP / EP / EDP / ETP"
 category: llm-inference
 tags: [张量并行, 数据并行, 专家并行, 流水线并行, 序列并行, 上下文并行, moe, 多gpu, 分布式推理, 分布式训练]
 created: 2026-04-14
-updated: 2026-05-07
+updated: 2026-05-13
 status: mature
 ---
 
@@ -635,18 +635,37 @@ class SPTransformerBlock(torch.nn.Module):
         return x  # [B, S/TP, D]
 ```
 
-### 5.6 SP vs CP 的区别
+### 5.6 SP vs CP —— 撞名引发的混乱
 
-SP 和 CP 都涉及序列维度的切分，但作用域完全不同：
+"Sequence parallelism"这个词至少被三篇不同论文重用过，引发的混乱让人原地转圈。**本 wiki 里的 SP 特指** Megatron-LM v2（Korthikanti et al., 2022）的定义：在一个 TP 组 *内部* 仅切 LayerNorm/Dropout 的激活。**本 wiki 里的 CP** 是更宽泛的"在独立 GPU 维度上切整个 attention 计算"。
 
-| 维度 | SP (Sequence Parallelism) | CP (Context Parallelism) |
-|------|--------------------------|--------------------------|
-| 切分位置 | LayerNorm、Dropout（非 TP 区域） | 注意力计算（QKV 交互） |
-| 与 TP 的关系 | SP = TP 的补充，两者同组 | CP 是独立维度 |
-| 通信原语 | AllGather + ReduceScatter（来自拆解 AllReduce） | Ring P2P 或 AllToAll |
-| 目标 | 减少激活内存 | 支持超长序列 |
-| 典型大小 | SP = TP（如 SP=8） | CP = 2, 4, 8, ...（可很大） |
-| 适用条件 | 使用 TP 时必须 / 应该启用 | 序列长度超出单卡 KV cache |
+论文和代码里你会撞见的三种"序列并行"：
+
+| 实际切了什么 | 大家叫它 | 本 wiki 称呼 |
+|---|---|---|
+| TP 组内 LayerNorm / Dropout 激活（Megatron v2） | "Sequence parallelism" | **SP** |
+| 整个 attention 跨独立 GPU 维度切，AllToAll 实现（DeepSpeed Ulysses） | "Sequence parallelism" | **CP**（Ulysses 变体） |
+| 整个 attention 跨独立 GPU 维度切，Ring P2P 实现（Ring Attention） | "Sequence parallelism" 或 "Ring Attention" | **CP**（Ring 变体） |
+
+两个问题就能区分任何论文：
+
+1. **切的是什么？** 只切 LayerNorm/Dropout → SP。整个 attention → CP。
+2. **是 TP 组内还是独立 GPU 维度？** TP 组内 → SP（大小永远等于 TP）。独立维度 → CP（大小与 TP 无关）。
+
+完整对比：
+
+| 维度 | SP (Megatron v2) | CP |
+|------|------------------|----|
+| 切什么 | LayerNorm + Dropout 激活（非 TP 区域） | 整个 attention（QKV + softmax + 输出投影） |
+| 与 TP 关系 | 永远在 TP 组内；SP 大小 = TP 大小 | 独立 GPU 维度；CP 大小与 TP 无关 |
+| 通信原语 | 进 TP 区域 AllGather + 出 TP 区域 ReduceScatter | Ring P2P（Ring Attention）或 AllToAll（Ulysses） |
+| 存在意义 | 降低 TP 区域的激活显存 | 支持单卡 KV cache 装不下的超长序列 |
+| 典型大小 | SP = TP = 8（取决于 TP 设置） | CP = 2 / 4 / 8 / ... / 64+ |
+| 是否必须 | Megatron-LM 在 TP+EP 同时用时强制 SP | 序列超出单卡容量时才用 |
+| 跟谁通信 | 与 TP 区域的 AllReduce（被拆成 AG + RS） | 与持有相邻序列段的其它 CP rank |
+| 总通信量 | 与朴素 TP 相同（AllReduce 被拆解，没消除） | 在 TP/DP 之上额外增加 |
+
+DeepSpeed Ulysses 论文标题 *"Sequence Parallelism for Long Sequence Training"* 是最痛的撞名 —— 它说的"sequence parallelism"恰好是其他所有框架现在叫 CP 的东西。**读任何论文时若看到"sequence parallelism"，看维度上切了什么，别看名字**。改了 attention 数学就是 CP；只挪了 LayerNorm/Dropout 的激活就是 SP。
 
 ### 5.7 不足
 

@@ -3,7 +3,7 @@ title: "LLM Parallelism Strategies Complete Guide: DP / TP / PP / SP / CP / EP /
 category: llm-inference
 tags: [tensor-parallelism, data-parallelism, expert-parallelism, pipeline-parallelism, sequence-parallelism, context-parallelism, moe, multi-gpu, distributed-inference, distributed-training]
 created: 2026-04-14
-updated: 2026-05-07
+updated: 2026-05-13
 status: mature
 ---
 
@@ -132,14 +132,37 @@ Transformer Layer with TP + SP:
 - **Mandatory with TP+EP**: Megatron-LM requires `--sequence-parallel` when both TP and EP are used
 - **SP = TP in size**: SP degree always equals TP degree
 
-### 5.4 SP vs CP
+### 5.4 SP vs CP — the naming collision
 
-| | SP | CP |
-|--|----|----|
-| Shards | LayerNorm, Dropout (non-TP regions) | Attention (QKV interaction) |
-| Relation to TP | Complement, same group | Independent dimension |
-| Comm | AllGather + ReduceScatter | Ring P2P or AllToAll |
-| Goal | Reduce activation memory | Support ultra-long sequences |
+"Sequence parallelism" is overloaded across at least three different papers, which sends people in circles. **In this wiki, SP means the Megatron-LM v2 definition** (Korthikanti et al., 2022): sharding only LayerNorm/Dropout activations *inside* a TP group. **CP means** the broader sequence-dimension sharding of the *whole* attention computation, across an independent GPU dimension.
+
+Three things people call "sequence parallelism" in papers and codebases:
+
+| What's actually sharded | What people call it | What this wiki calls it |
+|---|---|---|
+| LayerNorm / Dropout activations inside a TP group (Megatron v2) | "Sequence parallelism" | **SP** |
+| Whole attention, across an independent GPU dim, via AllToAll (DeepSpeed Ulysses) | "Sequence parallelism" | **CP** (Ulysses variant) |
+| Whole attention, across an independent GPU dim, via Ring P2P (Ring Attention) | "Sequence parallelism" *or* "Ring Attention" | **CP** (Ring variant) |
+
+Two questions are enough to disambiguate any paper:
+
+1. **What is being sharded?** Just LayerNorm/Dropout → SP. The whole attention → CP.
+2. **Inside a TP group, or a separate GPU dimension?** Inside TP → SP (size always = TP). Separate dim → CP (any size, independent of TP).
+
+Full contrast:
+
+| | SP (Megatron v2) | CP |
+|---|---|---|
+| What it shards | LayerNorm + Dropout activations (non-TP regions) | The whole attention (QKV + softmax + output proj) |
+| Relation to TP | Always inside a TP group; SP size = TP size | Independent GPU dim; CP size unrelated to TP |
+| Communication | AllGather (entering TP region) + ReduceScatter (leaving) | Ring P2P (Ring Attention) or AllToAll (Ulysses) |
+| Why it exists | Reduce activation memory inside TP regions | Support sequences too long to fit one GPU's KV cache |
+| Typical size | SP = TP = 8 (whatever TP you picked) | CP = 2 / 4 / 8 / ... / 64+ |
+| Mandatory? | Megatron-LM forces SP whenever TP + EP are both used | Only when sequences exceed single-GPU capacity |
+| Talks to | TP-region AllReduce, decomposed into AG + RS | Other CP ranks holding adjacent sequence segments |
+| Total comm volume | Same as plain TP (AllReduce decomposed, not eliminated) | Adds new comm on top of TP/DP |
+
+The DeepSpeed Ulysses paper title — *"Sequence Parallelism for Long Sequence Training"* — is the most painful overlap, because that paper's "sequence parallelism" is exactly what every other framework now calls CP. **When reading any paper that mentions "sequence parallelism," check the dimension being sharded, not the word.** If the attention math is changed, it's CP. If only LayerNorm/Dropout activations move, it's SP.
 
 ---
 

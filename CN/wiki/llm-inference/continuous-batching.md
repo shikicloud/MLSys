@@ -3,7 +3,7 @@ title: "连续批处理：动态请求调度"
 category: llm-inference
 tags: [continuous-batching, 调度, iteration-level, 动态批处理, 吞吐量]
 created: 2026-04-13
-updated: 2026-05-07
+updated: 2026-05-13
 status: mature
 ---
 
@@ -293,6 +293,26 @@ TBT  = Time Between Tokens（token 之间的间隔，影响流式体验）
 - **最佳平衡**：通常在 512-2048 tokens 之间，具体取决于模型大小和 GPU 算力
 
 vLLM V1 默认采用分块预填充，块大小可通过 `max_num_batched_tokens` 参数配置。
+
+### Chunked Prefill 不是什么
+
+名字里有"切"和"块"，最容易被误以为是某种并行技术。三个值得钉死的混淆，按误导程度递增：
+
+**它不是把一条序列切到多张 GPU 上。** Chunked prefill 把整条请求保留在同一张 GPU（或同一个 TP 组）里。切的是这条请求的 *工作量*，分到这张 GPU 的多个调度 iteration 上。那条 32K-token 的 prefill 还是住在单卡显存里，只是不在一次 forward pass 里算完。
+
+**它不是并行技术。** [[parallelism-strategies-deep-dive|并行]]（TP、PP、DP、CP、EP）决定"哪张 GPU 算哪部分" —— **空间**切分。Chunked prefill 决定"哪个 iteration 算哪些 token" —— **时间**切分。两者正交可叠加：1M-token 请求可以同时 CP=8 跨 GPU 切 *并* 在每张 GPU 自己的片段上做 chunked prefill。
+
+**它不是解决"prefill 挡 decode"的唯一办法。** 正交方案是 [[prefill-decode-disaggregation|PD 分离]] —— 把 prefill worker 和 decode worker 放到 *不同的物理节点* 上，根本不共享 forward pass。Chunked prefill 说 *混着也能跑得好*；PD 分离说 *干脆别混*。两者取舍：
+
+| 维度 | Chunked prefill | PD 分离 |
+|------|-----------------|---------|
+| Prefill 和 decode 在哪 | 同 GPU 不同 iteration | 不同节点 |
+| 主要代价 | TTFT 变高（prefill 拆成更多 pass） | KV cache 跨节点传输 |
+| 适合场景 | 中小规模部署、流量混杂 | 大规模部署、流量画像清晰 |
+| 显存压力 | 单池子，互相挤 | 双池子，按角色独立 |
+| 吞吐扩展性 | 一边卡住影响另一边 | 两边独立扩缩 |
+
+生产系统经常两者叠加 —— prefill 专用节点组 *内部* 用 chunked prefill 平滑负载，prefill / decode 节点组 *之间* 用 PD 分离消除跨角色干扰。
 
 ---
 
