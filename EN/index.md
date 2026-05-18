@@ -17,6 +17,7 @@ updated: 2026-05-13
 - [[model-parallelism]] — Model parallelism: pipeline parallelism & context parallelism
 - [[parallelism-strategies-deep-dive]] — Parallelism strategies deep dive: DP / TP / EP / EDP / ETP
 - [[prefill-decode-disaggregation]] — Prefill-decode disaggregation architectures
+- [[af-disaggregation]] — Attention-FFN disaggregation: splitting operators (not phases) onto specialized hardware tiers (MegaScale-Infer, DP-attention + EP-MoE)
 - [[saw-int4]] — SAW-INT4: System-Aware 4-bit KV-cache quantization with block-diagonal Hadamard rotation (Together AI, arXiv 2604.19157) — paper review
 - [[rotation-based-quantization]] — Rotation-based quantization family overview (QuIP / QuaRot / SpinQuant / BDR)
 - [[das-spec-rl]] — DAS: Distribution-Aware Speculative Decoding for RL Training (suffix-tree drafter + length-aware budget; arXiv 2511.13841) — paper review

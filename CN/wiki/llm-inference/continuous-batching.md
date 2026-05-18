@@ -294,6 +294,94 @@ TBT  = Time Between Tokens（token 之间的间隔，影响流式体验）
 
 vLLM V1 默认采用分块预填充，块大小可通过 `max_num_batched_tokens` 参数配置。
 
+### 为什么 prefill 会"挡住" decode
+
+"prefill blocks decode"里"blocking"这个词承重很大。机制上原因就两条：
+
+**(1) Prefill 在长上下文下是真的慢。** Forward 的 FLOPs $\approx 2 \cdot N_{\text{params}} \cdot N_{\text{tokens}}$。Llama-70B 跑 16K prompt：
+
+$$
+2 \times 70 \times 10^9 \times 16384 \approx 2.3 \times 10^{15} \text{ FLOPs} = 2.3 \text{ PFLOPs}
+$$
+
+一张 H100 在 ~989 TFLOPs/s FP16 下要 **~2.3 秒**的纯计算时间，外加 attention 的 $O(S^2)$ 项（score matrix 大小 $16{\text{K}} \times 16{\text{K}} \times \text{num\_heads} \times \text{head\_dim}$）、kernel launch、内存读写。模型小 / prompt 短按比例缩，但"大模型长 prompt 的 prefill 是秒级"这个数量级是常识。
+
+**(2) 一次 forward pass 是不可分的调度单元。** 你塞进这次 forward 的东西 —— prefill token、decode token 或两者 —— 是一连串绑定的 CUDA kernel，没有中断点。调度器只能在 iteration *之间* 切换，不能 iteration 内部切。
+
+合在一起：如果你朴素地把 16K prefill 塞进 iteration $k$，所有在飞的 decode 请求都要等 2.3 秒才轮到 iteration $k{+}1$。它们这一 iteration 的 TBT 从 ~30 ms 跳到 2300 ms —— 流式输出那一边就是肉眼可见的卡顿：
+
+```
+iter k:    forward([prefill 16K of req X])                ← 2.3 s
+iter k+1:  forward([decode 1 token × 64 requests])        ← 30 ms each
+```
+
+Chunked prefill 的活就是**保证任何单个 iteration 都短到不让人卡**。每次 iteration 把一小段 prefill chunk 和一批 decode token 一起打包，既推进长 prefill 又给在飞 decode 出 token：
+
+```
+iter k:    forward([prefill 512 of X] + [decode 64 requests])   ← ~50 ms
+iter k+1:  forward([prefill 512 of X] + [decode 64 requests])   ← ~50 ms
+...
+```
+
+这也解释了为什么调度粒度重要：iteration 时长越小越均匀，尾延迟越受控。
+
+### Chunk size 的数学
+
+TTFT/TBT 折中有个清楚的闭式。设：
+
+- $T$ = prefill 总 token 数（如 16384）
+- $c$ = chunk size（每 iteration 的 token 数）
+- $a$ = forward pass 的每 token 增量代价（每 token 的算力 + 内存带宽消耗）
+- $b$ = 每 iteration 的固定开销（kernel launch、调度器、内存操作 —— 通常几百微秒）
+
+每 iter 时长与 prefill 所需的 iter 数：
+
+$$
+t_{\text{iter}} = a \cdot c + b, \qquad N_{\text{iter}} = T / c
+$$
+
+两个指标：
+
+$$
+\text{TBT（别的 decode 感受到的）} = a \cdot c + b
+$$
+
+$$
+\text{TTFT（本请求拿到首 token 的延迟）} = N_{\text{iter}} \cdot t_{\text{iter}} = \frac{T}{c}\,(a \cdot c + b) = a \cdot T + \frac{b \cdot T}{c}
+$$
+
+两个推论：
+
+- **TBT 随 $c$ 线性增长。** Chunk 越大 → iteration 越长 → 别的 decode 等得越久。
+- **TTFT 有两项。** $a \cdot T$ 是常数（prefill 工作量本来就那么多）。$b \cdot T / c$ 是**固定开销税**：每 iteration 都付一份 $b$，一共要 $T/c$ 次。Chunk 越小这一项越大。
+
+所以小 chunk 对 TTFT 是 *更差*，不是更好 —— 反直觉直到你看见公式。最优 $c^*$ 由固定开销 $b$ 与每 token 代价 $a$ 的比值决定。生产推理引擎上的甜点通常是 **512–2048 token**：
+
+- 重 $b$（kernel launch 多、Python 调度器慢）→ $c^*$ 偏大。
+- 轻 $b$（CUDA graphs、融合调度）→ $c^*$ 可以偏小。
+- 每 iteration 装更多 decode 请求 → TBT 对 $c$ 更敏感 → $c$ 往小推。
+
+vLLM 里的 `max_num_batched_tokens` 就是这个 $c$（严格说是 prefill+decode 合并预算）。4096 是常见生产默认。
+
+### FlashAttention 在 chunked prefill 里扮演什么角色
+
+很自然的追问：[[paged-attention|FlashAttention]] 不是把 $O(S^2)$ 的 attention matrix 干掉了吗？那是不是就可以放心用大 chunk 了？
+
+**短答**：FA *因为* 抬高内存上限而让大 chunk 成为可能，但**不改变 TTFT/TBT 折中本身**。
+
+详细：
+
+- **FA 没减少 attention 的 FLOPs。** Attention 计算量本来就是 $O(S^2 \cdot D)$，与实现无关。FA 改的是**内存峰值**：不再 materialize 完整 $S \times S$ score matrix，而是分块流式算，只保留 $O(S)$ 的活跃内存。**FLOPs 不变；内存 $O(S^2) \to O(S)$**。
+- **没有 FA 时 chunk size 被显存上限卡住。** 8K chunk 的 attention matrix 是 $8192^2 \times \text{num\_heads} \times 2 \text{ B}$ ≈ 几十 GB —— 直接 OOM。Pre-FA 时代你被迫小 chunk 只是为了让 attention 跑得起来。
+- **有了 FA，chunk size 只被你对 TBT 的偏好限制。** 显存不再是瓶颈，前一节的折中（每 iteration 时长 $a \cdot c + b$）才是真正约束。
+- **FA-2 / FA-3 顺便提供了 chunked prefill 需要的 kernel**：即 "新 Q chunk 对前面已 cache 的 KV 算 cross-attention" —— varlen Q + paged KV —— 自 FA-2 起就是标配路径。没有这个 kernel，chunked prefill 实现起来非常别扭。
+
+正确口径：
+
+> **FA 让 chunked prefill kernel 层面可行、并让你能根据正确的理由选 chunk size** —— 不是给你随便放大 chunk 的免费午餐。
+
+实践中 512–2048 还是甜点，但 FA 是你**有这个区间**而不是被显存限制到 256 的根本原因。
+
 ### Chunked Prefill 不是什么
 
 名字里有"切"和"块"，最容易被误以为是某种并行技术。三个值得钉死的混淆，按误导程度递增：

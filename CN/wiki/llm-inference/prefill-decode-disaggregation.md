@@ -3,7 +3,7 @@ title: "预填充-解码分离架构"
 category: llm-inference
 tags: [prefill-decode, 分离部署, splitwise, distserve, mooncake, kv传输]
 created: 2026-04-13
-updated: 2026-05-07
+updated: 2026-05-13
 status: mature
 ---
 
@@ -1048,11 +1048,56 @@ SLO 约束: TTFT < 500ms, TPOT < 100ms
 
 ---
 
+## 与 chunked prefill 的组合
+
+一个很自然的疑问："prefill 都跑到独立节点上了，为什么还需要 [[continuous-batching#分块预填充-chunked-prefill|chunked prefill]]？" 答案是 PD 分离和 chunked prefill 在**两个不同粒度上**解决**两个不同的干扰问题**：
+
+- **PD 分离**消除 *prefill ↔ decode* 在**节点**层面的干扰。
+- **Chunked prefill** 消除 *prefill ↔ prefill*（和 *prefill ↔ 在飞 decode*）在 **iteration** 层面的干扰 —— 既在 prefill 池内、也在 decode 池的"扩展 prefill"路径上。
+
+三个分离部署里 chunked prefill 依然承重的具体场景：
+
+**1. Prefill 池内部的 prefill ↔ prefill 干扰**：两条长请求同时到同一个 prefill 节点，仍然要排队：
+
+```
+没有 chunked prefill 的 prefill 节点：
+  [req A 16K prefill][req B 16K prefill][...]
+  req A TTFT = 2.3 s
+  req B TTFT = 2.3 s + 2.3 s = 4.6 s    ← B 排 A 后面
+
+启用 chunked prefill 的 prefill 节点：
+  [chunk_A1 + chunk_B1][chunk_A2 + chunk_B2]...
+  req A TTFT ≈ 2.5 s    ← B 的 chunk 蹭计算，A 略多一点
+  req B TTFT ≈ 2.5 s    ← 与 A 几乎并行推进，不再排队等
+```
+
+第二条请求的 TTFT 从"等 4.6 秒"变成"和 A 几乎同时拿到首 token"。
+
+**2. Decode 节点上的"扩展 prefill"**：decode 节点严格意义上并不只跑 decode：
+
+- **多轮对话**：新一轮用户输入到达，新 token 必须先 prefill 进已有 KV cache 才能继续 decode。
+- **工具调用返回**：返回的工具结果作为新 token 拼回去，要 prefill 一段。
+- **投机解码回滚**：被拒的投机序列要回退并重 prefill 一小段。
+
+这些"扩展 prefill"典型 50–2000 token —— 跟首轮 prompt 比短，但仍然长到能卡住节点上正在跑的 decode。Decode 池开 chunked prefill 把这种小段也切开混入。
+
+**3. 池内的流量整形**：PD 分离只解决"角色分离"。每个角色内部仍然需要平滑负载、控制尾延迟、防止个别长请求毒化整批。Chunked prefill 是 prefill 池的负载平滑工具；decode 池上小 chunk 用来驯服上面那种扩展 prefill。
+
+口诀：
+
+```
+PD 分离      =  prefill 池 ↔ decode 池        别混
+Chunked      =  prefill 池内部 / decode 池的    混着混，但每次混一小段
+                "扩展 prefill"
+```
+
+两层是不同尺度上的同一种"避免阻塞"思想。正交叠加，不是替代关系。
+
 ## 前沿方向
 
 ### 注意力-FFN 分离
 
-下一代分离的前沿是将 Transformer 内部的**注意力层**和 **FFN 层**分离到不同硬件：
+下一代分离的前沿是将 Transformer 内部的**注意力层**和 **FFN 层**分离到不同硬件 —— 完整介绍见独立页面 [[af-disaggregation]]。简要动机：
 
 ```
 注意力-FFN 分离：
@@ -1069,10 +1114,7 @@ SLO 约束: TTFT < 500ms, TPOT < 100ms
   │  专用硬件    │ →  │  专用硬件    │
   └──────────────┘    └──────────────┘
 
-对 MoE 模型特别自然：
-  - Attention: 内存密集，固定计算
-  - MoE FFN: 计算密集，all-to-all 通信
-  - 已有 Expert Parallelism 提供的分割点
+对 MoE 模型特别自然（DP attention + EP MoE 就是结构性 AF 分离）。
 ```
 
 ### 全局 KV 缓存管理

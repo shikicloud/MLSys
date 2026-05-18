@@ -3,7 +3,7 @@ title: "Prefill-Decode Disaggregation"
 category: llm-inference
 tags: [prefill-decode, disaggregation, splitwise, distserve, mooncake, kv-transfer]
 created: 2026-04-13
-updated: 2026-05-07
+updated: 2026-05-13
 status: mature
 ---
 
@@ -195,6 +195,55 @@ TPOT P99:       250ms            45ms  ← 5.6x improvement
 | DistServe | 7.4x | 7.4x |
 | Mooncake | 5.0-6.0x | 5.0-6.0x |
 | Splitwise | 1.4x | 1.4x |
+
+## Composing with chunked prefill
+
+A natural confusion: "if prefill is on its own node, why would I still need [[continuous-batching#Chunked Prefill|chunked prefill]] on top?" The answer is that PD disaggregation and chunked prefill operate at **two different granularities** and solve **two different interference problems**:
+
+- **PD disaggregation** eliminates *prefill ↔ decode* interference at the **node** level.
+- **Chunked prefill** smooths *prefill ↔ prefill* (and *prefill ↔ in-flight decode*) interference at the **iteration** level — both within the prefill pool and on the decode pool's "extension prefill" path.
+
+Three concrete scenarios where chunked prefill is still load-bearing inside a disaggregated deployment:
+
+**1. Prefill ↔ prefill interference on the prefill pool.** Two long requests arriving close together at the same prefill node still queue behind each other:
+
+```
+Without chunked prefill on the prefill node:
+  [16K prefill of req A][16K prefill of req B][...]
+  req A TTFT = 2.3 s
+  req B TTFT = 2.3 s + 2.3 s = 4.6 s    ← B sits behind A
+
+With chunked prefill on the prefill node:
+  [chunk_A1 + chunk_B1][chunk_A2 + chunk_B2]...
+  req A TTFT ≈ 2.5 s    ← small extra because chunk_B is co-resident
+  req B TTFT ≈ 2.5 s    ← almost parallel progress, no queuing wait
+```
+
+The second request's TTFT goes from "wait 4.6 s" to "get first token at the same time as A."
+
+**2. Extension prefill on the decode pool.** A decode node is not "decode-only" in the strict sense:
+
+- **Multi-turn dialogue**: when a new user turn arrives, the new tokens must be prefilled into the existing KV cache before decoding resumes.
+- **Tool-call returns**: the returned tool result is appended as new tokens that must be prefilled.
+- **Speculative-decoding rollback**: a rejected speculation sequence requires re-prefilling a small stretch.
+
+These "extension prefills" are typically 50–2000 tokens — short by initial-prompt standards but still long enough to block a node's in-flight decodes if not chunked. Chunked prefill on the decode pool smooths these out.
+
+**3. Traffic shaping inside each pool.** PD disaggregation only solves *role separation*. Within each role, you still need to smooth load, control tail latency, and prevent occasional outlier requests from poisoning the batch. Chunked prefill is the load-smoothing knob for the prefill pool; small chunks on the decode pool tame the extension-prefill case above.
+
+The mnemonic:
+
+```
+PD disaggregation  =  prefill pool ↔ decode pool      DON'T mix
+Chunked prefill    =  inside prefill pool / inside    DO mix the
+                      decode pool's extension prefill   chunks smartly
+```
+
+Same "avoid blocking" idea operating at different scales. They're orthogonal layers, not alternatives.
+
+## Beyond PD: attention-FFN disaggregation
+
+PD disaggregation splits *phases* (prefill vs decode) onto different hardware. The natural next step is to split *operators within a single forward pass* — attention onto one hardware tier, FFN onto another — because their compute / memory / bandwidth profiles also differ sharply. This is **attention-FFN (AF) disaggregation**, covered on its own page: see [[af-disaggregation]] for the full treatment (the asymmetry that motivates it, MegaScale-Infer architecture, the structural AF-shape of DP-attention + EP-MoE, activation-transfer cost analysis, and when it pays off).
 
 ## Limitations
 

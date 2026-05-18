@@ -94,6 +94,94 @@ Decode:│batch │ │batch │ │batch │ │batch │ │batch │
 
 **TTFT vs TBT trade-off**: Large chunks → lower TTFT (prefill finishes faster) but higher TBT (decode blocked). Small chunks → lower TBT but higher TTFT. Typical sweet spot: 512-2048 tokens.
 
+### Why prefill blocks decode at all
+
+The "blocking" word in *prefill blocks decode* is doing a lot of work. The mechanical reason it happens, in two facts:
+
+**(1) Prefill is genuinely slow at long context.** Forward-pass FLOPs $\approx 2 \cdot N_{\text{params}} \cdot N_{\text{tokens}}$. Llama-70B on a 16 K prompt:
+
+$$
+2 \times 70 \times 10^9 \times 16384 \approx 2.3 \times 10^{15} \text{ FLOPs} = 2.3 \text{ PFLOPs}
+$$
+
+An H100 at ~989 TFLOPs/s FP16 needs about **2.3 seconds** of pure compute, plus attention's $O(S^2)$ contribution (score matrix is $16{\text{K}} \times 16{\text{K}} \times \text{num\_heads} \times \text{head\_dim}$), plus kernel-launch and memory overhead. Smaller models / shorter prompts scale down, but "seconds for big-model long-prompt prefill" is the order of magnitude.
+
+**(2) A forward pass is one indivisible scheduling unit.** Whatever you packed into a forward pass — prefill tokens, decode tokens, or both — runs as a fused sequence of CUDA kernels with no preemption point. The scheduler can only switch *between* iterations, not inside one.
+
+Combine the two: if you naively put a 16 K prefill in iteration $k$, every decode request in flight has to wait 2.3 s before iteration $k{+}1$ runs. Their TBT for that one iteration jumps from ~30 ms to 2300 ms — a visible "freeze" in streaming output:
+
+```
+iter k:    forward([prefill 16K of req X])                ← 2.3 s
+iter k+1:  forward([decode 1 token × 64 requests])        ← 30 ms each
+```
+
+Chunked prefill's job is to make sure *no single iteration is long enough to freeze anyone*. By packing a small prefill chunk together with a batch of decode tokens per iteration, every iteration both advances the long prefill AND emits a token for the in-flight decoders:
+
+```
+iter k:    forward([prefill 512 of X] + [decode 64 requests])   ← ~50 ms
+iter k+1:  forward([prefill 512 of X] + [decode 64 requests])   ← ~50 ms
+...
+```
+
+This is also why scheduling granularity matters: the smaller and more uniform iteration time, the better the tail-latency story.
+
+### The chunk-size math
+
+The TTFT/TBT trade-off has a clean closed form. Set:
+
+- $T$ = total prefill token count (e.g. 16384)
+- $c$ = chunk size (tokens per iteration)
+- $a$ = per-token incremental cost of a forward pass (compute + memory traffic per token)
+- $b$ = per-iteration fixed overhead (kernel launches, scheduler, memory ops — typically a few hundred µs)
+
+Per-iteration time and per-prefill iteration count:
+
+$$
+t_{\text{iter}} = a \cdot c + b, \qquad N_{\text{iter}} = T / c
+$$
+
+The two metrics:
+
+$$
+\text{TBT (other decodes)} = a \cdot c + b
+$$
+
+$$
+\text{TTFT (this request)} = N_{\text{iter}} \cdot t_{\text{iter}} = \frac{T}{c}\,(a \cdot c + b) = a \cdot T + \frac{b \cdot T}{c}
+$$
+
+Two observations fall out:
+
+- **TBT grows linearly in $c$.** Bigger chunk → longer iteration → other decodes wait longer.
+- **TTFT has two terms.** $a \cdot T$ is constant (you can't avoid doing the prefill work). $b \cdot T / c$ is the *overhead tax*: every iteration pays $b$, and you need $T/c$ iterations. Small $c$ blows this term up.
+
+So small chunks are *worse* for TTFT, not better — counter-intuitive until you see the math. The sweet spot $c^*$ depends on the ratio of fixed overhead $b$ to per-token cost $a$. For typical inference engines this lands at **512–2048 tokens**:
+
+- Heavy `b` (lots of kernel launches, Python scheduler overhead) → larger $c^*$.
+- Light `b` (CUDA graphs, fused scheduling) → smaller $c^*$ is acceptable.
+- More decode requests packed per iteration → TBT becomes more sensitive to $c$ → push $c$ smaller.
+
+vLLM's `max_num_batched_tokens` is the knob that sets $c$ (technically the *combined* prefill+decode budget per iteration). 4096 is a common production default.
+
+### FlashAttention's role in chunked prefill
+
+A natural follow-up: doesn't [[paged-attention|FlashAttention]] avoid the $O(S^2)$ attention matrix? Doesn't that let us use larger chunks?
+
+**Short answer**: FlashAttention enables larger chunks by raising the *memory* ceiling, but does not change the TTFT/TBT trade-off itself.
+
+The longer version:
+
+- **FlashAttention does not reduce attention FLOPs.** Attention compute is $O(S^2 \cdot D)$ regardless of implementation. FA's trick is the *memory peak*: instead of materializing the full $S \times S$ score matrix, it streams attention in tiles and keeps only $O(S)$ memory live. **FLOPs unchanged; memory $O(S^2) \to O(S)$.**
+- **Without FA, chunk size is bounded by memory.** An 8 K chunk's attention matrix is $8192^2 \times \text{num\_heads} \times 2 \text{ B} \approx$ tens of GB — instant OOM. Pre-FA, you were forced to small chunks just to keep attention alive.
+- **With FA, chunk size is bounded only by your TBT preference.** Memory is no longer the gating factor; the trade-off in the previous subsection (compute time per iteration $a \cdot c + b$) is what limits you now.
+- **FA-2 and FA-3 also ship the *kernel that chunked prefill needs***. Specifically, "new Q chunk attending to a previously-cached KV prefix" — varlen Q with paged KV — has been the standard FA path since FA-2. Without that kernel, implementing chunked prefill efficiently is awkward.
+
+So the right framing:
+
+> **FlashAttention is what makes chunked prefill *kernel-feasible* and lets you choose any chunk size you want for the right reasons** — not a free pass to make chunks arbitrarily large.
+
+In practice 512–2048 stays the sweet spot, but FA is why you have that range at all instead of being forced into 256 by memory limits.
+
 ### What chunked prefill is NOT
 
 The name suggests "splitting" and "chunks" — easy to confuse with parallelism techniques. Three mix-ups worth nailing down, in increasing order of how badly they mislead:
