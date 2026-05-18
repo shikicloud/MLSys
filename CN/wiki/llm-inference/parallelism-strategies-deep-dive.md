@@ -1237,9 +1237,43 @@ Step 4: AllToAll — 恢复序列切分
 | GPU 数限制 | 无（只需 P2P） | 受限于 head 数 (N ≤ n_heads) |
 | 与 FlashAttention 兼容 | 需要适配 | 直接兼容 |
 
-**Hybrid CP**：实践中可以结合两者——在节点内使用 Ulysses（带宽高），跨节点使用 Ring Attention（可隐藏延迟）。PyTorch 的 Context Parallel 实现就支持这种混合模式。
+**Hybrid CP**：实践中可以结合两者——在节点内使用 Ulysses（带宽高），跨节点使用 Ring Attention（可隐藏延迟）。PyTorch 的 Context Parallel 实现就支持这种混合模式。详见 [[#7.6 现在常用的策略 —— 混合 CP|§7.6 混合 CP]]。
 
-### 7.4 CP vs TP 处理长序列
+### 7.4 Megatron CP（Megatron-LM 的实现）
+
+Megatron 的 CP 本质是 **Ring Attention 加上三项生产级优化**，是 NVIDIA / Megatron-LM 系（NeMo、NeMo-Megatron-Core、NVIDIA 风格的 Llama 训练栈）长上下文训练的事实标准。
+
+**优化 1 —— Causal mask 的 zigzag 负载均衡**
+
+Plain Ring + causal mask 下 GPU 0 几乎不算东西、GPU $N{-}1$ 几乎全算。Megatron 把序列切成 $2N$ 块（不是 $N$ 块），再把"靠前"和"靠后"的块配对发给同一张 GPU：
+
+```
+Plain ring (N=4 GPU):
+  GPU0: [block 0]        ← causal 下几乎不算
+  GPU1: [block 1]
+  GPU2: [block 2]
+  GPU3: [block 3]        ← causal 下几乎全算
+
+Zigzag (N=4 GPU, 切 8 块):
+  GPU0: [block 0, block 7]    ← 一前一后，负载均衡
+  GPU1: [block 1, block 6]
+  GPU2: [block 2, block 5]
+  GPU3: [block 3, block 4]
+```
+
+每张 GPU 同时持有一个"靠前"块和一个"靠后"块，causal 下每张卡的计算量大致相当。相对 plain Ring + causal，有效吞吐近乎翻倍。
+
+**优化 2 —— Ring P2P 嵌入 FlashAttention kernel 内部**
+
+不是在框架层调度 Ring P2P（把 FlashAttention 当黑盒），而是直接改 FlashAttention 的 tile 循环，在 tile 之间发 `send` / `recv`。这才是真正能做到计算 / 通信重叠的实现 —— 框架层版本在 iteration 之间常会卡住。
+
+**优化 3 —— 与 TP / PP / DP / SP / EP 一等公民式集成**
+
+CP 作为另一个并行维度通过 `--context-parallel-size <N>` 暴露。框架自动构造正确的 NCCL 通信组、管理 KV cache 跨 CP 分片、处理 CP 边界的 mask、与其他 4 个维度自动组合。这些 plumbing 你一行不用写。
+
+这就是为什么 DeepSeek-V3、Llama-3-405B 长上下文版、NVIDIA Nemotron 长上下文变体都用 Megatron-CP 而不是自己造轮子。
+
+### 7.5 CP vs TP 处理长序列
 
 | 维度 | CP | TP |
 |------|----|----|
@@ -1251,7 +1285,33 @@ Step 4: AllToAll — 恢复序列切分
 
 **关键洞察**：对于长序列，TP 的 KV cache 复制是巨大的内存浪费。如果 8 卡 TP，每张卡都存完整的 1M token KV cache，而 CP=8 时每张卡只存 125K token 的 KV cache。
 
-### 7.5 不足
+### 7.6 现在常用的策略 —— 混合 CP
+
+2024–2026 的生产部署里没人单独用某一种 CP 实现，混合策略才是规范：
+
+```
+节点内 (≤ 8 GPU):  Ulysses
+   → NVLink AllToAll 极快；head 数通常够。
+
+节点间:             Ring / Megatron-CP
+   → IB / RoCE 上的 P2P 扩展性好；计算/通信重叠把延迟藏掉。
+
+组合:  hybrid Ulysses (节点内) × Ring (节点间)
+   → Ulysses=8 × Ring=4 = 4 节点 32 路 CP。
+   → 1M-token 训练、256 GPU 量级部署的常见配置。
+```
+
+这个混合模式的具体实现：
+
+- **Tencent USP** (Unified Sequence Parallel) —— 显式提出混合模式的论文。
+- **Megatron-LM CP** 的 `--context-parallel-size` 把两种变体都封进去，根据通信拓扑自动选。
+- **PyTorch 原生 Context Parallel**（较新 PyTorch 版本）把 Ring + Ulysses 暴露成可组合的 backend。
+- **SGLang 长上下文模式** + **xDiT**（视频 diffusion）都用混合模式。
+- **FlashAttention-3** 自带匹配这种混合的分布式原语。
+
+**训练 vs 推理**：CP 在 *训练* 里占主导 —— 激活和梯度内存随 $S$ 暴涨，最先压垮单卡。在 *推理* 里，KV cache 压缩（[[saw-int4|SAW-INT4]]、MLA、KV 裁剪）和 [[prefill-decode-disaggregation|PD 分离]] 通常是更早的选择，不一定先考虑 CP。但 Gemini 风格的 1M+ 上下文推理、前沿长上下文 serving 也开始在推理时用 CP。
+
+### 7.7 不足
 
 | 不足 | 说明 |
 |------|------|
@@ -2222,6 +2282,71 @@ DeepSeek-V3 Training:
 > **专家激活密度** = `experts_per_token / total_routed_experts × 100%`
 > - DeepSeek-V3: 8/256 = 3.1% → 适合 EP
 > - Llama-4-Maverick: 1/128 ≈ 0.8% → EP 收益可疑
+
+### 12.7 TP × CP 组合详解
+
+最容易让人想不通的组合："TP 切 head、CP 切 sequence，这两个怎么叠？"答案是 **它们是 GPU 2D 网格里的正交轴**，单次 forward pass 里两个通信组永远不会同时通信。
+
+**例子：8 张 GPU，TP=2 × CP=4。**
+
+```
+         CP rank 0    CP rank 1    CP rank 2    CP rank 3
+        ┌──────────┬──────────┬──────────┬──────────┐
+TP rank 0│  GPU 0   │  GPU 1   │  GPU 2   │  GPU 3   │
+        ├──────────┼──────────┼──────────┼──────────┤
+TP rank 1│  GPU 4   │  GPU 5   │  GPU 6   │  GPU 7   │
+        └──────────┴──────────┴──────────┴──────────┘
+```
+
+Attention 入口张量形状是 `(B, S, H, D)`。两层切分：
+
+- **TP 切 $H$**：网格每一行（同 TP rank）拥有 $H/2$ 个 head
+- **CP 切 $S$**：网格每一列（同 CP rank）拥有 $S/4$ 个 token
+
+每张 GPU 持有形状 `(B, S/4, H/2, D)` 的子张量。
+
+**两个独立的通信组：**
+
+```
+TP 通信组（垂直，2 个成员）：       用于 TP AllReduce
+  {GPU 0, GPU 4}, {GPU 1, GPU 5},
+  {GPU 2, GPU 6}, {GPU 3, GPU 7}
+
+CP 通信组（水平，4 个成员）：       用于 Ring P2P 或 AllToAll
+  {GPU 0, GPU 1, GPU 2, GPU 3}     (TP rank 0 那一行)
+  {GPU 4, GPU 5, GPU 6, GPU 7}     (TP rank 1 那一行)
+```
+
+**一层 transformer 的 attention 部分 —— 执行流：**
+
+```
+1. Input LayerNorm + Dropout（SP）：
+     按 sequence 维度切（与 CP 协调，不冲突）。
+
+2. QKV projection（TP 区域）：
+     每张 GPU 拿 input (B, S/4, D) 乘自己持有的 W_qkv 切片（column-parallel）
+     → (B, S/4, H/2 × D × 3)。无通信。
+
+3. Attention 计算（CP 区域）：
+     每张 GPU 拿自己的 Q, K, V（形状 (B, S/4, H/2, D)）
+     在自己的 CP 组（4 GPU）内跑 Ring Attention 或 Ulysses。
+     输出：(B, S/4, H/2, D)。
+     → 这一阶段所有 CP 通信只在 row 内进行。TP 不参与；H/2 head 子集
+       是各 TP rank 的私有数据。
+
+4. Output projection（TP 区域）：
+     row-parallel TP matmul → 在 2 卡 TP 组上 AllReduce。
+     → 这一阶段所有 TP 通信只在 column 内进行。CP 不参与；
+       sequence 切片不动。
+
+5. Residual + LayerNorm + FFN（TP + SP）→ 下一层。
+```
+
+**关键观察：每张 GPU 同时是两个组的成员，但同一时刻只有一个组在通信。** CP attention 阶段 GPU 0 只跟 {GPU 1, 2, 3} 通信，跟 GPU 4 没关系。TP output-projection 阶段 GPU 0 只跟 GPU 4 通信，跟 GPU 1/2/3 没关系。两个组在同一次 forward 的不同轴上工作。
+
+**数学上为什么成立**：multi-head attention 在 head 维度上 *天然并行* —— 不同 head $h$ 在 attention 内部 *完全不交互*。所以 TP 切 head 不需要在 attention 内部通信。Token 之间则 *全部需要交互*（每个 query 看全 KV），所以 CP 切 sequence 需要在 attention 内部通信。**两个轴的"通信发生位置"恰好不重叠**，这正是它们可以自由组合的根本原因。
+
+**推广**：生产 5 维并行（TP × PP × DP × CP × EP）下每张 GPU 是 5 维网格里的一个坐标；每个并行维度对应一个独立的 NCCL 通信组；每层 forward 根据当前 operator 决定走哪个轴的通信组。不同层 / 不同阶段用不同的组；从来不需要两个组同时通信。
 
 ---
 

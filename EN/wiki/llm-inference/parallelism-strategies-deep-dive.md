@@ -230,30 +230,167 @@ Single-request latency: Always worse with PP (sequential stages). At high concur
 
 ### 7.1 Why CP
 
-At 1M+ token sequences, KV cache alone can exceed single-GPU memory. Attention computation is O(S^2). CP splits the **sequence dimension** across GPUs.
+At 128 K → 1 M → 10 M token sequences, two problems compound on a single GPU:
+
+- **KV cache exceeds memory.** Llama-3-70B at $S = 1\text{M}$, FP16: $2 \times 80 \times 8 \times 128 \times 10^6 \times 2 \approx 328\text{ GB}$ per request — far beyond one H100/H200's HBM.
+- **Attention is $O(S^2)$ in FLOPs.** Doubling $S$ quadruples attention compute.
+
+CP shards the **sequence dimension** across $N$ GPUs. Each GPU holds $S/N$ tokens of Q/K/V. The hard part is that attention requires every query to see *all* keys/values — so the question becomes: how do you make every GPU "see" all KV without materializing the whole sequence on any single GPU? Three implementations answer this question with three different communication strategies.
 
 ### 7.2 Ring Attention
 
-Splits sequence into N segments. Each GPU holds its Q chunk permanently; KV blocks rotate around a ring. Communication overlaps with computation -- when T_compute >= T_communicate, communication is fully hidden.
+**Idea** (Liu, Zaharia, Abbeel — ICLR 2024). Put the $N$ GPUs in a ring. Each GPU keeps its own Q segment in place; the **KV blocks rotate** around the ring. After $N{-}1$ rotations, every Q has been multiplied against every KV.
 
-Meta achieved 1M tokens in <1 minute on a single H100 node; 10M tokens on 32 hosts.
+```
+4 GPUs, sequence split into 4 segments [Q0K0V0, Q1K1V1, Q2K2V2, Q3K3V3]:
 
-### 7.3 Ulysses (DeepSpeed)
+Round 0:  each GPU computes attention on its own KV
+  GPU0: Q0 × (K0,V0) → O0_partial
+  GPU1: Q1 × (K1,V1) → O1_partial
+  GPU2: Q2 × (K2,V2) → O2_partial
+  GPU3: Q3 × (K3,V3) → O3_partial
 
-Uses AllToAll to transform from (all heads, partial sequence) to (partial heads, full sequence) before attention, then reverses after.
+Round 1:  KV rotates one step clockwise
+  GPU0: Q0 × (K3,V3) → accumulate into O0_partial   ← P2P recv (K3,V3) from GPU3
+  GPU1: Q1 × (K0,V0) → accumulate into O1_partial
+  GPU2: Q2 × (K1,V1) → accumulate into O2_partial
+  GPU3: Q3 × (K2,V2) → accumulate into O3_partial
 
-| Feature | Ring Attention | Ulysses |
-|---------|---------------|---------|
-| Communication | P2P ring (N-1 rounds) | 2x AllToAll |
-| Overlap with compute | Yes | No (blocking) |
-| Intrusiveness | High (modify attention kernel) | Low |
-| GPU count limit | None | N <= num_attention_heads |
+Round 2, 3:  continue. After N-1 = 3 rounds each Q_i has seen every K/V.
+```
 
-**Hybrid**: Ulysses intra-node + Ring Attention inter-node.
+Three implementation details make Ring Attention work in practice:
 
-### 7.4 CP vs TP for Long Sequences
+- **Online softmax.** Partial outputs cannot be summed directly — softmax is non-linear. Use FlashAttention's streaming softmax: maintain `(running_max, running_sum, running_output)` per Q row and merge each incoming KV chunk in numerically-stable fashion. This is why Ring Attention is always implemented *with* FlashAttention.
+- **Compute / communication overlap.** Round $k{+}1$'s KV transfer can run in parallel with round $k$'s attention compute. If $T_{\text{compute}} \geq T_{\text{comm}}$, communication is **fully hidden** and Ring's effective overhead vs. plain attention is near-zero. The condition holds easily for $S \geq 8192$, $N \leq 8$.
+- **Causal-mask load imbalance.** Under causal masking, GPU $i$'s queries should attend only to KV at positions $\leq$ themselves. So when GPU $i$ receives a KV chunk from "later" in the sequence, the work is zero (skipped by the mask). GPU 0 ends up doing almost no work; GPU $N{-}1$ does almost everything. The **Striped Attention** follow-up (Liu et al., 2023) fixes this with a zigzag chunking that gives each GPU a mix of early and late tokens.
 
-CP shards the KV cache (each GPU stores S/N), while TP replicates it. For long sequences, CP is far more memory-efficient. CP also scales beyond the NVLink domain.
+**Properties.**
+
+- Memory per GPU: $O(S/N)$ — linear.
+- Total compute: unchanged ($S^2/N$ per GPU, $S^2$ globally).
+- Communication: $N{-}1$ rounds of P2P, each carrying $\sim$ `head_dim × num_kv_heads × S/N × dtype` bytes.
+- GPU count limit: none — works at $N = 32, 256, 4096$.
+- Cross-node: scales gracefully, P2P is bandwidth-friendly over IB / RoCE.
+
+**Real-world numbers.** Meta achieved 1 M tokens in <1 minute on a single H100 node; 10 M tokens on 32 hosts. RingX (SC '24) trained Llama-3-8B at $S = 1\text{M}$ on 4096 Frontier GPUs at 38 % MFU.
+
+### 7.3 DeepSpeed Ulysses
+
+**Idea** (Jacobs et al., 2023). Instead of rotating KV, **AllToAll-transpose the data** so attention becomes local on each GPU.
+
+```
+N=4 GPUs, sequence length S, H total heads, head dim D:
+
+Before attention (sharded by sequence):
+  GPU_i:  (S/N, H, D)        ← my segment of the sequence, all heads
+
+AllToAll #1: transpose sharding from sequence → heads
+  GPU_i:  (S, H/N, D)        ← full sequence, my subset of heads
+
+Attention is now LOCAL on each GPU (uses standard FlashAttention).
+  GPU_i:  attention(Q[S, H/N, D], K[S, H/N, D], V[S, H/N, D])
+
+AllToAll #2: transpose back from heads → sequence
+  GPU_i:  (S/N, H, D)        ← back to sequence-sharded for output projection
+```
+
+Per attention layer: 4 AllToAll total (Q, K, V are sharded separately before fusing, then output goes back through one more).
+
+**Properties.**
+
+- **Attention kernel is unchanged** — directly uses stock FlashAttention on a head subset. This is the killer feature: no custom kernel work.
+- **Hard limit: $N \leq \text{num\_heads}$.** Because the second sharding axis is heads, you can't have more GPUs than heads. For 32-head models, Ulysses caps at $N = 32$. GQA models are worse — capped at the much smaller $\text{num\_kv\_heads}$.
+- **Communication is blocking.** AllToAll is a synchronous collective — all $N$ GPUs must complete the exchange before attention can start. No overlap with compute.
+- **Per-GPU communication volume** $\sim O(S \cdot D \cdot H / N)$, roughly constant in $N$ (AllToAll's good property).
+- **Best on NVLink.** AllToAll within a node screams; AllToAll across IB nodes degrades quickly.
+
+**Causal mask: no problem.** Because each GPU processes the *full sequence* on its head subset, causal masking is internal to the local FlashAttention call — naturally balanced.
+
+### 7.4 Megatron CP (Megatron-LM)
+
+Megatron's CP is **Ring Attention plus three production-grade refinements**, and is the de-facto standard for long-context training inside NVIDIA / Megatron-LM-derived stacks (NeMo, NeMo-Megatron-Core, NVIDIA-style Llama training).
+
+**Refinement 1 — Zigzag load balancing for causal masks.**
+
+Plain Ring + causal mask gives GPU 0 almost no work and GPU $N{-}1$ all the work. Megatron splits the sequence into $2N$ blocks rather than $N$, then **pairs early + late blocks on the same GPU**:
+
+```
+Plain ring (N=4 GPU):
+  GPU0: [block 0]        ← almost nothing under causal
+  GPU1: [block 1]
+  GPU2: [block 2]
+  GPU3: [block 3]        ← almost everything under causal
+
+Zigzag (N=4 GPU, split into 8 blocks):
+  GPU0: [block 0, block 7]    ← one early + one late → balanced
+  GPU1: [block 1, block 6]
+  GPU2: [block 2, block 5]
+  GPU3: [block 3, block 4]
+```
+
+Each GPU now holds one "early" and one "late" segment, so under causal masking every GPU does roughly the same amount of work. Effective throughput nearly doubles relative to plain Ring + causal.
+
+**Refinement 2 — Ring P2P embedded inside the FlashAttention kernel loop.**
+
+Rather than scheduling Ring P2P at the framework layer (with FlashAttention as a black-box kernel), Megatron-LM modifies FlashAttention's tile loop to issue `send` / `recv` directly between tile iterations. This is what enables real compute/communication overlap — the framework-layer version often stalls between iterations.
+
+**Refinement 3 — First-class integration with TP / PP / DP / SP / EP.**
+
+CP is exposed as another parallel dimension via `--context-parallel-size <N>`. The framework constructs the right NCCL communicator groups, manages KV cache sharding across CP, handles cross-CP boundary masking, and composes with the other 4 dimensions automatically. You don't write any of the plumbing.
+
+This is why DeepSeek-V3, Llama-3-405B long-context, and the NVIDIA Nemotron long-context variants all use Megatron-CP rather than rolling their own.
+
+### 7.5 Three-way comparison
+
+| Property | Ring Attention | DeepSpeed Ulysses | Megatron CP |
+|----------|----------------|-------------------|-------------|
+| What moves | KV blocks rotate around a ring | QKV reshuffled by AllToAll | KV rotates (Ring) + zigzag chunking |
+| Communication primitive | $N{-}1$ rounds of P2P send/recv | 4 × AllToAll per attention layer | P2P inside FlashAttention loop |
+| Overlap with compute | ✓ Fully hidden when $T_c \geq T_{\text{comm}}$ | ✗ Blocking | ✓ Strong overlap |
+| GPU-count limit | None | $\leq$ num_heads (much worse for GQA) | None |
+| Cross-node scaling | ✓ P2P is bandwidth-friendly | ✗ AllToAll over IB struggles | ✓ |
+| Causal-mask balance | ✗ Needs Striped fix | ✓ Naturally balanced | ✓ Zigzag |
+| Attention kernel changes | Yes — fused with FA streaming softmax | None | Yes — embedded in FA tile loop |
+| Typical users | xFormers, research frameworks | DeepSpeed, Microsoft training stacks | Megatron-LM, NeMo, DeepSeek, NVIDIA training |
+
+### 7.6 Current best practice — hybrid CP
+
+In production at 2024–2026 scale, no one uses a single CP variant in isolation. The recipe:
+
+```
+Within a node (≤ 8 GPUs):  Ulysses
+   → AllToAll over NVLink is fast; head count usually sufficient.
+
+Across nodes:              Ring / Megatron-CP
+   → P2P over IB / RoCE scales; compute/comm overlap hides latency.
+
+Composite:  hybrid Ulysses (intra-node) × Ring (inter-node)
+   → Ulysses=8 × Ring=4 = 32-way CP across 4 nodes.
+   → 1M-token training, 256-GPU class deployments.
+```
+
+Concrete implementations of this hybrid pattern:
+
+- **Tencent USP** (Unified Sequence Parallel) — paper introducing the hybrid pattern explicitly.
+- **Megatron-LM CP** with its `--context-parallel-size` parameter wraps both variants and auto-picks based on the comm topology.
+- **PyTorch's native Context Parallel** (in newer PyTorch versions) exposes Ring + Ulysses as composable backends.
+- **SGLang long-context mode** + **xDiT** (for diffusion video) both use the hybrid pattern.
+- **FlashAttention-3** ships with distributed primitives matching this hybrid.
+
+**Training vs inference.** CP is dominant in *training* — the gradient/activation memory scales with $S$ and overwhelms single GPUs first. In *inference*, the answer is usually compress the KV cache ([[saw-int4|SAW-INT4]], MLA, KV pruning) and/or [[prefill-decode-disaggregation|disaggregate]] before reaching for CP. But Gemini-style 1M+ inference and frontier long-context serving do use CP at inference time too.
+
+### 7.7 CP vs TP for long sequences
+
+| Property | CP | TP |
+|----------|----|----|
+| What it shards | Sequence ($S/N$ tokens per GPU) | Weights / hidden dim |
+| KV cache | Sharded ($S/N$ per GPU) | **Replicated** (full KV on every GPU) |
+| When it communicates | Inside attention only | Every transformer block (attention + MLP) |
+| Scaling target | Ultra-long sequences ($S > 128$ K) | Standard sequences, model size |
+| Practical $N$ limit | Effectively unlimited (Ring/Megatron) | $\leq$ NVLink domain ($\approx 8$) |
+
+The KV duplication is what makes TP a bad answer for long context. TP=8 on 1 M tokens means each of 8 GPUs stores the *full* 1 M-token KV cache — 8× wasted memory. CP=8 gives each GPU just $1/8$ of the KV cache — linear scaling. For anything past 128 K, CP wins on memory regardless of the model.
 
 ---
 
@@ -372,7 +509,72 @@ MoE:   N_total = ETP × EP × EDP × PP
 | DeepSeek-V3 prefill | 32 | 4 | 1 | 1 | 8 | 32 |
 | 1M-token training | 64 | 4 | 2 | 8 | 1 | -- |
 
-### 12.4 Key Rules
+### 12.4 TP × CP composition explained
+
+The most common confusing combo: "TP shards heads, CP shards sequence — how do these stack?" The answer is **they're orthogonal axes of a 2-D GPU grid**, and the two communication groups never overlap during a single forward pass.
+
+**Example: 8 GPUs as TP=2 × CP=4.**
+
+```
+         CP rank 0    CP rank 1    CP rank 2    CP rank 3
+        ┌──────────┬──────────┬──────────┬──────────┐
+TP rank 0│  GPU 0   │  GPU 1   │  GPU 2   │  GPU 3   │
+        ├──────────┼──────────┼──────────┼──────────┤
+TP rank 1│  GPU 4   │  GPU 5   │  GPU 6   │  GPU 7   │
+        └──────────┴──────────┴──────────┴──────────┘
+```
+
+At attention input the tensor is `(B, S, H, D)`. Two shardings stack:
+
+- **TP shards $H$**: each row of the grid (same TP rank) holds $H/2$ heads.
+- **CP shards $S$**: each column (same CP rank) holds $S/4$ tokens.
+
+Each GPU owns a slab of shape `(B, S/4, H/2, D)`.
+
+**Two independent communication groups:**
+
+```
+TP groups (vertical, 2 members each):    Used for TP AllReduce
+  {GPU 0, GPU 4}, {GPU 1, GPU 5},
+  {GPU 2, GPU 6}, {GPU 3, GPU 7}
+
+CP groups (horizontal, 4 members each):  Used for Ring P2P or AllToAll
+  {GPU 0, GPU 1, GPU 2, GPU 3}            (TP rank 0 row)
+  {GPU 4, GPU 5, GPU 6, GPU 7}            (TP rank 1 row)
+```
+
+**One transformer layer's attention block — execution flow:**
+
+```
+1. Input LayerNorm + Dropout (SP):
+     Shards along sequence dim (compatible with CP, doesn't conflict).
+
+2. QKV projection (TP region):
+     Each GPU has input (B, S/4, D) → multiply by its W_qkv slice (column-parallel)
+     → (B, S/4, H/2 × D × 3). No communication.
+
+3. Attention computation (CP region):
+     Each GPU holds (B, S/4, H/2, D) of Q, K, V.
+     Run Ring Attention or Ulysses *within its CP group of 4 GPUs*.
+     Output: (B, S/4, H/2, D).
+     → All CP communication is intra-row only. TP is not involved here;
+       the H/2 head subset is each TP rank's private data.
+
+4. Output projection (TP region):
+     Row-parallel TP matmul → AllReduce across the TP group of 2 GPUs.
+     → All TP communication is intra-column only. CP is not involved here;
+       the sequence shard stays put.
+
+5. Residual + LayerNorm + FFN (TP + SP) → next layer.
+```
+
+**Key observation: each GPU is in both groups, but only one group communicates at a time.** During the CP attention phase, GPU 0 only talks to {GPU 1, 2, 3} — not GPU 4. During the TP output-projection phase, GPU 0 only talks to GPU 4 — not GPU 1/2/3. The two groups operate on orthogonal axes of the same forward pass.
+
+**Why this works mathematically.** Multi-head attention is *embarrassingly parallel across heads* — different heads $h$ never interact during attention. So TP-splitting heads needs no comm inside attention. Tokens, in contrast, *all interact* (every query reads every KV), so CP-splitting sequence needs comm inside attention. **The required-comm locations of the two axes don't overlap**, which is exactly the property that lets them compose freely.
+
+**Generalization.** In production with 5-D parallelism (TP × PP × DP × CP × EP), each GPU sits at a coordinate in a 5-D grid; each parallel axis defines an independent NCCL communicator group, and every layer's forward chooses which axis to communicate on based on which operator is running. Different layers / phases use different groups; nothing ever needs two groups simultaneously.
+
+### 12.5 Key Rules
 
 | Rule | Rationale |
 |------|-----------|
