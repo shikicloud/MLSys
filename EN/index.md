@@ -49,6 +49,7 @@ updated: 2026-05-13
 - [[multi-step-reasoning-rl]] — RL for multi-step reasoning
 - [[environment-design]] — Environment design for agentic RL
 - [[prorl-agent]] — ProRL Agent: Rollout-as-a-Service (NVIDIA, arXiv 2603.18815) — paper review
+- [[nemo-gym]] — NeMo Gym: NVIDIA's RL environment framework — 84 benchmarks, 19 agent harnesses, Apptainer-based isolation
 
 ## AI Agents
 - [[ai-agent-overview]] — AI agent architectures and patterns

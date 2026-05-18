@@ -49,6 +49,7 @@ updated: 2026-05-13
 - [[multi-step-reasoning-rl]] — 多步推理的 RL
 - [[environment-design]] — 智能体 RL 的环境设计
 - [[prorl-agent]] — ProRL Agent：Rollout 即服务（NVIDIA, arXiv 2603.18815）— 论文精读
+- [[nemo-gym]] — NeMo Gym：NVIDIA 的 RL 环境框架 —— 84 个 benchmark、19 个 agent harness、基于 Apptainer 的隔离
 
 ## AI 智能体
 - [[ai-agent-overview]] — AI 智能体架构与模式
