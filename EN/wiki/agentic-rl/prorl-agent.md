@@ -83,9 +83,9 @@ The trainer's API contract is `① POST /add_llm_server → ② POST /start → 
 ```mermaid
 %%{init: {"flowchart": {"nodeSpacing": 30, "rankSpacing": 40}}}%%
 flowchart TB
-    classDef ext fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
-    classDef svc fill:#e1f5ff,stroke:#01579b,stroke-width:2px,color:#000
-    classDef state fill:#fff3e0,stroke:#e65100,stroke-width:1px,color:#000
+    classDef ext stroke:#a855f7,stroke-width:2px
+    classDef svc stroke:#3b82f6,stroke-width:2px
+    classDef state stroke:#f59e0b,stroke-width:2px
 
     Trainer["<b>RL Trainer</b><br/>verl · NeMo-RL · OpenRLHF · TRL"]:::ext
 
