@@ -244,9 +244,19 @@ export function transformLink(src: FullSlug, target: string, opts: TransformOpti
         return targetCanonical === fileName
       })
 
+      // bilingual hack: when the slug is ambiguous, prefer the target whose
+      // top-level folder (e.g. EN/ or CN/) matches the source file's. lets
+      // `[[continuous-batching]]` in EN/* resolve to the EN copy and the same
+      // wikilink in CN/* resolve to the CN copy.
+      const srcLang = src.split("/")[0]
+      const sameLangMatches = matchingFileNames.filter(
+        (slug) => slug.split("/")[0] === srcLang,
+      )
+      const chosen = sameLangMatches.length === 1 ? sameLangMatches : matchingFileNames
+
       // only match, just use it
-      if (matchingFileNames.length === 1) {
-        const targetSlug = matchingFileNames[0]
+      if (chosen.length === 1) {
+        const targetSlug = chosen[0]
         return (resolveRelative(src, targetSlug) + targetAnchor) as RelativeURL
       }
     }
