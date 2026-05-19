@@ -31,6 +31,7 @@ updated: 2026-05-13
 - [[rl-training-frameworks]] — RL training frameworks (OpenRLHF, TRL, veRL)
 - [[on-policy-distillation]] — On-Policy Distillation (OPD): dense teacher signal as an RL replacement — GKD/MiniLLM lineage, Thinking Machines Lab reframing, variants, production deployments, the OPD-vs-RL debate
 - [[deepseek-v4-opd]] — DeepSeek-V4 (Apr 2026): multi-teacher full-vocabulary OPD entirely replacing the V3.2 mixed-RL post-training stage — paper analysis
+- [[mopd]] — MOPD (Multi-Domain On-Policy Distillation): Nemotron-Cascade 2's single-stage stabilizer between Multi-domain RL and RLHF; 3 cascade-internal teachers routed per-prompt; IMO/IOI/ICPC 2025 gold at 3B active params — paper analysis
 
 ## ML Infrastructure
 - [[distributed-training]] — Distributed training: data/model/pipeline parallelism

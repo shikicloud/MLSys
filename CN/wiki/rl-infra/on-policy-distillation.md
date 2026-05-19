@@ -137,7 +137,7 @@ Token 级是 HF TRL 实现的版本，也是 TML 用的；全词表是 DeepSeek-
 | **OPSD**（Self-Distillation）([arXiv:2602.04942](https://arxiv.org/abs/2602.04942)) | 2025–26 | Teacher 是 student 自己的早期 checkpoint 或它的特权信息版本。Continual learning 原语。 |
 | **KDRL** ([arXiv:2506.02208](https://arxiv.org/abs/2506.02208)) | Xu, Zhu 等, 2025-06 | 把 GRPO 的 KL-to-old-policy 换成 KL-to-teacher；同一个梯度步联合优化规则 reward + OPD。 |
 | **dGRPO** ([survey](https://arxiv.org/abs/2604.00626)) | 2025–26 | GRPO advantage + per-token OPD loss 作为稠密辅助 head。 |
-| **MOPD**（Multi-Domain）([Nemotron-Cascade 2](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/)) | NVIDIA, 2026-03 | Per-domain best-checkpoint teacher；在跨 domain 顺序 RL 中恢复回归。 |
+| **MOPD**（Multi-Domain）([Nemotron-Cascade 2](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/)) | NVIDIA, 2026-03 | 7-stage Cascade RL 内的单一稳定阶段；3 个 cascade 内部 teacher（math SFT / RLHF 侧分支 / multi-domain RL best）按 prompt 路由；采样 token 反向 KL + 重要性裁剪。详见 [[mopd]]。**注意**：相同缩写两个月前被 Xiaomi MiMo-V2-Flash 用过，含义是 "Multi-**Teacher** OPD"。 |
 | **MAD-OPD** ([arXiv:2605.01347](https://arxiv.org/abs/2605.01347)) | 2026 | 多智能体辩论当 teacher 信号。试图突破单 teacher 天花板。 |
 | **Reward-Extrapolated OPD** ([arXiv:2602.12125](https://arxiv.org/abs/2602.12125)) | 2026 | 加 RL reward head 让 student 能学超过 teacher。 |
 | **Black-Box OPD (GAD)** ([arXiv:2511.10643](https://arxiv.org/abs/2511.10643)) | Ye, Dong 等, 2025-11 | 只能拿到输出文本（看不到 logits）时的 OPD —— 用对抗判别器。OpenAI / Anthropic teacher 用得上。 |
@@ -147,7 +147,7 @@ Token 级是 HF TRL 实现的版本，也是 TML 用的；全词表是 DeepSeek-
 
 | 部署 | Recipe | 来源 |
 | ---- | ------ | ---- |
-| **NVIDIA Nemotron-Cascade 2**（2026-03） | 30B-active MoE。Per-domain GRPO → 保存 best ckpt 当 teacher → MOPD 把 student 拉回 per-domain 最优（~30 步）。RL 干 exploration，OPD 干稳定。 | [Nemotron-Cascade 2 页](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/) |
+| **NVIDIA Nemotron-Cascade 2**（2026-03） | 30B-A3B MoE。7-stage Cascade RL 里 Multi-domain RL 和 RLHF 之间的单一 MOPD 阶段。3 个 cascade 内部 teacher（math SFT / RLHF 侧分支 / multi-domain RL best）。52 步恢复 160 步 RLHF 才能恢复的东西。**IMO/IOI/ICPC 2025 金牌** 在 3B 激活参数上。详见 [[mopd]]。 | [Nemotron-Cascade 2 页](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/) |
 | **Alibaba Qwen3 小模型**（2025-05） | 0.6B–14B + 30B-A3B-MoE。离线蒸馏（teacher：更大 Qwen3）→ on-policy 蒸馏。替代完整 RL 管线的 stage 3–4。**报告 1/10 GPU-hour 成本**。 | [Qwen3 tech report](https://arxiv.org/abs/2505.09388) |
 | **DeepSeek-V4**（2026-04） | 1.6T/49B MoE。Per-domain (SFT → GRPO) specialist → 多教师全词表 OPD merge。**完全替换** V3.2 mixed-RL 阶段。详见 [[deepseek-v4-opd]]。 | [V4 tech report](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf) |
 

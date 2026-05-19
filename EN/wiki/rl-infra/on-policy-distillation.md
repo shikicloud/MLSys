@@ -137,7 +137,7 @@ Verified deployments and named variants in 2025–2026 use. This is the "Experim
 | **OPSD** (Self-Distillation) ([arXiv:2602.04942](https://arxiv.org/abs/2602.04942)) | 2025–26 | Teacher is the student's earlier checkpoint or a privileged-info version of itself. Continual-learning primitive. |
 | **KDRL** ([arXiv:2506.02208](https://arxiv.org/abs/2506.02208)) | Xu, Zhu et al., Jun 2025 | Replaces GRPO's KL-to-old-policy with reverse-KL-to-teacher; jointly optimizes rule-based reward + OPD. |
 | **dGRPO** ([survey](https://arxiv.org/abs/2604.00626)) | 2025–26 | GRPO advantage + per-token OPD loss as a dense auxiliary head. |
-| **MOPD** (Multi-Domain) ([Nemotron-Cascade 2](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/)) | NVIDIA, Mar 2026 | Per-domain best-checkpoint teachers; recovers regressions during sequential RL across domains. |
+| **MOPD** (Multi-Domain) ([Nemotron-Cascade 2](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/)) | NVIDIA, Mar 2026 | Single stabilization stage inside 7-stage Cascade RL; 3 cascade-internal teachers (math SFT / RLHF side-branch / multi-domain RL best) routed per-prompt; sampled-token reverse-KL with importance clipping. Detailed at [[mopd]]. **Note**: same acronym used 2 months earlier by Xiaomi MiMo-V2-Flash as "Multi-**Teacher** OPD". |
 | **MAD-OPD** ([arXiv:2605.01347](https://arxiv.org/abs/2605.01347)) | 2026 | Multi-agent debate as the teacher signal. Attempts to break single-teacher ceiling. |
 | **Reward-Extrapolated OPD** ([arXiv:2602.12125](https://arxiv.org/abs/2602.12125)) | 2026 | Adds RL reward head so student can learn beyond teacher. |
 | **Black-Box OPD (GAD)** ([arXiv:2511.10643](https://arxiv.org/abs/2511.10643)) | Ye, Dong et al., Nov 2025 | OPD when only completions (no logits) are available — for OpenAI / Anthropic teachers. Uses adversarial discriminator. |
@@ -147,7 +147,7 @@ Verified deployments and named variants in 2025–2026 use. This is the "Experim
 
 | Deployment | Recipe | Source |
 | ---------- | ------ | ------ |
-| **NVIDIA Nemotron-Cascade 2** (Mar 2026) | 30B-active MoE. Per-domain GRPO → save best ckpt as teacher → MOPD pulls student back to per-domain optima (~30 steps). RL for exploration, OPD for stability. | [Nemotron-Cascade 2 page](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/) |
+| **NVIDIA Nemotron-Cascade 2** (Mar 2026) | 30B-A3B MoE. Single MOPD stage between Multi-domain RL and RLHF in a 7-stage Cascade RL pipeline. 3 cascade-internal teachers (math SFT / RLHF side-branch / multi-domain RL best). 52 steps recover what 160 RLHF steps would. **IMO/IOI/ICPC 2025 gold medals** at 3B active params. See [[mopd]] for full details. | [Nemotron-Cascade 2 page](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/) |
 | **Alibaba Qwen3** small models (May 2025) | 0.6B–14B + 30B-A3B-MoE. Off-policy distillation (teacher: larger Qwen3) → on-policy distillation. Skips stages 3–4 of full RL pipeline. **Reported 1/10 GPU-hour cost.** | [Qwen3 tech report](https://arxiv.org/abs/2505.09388) |
 | **DeepSeek-V4** (Apr 2026) | 1.6T/49B MoE. Per-domain (SFT → GRPO) specialists → multi-teacher full-vocab OPD merge. **Entirely replaces** V3.2's mixed-RL stage. Detailed at [[deepseek-v4-opd]]. | [V4 tech report](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf) |
 
