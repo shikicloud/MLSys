@@ -226,6 +226,7 @@ document.addEventListener("nav", async () => {
       theme: darkMode ? "dark" : "base",
       themeVariables: {
         fontFamily: computedStyleMap["--codeFont"],
+        fontSize: "12px",
         primaryColor: computedStyleMap["--light"],
         primaryTextColor: computedStyleMap["--darkgray"],
         primaryBorderColor: computedStyleMap["--tertiary"],

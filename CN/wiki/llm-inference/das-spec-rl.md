@@ -81,7 +81,7 @@ DAS 出现在 2025 年末/2026 年初一波 RL 专用投机解码工作里：
 ### DAS 在 rollout 循环里的位置
 
 ```mermaid
-%%{init: {'theme':'default','flowchart':{'nodeSpacing':30,'rankSpacing':35,'curve':'basis'},'themeVariables':{'fontSize':'12px'}}}%%
+%%{init: {'flowchart':{'nodeSpacing':30,'rankSpacing':35,'curve':'basis'}}}%%
 flowchart TB
     subgraph Trainer["RL Trainer (每个训练步)"]
         direction TB

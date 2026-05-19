@@ -81,7 +81,7 @@ Remove any one: the system becomes off-policy unstable (no token-in/out), throug
 The trainer's API contract is `① POST /add_llm_server → ② POST /start → ③ POST /process { instance, sampling_params }` (blocks) `→ ④ ← (token_ids, logprobs, reward, timing)`. The diagram below shows the structure; concrete detail per component lives in the prose under [[#How it works]].
 
 ```mermaid
-%%{init: {"flowchart": {"nodeSpacing": 30, "rankSpacing": 40}, "themeVariables": {"fontSize": "12px"}}}%%
+%%{init: {"flowchart": {"nodeSpacing": 30, "rankSpacing": 40}}}%%
 flowchart TB
     classDef ext fill:#f3e5f5,stroke:#4a148c,stroke-width:2px,color:#000
     classDef svc fill:#e1f5ff,stroke:#01579b,stroke-width:2px,color:#000

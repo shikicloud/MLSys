@@ -80,7 +80,7 @@ data/example.jsonl  ─►  agent server  ─►  model server  ─►  agent se
 ### 系统架构
 
 ```mermaid
-%%{init: {'theme':'default','flowchart':{'nodeSpacing':30,'rankSpacing':35,'curve':'basis'},'themeVariables':{'fontSize':'12px'}}}%%
+%%{init: {'flowchart':{'nodeSpacing':30,'rankSpacing':35,'curve':'basis'}}}%%
 flowchart TB
     USER["<b>用户 CLI</b><br/>ng_run / ng_collect_rollouts<br/>Hydra + YAML 配置"]
 
@@ -253,7 +253,7 @@ NeMo Gym 这块最容易被读错。两条互不相干的路径。
 > 生产隔离走 **Apptainer**。训练集群节点本身就跑在 enroot 容器里 —— Docker daemon 在 enroot 里嵌不起来 —— 所以 Apptainer 是唯一能套娃的方案。Apptainer *会消费* Docker 镜像（`docker://...` URI）但跑容器的是 Apptainer，不是 Docker。引用 `docs/infrastructure/engineering-notes/swe-rl-case-study.md`：*"Apptainer was the only containerization framework that we could run from within an enroot container."*
 
 ```mermaid
-%%{init: {'theme':'default','flowchart':{'nodeSpacing':25,'rankSpacing':30},'themeVariables':{'fontSize':'12px'}}}%%
+%%{init: {'flowchart':{'nodeSpacing':25,'rankSpacing':30}}}%%
 flowchart TB
     TASK["<b>任务到达 agent</b><br/>simple_agent / swe_agents / stirrup / ..."]
     BRANCH{"<b>YAML 配置</b><br/>container_formatter 设了吗？<br/>或 exec_provider_class 设了吗？"}

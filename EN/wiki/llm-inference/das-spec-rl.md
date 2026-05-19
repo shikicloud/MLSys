@@ -81,7 +81,7 @@ The rest of the page makes each half concrete.
 ### Where DAS sits in the rollout loop
 
 ```mermaid
-%%{init: {'theme':'default','flowchart':{'nodeSpacing':30,'rankSpacing':35,'curve':'basis'},'themeVariables':{'fontSize':'12px'}}}%%
+%%{init: {'flowchart':{'nodeSpacing':30,'rankSpacing':35,'curve':'basis'}}}%%
 flowchart TB
     subgraph Trainer["RL Trainer (per step)"]
         direction TB

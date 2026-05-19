@@ -80,7 +80,7 @@ data/example.jsonl  ─►  agent server  ─►  model server  ─►  agent se
 ### System architecture
 
 ```mermaid
-%%{init: {'theme':'default','flowchart':{'nodeSpacing':30,'rankSpacing':35,'curve':'basis'},'themeVariables':{'fontSize':'12px'}}}%%
+%%{init: {'flowchart':{'nodeSpacing':30,'rankSpacing':35,'curve':'basis'}}}%%
 flowchart TB
     USER["<b>User CLI</b><br/>ng_run / ng_collect_rollouts<br/>Hydra + YAML configs"]
 
@@ -253,7 +253,7 @@ The part most often misread. Two independent paths.
 > Production isolation goes through **Apptainer**. The training cluster nodes themselves run inside enroot containers — Docker daemon can't nest inside enroot — so Apptainer is the only nesting-friendly option. Apptainer *does* consume Docker images (`docker://...` URIs) but it's Apptainer running them, not Docker. Reference: `docs/infrastructure/engineering-notes/swe-rl-case-study.md`: *"Apptainer was the only containerization framework that we could run from within an enroot container."*
 
 ```mermaid
-%%{init: {'theme':'default','flowchart':{'nodeSpacing':25,'rankSpacing':30},'themeVariables':{'fontSize':'12px'}}}%%
+%%{init: {'flowchart':{'nodeSpacing':25,'rankSpacing':30}}}%%
 flowchart TB
     TASK["<b>Task arrives at agent</b><br/>simple_agent / swe_agents / stirrup / ..."]
     BRANCH{"<b>YAML config</b><br/>container_formatter set?<br/>or exec_provider_class?"}
