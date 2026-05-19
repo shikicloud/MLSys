@@ -1,6 +1,11 @@
 ---
 title: 变更日志
-updated: 2026-05-13
+updated: 2026-05-19
+
+## 2026-05-19
+- [新增] [[on-policy-distillation]] + [[deepseek-v4-opd]] —— 在 Shiki 问 "DeepSeek V4 用到的 OPD 方法" 之后建的一对配套页。三路 agent 并行调查（Thinking Machines Lab 起源博客深读、RL 应用与变体调查、DeepSeek V4 fact-finding）。确认：DeepSeek V4 于 2026-04-24 发布（V4-Pro 1.6T/49B + V4-Flash 284B/13B，MIT license，1M context，tech report 只在 HF 上没 arXiv）。**[[on-policy-distillation]]** 覆盖：(1) 起源 —— Thinking Machines Lab 2025-10-27 博客（Kevin Lu）是 GKD-λ=1-反向 KL 在 Qwen3 规模上的重新包装，74.4% AIME @ ~1,800 GPU-h 标题数字；(2) 数学谱系 —— GKD (Agarwal 2023 ICLR'24) + MiniLLM (Gu 2023 NeurIPS'24)；(3) 策略梯度对偶（每 token 反向 KL = REINFORCE 配 teacher log-ratio 当稠密 reward = 去 baseline 去 value head 的 GRPO）；(4) 2025–2026 在用的 10+ 个命名变体（OPSD、KDRL、dGRPO、MOPD、MAD-OPD、GAD、全词表 OPD）；(5) primary source 验证过的生产部署（NVIDIA Nemotron-Cascade 2 MOPD、Alibaba Qwen3 小模型、DeepSeek-V4）；(6) HF TRL `GKDTrainer` 源码走读（lines 226-295 GJSD loss，421-449 on-policy 采样）、veRL OPD recipe、NeMo-RL #1445；(7) OPD vs RL 争论，含 Guohao Li 的 "这就是 2010 年的 DAGGER" 推文以及 teacher 天花板 / 负迁移批评。**[[deepseek-v4-opd]]** 是聚焦 V4 论文的分析：Eq. 29 多教师反向 KL 形式、明确拒绝 token 级 KL 近似转而用全词表 KL 的论据（tech report lines 1803-1812）、让 1.6T 规模全词表可行的基础设施 recipe（隐藏状态缓存而非 logits、按 teacher 排 sample、自研 TileLang 精确 KL kernel、teacher FP4 QAT、复用 V3.2 rollout/WAL infra）、per-domain (SFT→GRPO specialist)→OPD-merge 管线完全替换 V3.2 mixed-RL、对真正新点（旗舰规模全词表、多教师合并范式、按推理力度分 specialist）与回收部分（反向 KL 公式、RL-替代品叙事）的诚实评估。两页都交叉链接到 [[grpo]]、[[ppo-for-llm]]、[[rlhf-overview]]、[[rl-training-frameworks]]、[[das-spec-rl]]、[[prorl-agent]]。EN/CN 双语对齐。Index 更新。
+
+
 ---
 
 # 变更日志

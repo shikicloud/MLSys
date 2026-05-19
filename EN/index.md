@@ -29,6 +29,8 @@ updated: 2026-05-13
 - [[dpo]] — DPO: Direct Preference Optimization
 - [[reward-modeling]] — Reward modeling techniques
 - [[rl-training-frameworks]] — RL training frameworks (OpenRLHF, TRL, veRL)
+- [[on-policy-distillation]] — On-Policy Distillation (OPD): dense teacher signal as an RL replacement — GKD/MiniLLM lineage, Thinking Machines Lab reframing, variants, production deployments, the OPD-vs-RL debate
+- [[deepseek-v4-opd]] — DeepSeek-V4 (Apr 2026): multi-teacher full-vocabulary OPD entirely replacing the V3.2 mixed-RL post-training stage — paper analysis
 
 ## ML Infrastructure
 - [[distributed-training]] — Distributed training: data/model/pipeline parallelism

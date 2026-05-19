@@ -29,6 +29,8 @@ updated: 2026-05-13
 - [[dpo]] — DPO：直接偏好优化
 - [[reward-modeling]] — 奖励建模技术
 - [[rl-training-frameworks]] — RL 训练框架（OpenRLHF、TRL、veRL）
+- [[on-policy-distillation]] — On-Policy Distillation (OPD)：用稠密教师信号替代 RL —— GKD/MiniLLM 谱系、Thinking Machines Lab 重新包装、变体、生产部署、OPD-vs-RL 争论
+- [[deepseek-v4-opd]] — DeepSeek-V4（2026-04）：多教师全词表 OPD 完全替代 V3.2 的 mixed-RL post-training 阶段 —— 论文分析
 
 ## 机器学习基础设施
 - [[distributed-training]] — 分布式训练：数据/模型/流水线并行

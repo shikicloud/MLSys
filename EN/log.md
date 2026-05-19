@@ -1,6 +1,11 @@
 ---
 title: Change Log
-updated: 2026-05-13
+updated: 2026-05-19
+
+## 2026-05-19
+- [NEW] [[on-policy-distillation]] + [[deepseek-v4-opd]] — created two paired pages on On-Policy Distillation (OPD) following Shiki's question about "OPD in DeepSeek V4." Researched via three parallel agents (Thinking Machines Lab origin paper deep dive, RL applications & variants survey, DeepSeek V4 fact-finding). Confirmed: DeepSeek V4 was released 2026-04-24 (V4-Pro 1.6T/49B + V4-Flash 284B/13B, MIT license, 1M context, tech report on HF only, no arXiv). **[[on-policy-distillation]]** covers: (1) origin — Thinking Machines Lab 2025-10-27 blog (Kevin Lu) is GKD-λ=1-reverse-KL repackaged at Qwen3 scale with 74.4% AIME @ ~1,800 GPU-h headline; (2) mathematical lineage — GKD (Agarwal 2023 ICLR'24) + MiniLLM (Gu 2023 NeurIPS'24); (3) the policy-gradient duality (per-token reverse KL = REINFORCE with teacher log-ratio as dense reward = GRPO without baselines/value head); (4) ten+ named variants in 2025–2026 use (OPSD, KDRL, dGRPO, MOPD, MAD-OPD, GAD, full-vocab OPD); (5) production deployments verified from primary sources (NVIDIA Nemotron-Cascade 2 MOPD, Alibaba Qwen3 small models, DeepSeek-V4); (6) source code walkthrough of HF TRL `GKDTrainer` (lines 226-295 GJSD loss, 421-449 on-policy sampling), veRL OPD recipe, NeMo-RL #1445; (7) the OPD-vs-RL debate including Guohao Li's "this is just DAGGER from 2010" tweet and the teacher-ceiling / negative-transfer critiques. **[[deepseek-v4-opd]]** is the focused V4 paper analysis: Eq. 29 multi-teacher reverse-KL formulation, the explicit rejection of token-level KL surrogate in favor of full-vocabulary KL (lines 1803-1812 in tech report), the infrastructure recipe that makes full-vocab feasible at 1.6T scale (hidden-state caching not logits, sample-sort-by-teacher, custom TileLang exact-KL kernel, FP4 teacher QAT, reuse of V3.2 rollout/WAL infrastructure), the per-domain (SFT→GRPO specialist)→OPD-merge pipeline that replaces V3.2's mixed-RL entirely, and honest assessment of what's actually novel (full-vocab at flagship scale, multi-teacher merging paradigm, specialist-per-reasoning-mode) vs recycled (reverse-KL formulation, RL-replacement framing). Both pages cross-link to [[grpo]], [[ppo-for-llm]], [[rlhf-overview]], [[rl-training-frameworks]], [[das-spec-rl]], [[prorl-agent]]. EN and CN. Index updated.
+
+
 ---
 
 # Change Log
