@@ -1,6 +1,9 @@
 ---
 title: 变更日志
 updated: 2026-05-19
+---
+
+# 变更日志
 
 ## 2026-05-19
 - [新增] [[mopd]] —— 给 MOPD（多 Domain On-Policy 蒸馏）写了一篇论文精读页，这是 NVIDIA Nemotron-Cascade 2 用的技术（arXiv:2603.19220，Yang et al., NVIDIA, 2026-03）。一个 general-purpose agent 读了完整 63 页 tech report PDF 之后调查的。**修正之前在 [[on-policy-distillation]] 里的误读**：(1) **MOPD 是单一阶段**，在 7 阶段 Cascade RL 内（SFT → IF-RL → Multi-domain RL → **MOPD** → RLHF → Long-context RL → Code RL → SWE RL），**不是** 与每个 RL 阶段交错的 per-round 循环。(2) **只有 3 个 teacher**，全部是 cascade 免费副产物：math SFT checkpoint、RLHF 侧分支（25 步）、Multi-domain RL best checkpoint —— 不要额外训练、不要外部模型、不要 FP4 QAT 或隐藏状态缓存（对照 [[deepseek-v4-opd|DeepSeek-V4]] 的 10+ specialist 配全词表 KL）。(3) **撞名**：缩写 MOPD 两个月前 Xiaomi MiMo-V2-Flash（arXiv:2601.02780, 2026-01）发布过，含义是 "Multi-**Teacher** On-Policy Distillation" —— NVIDIA 把同样字母重新框成 "Multi-**Domain**"。页面收录精确 loss 方程（Eq. 2-4 采样 token 反向 KL advantage、截断重要性权重 r_t ∈ [0.5, 2.0]、stop-gradient）、cascade 位置图、标志实验结果（52 MOPD 步达到 ArenaHard v2 85.5 vs RLHF 160 步只到 80.7 —— 3× per-step 效率）、3B 激活参数的标志金牌结果（IMO 35/42、IOI 439.28/600、ICPC 10/12 金）、散文（LR 2e-6）与 Table 8（LR 3e-6）的超参不一致、以及 MOPD 帮不到的地方（MMLU-Pro -5.5、GPQA -8.1、SWE Verified -19.0 vs Qwen3.5-35B-A3B —— teacher 池里没有 GPQA / agentic teacher）。在 [[on-policy-distillation]]（修正了 MOPD 描述）和 [[deepseek-v4-opd]]（架构对比）有交叉链接。EN/CN 双语。Index 更新。

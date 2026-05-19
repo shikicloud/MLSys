@@ -3,3 +3,12 @@
 .obsidian/cache
 .obsidian/.trash/
 .DS_Store
+
+# Quartz site build artifacts
+site/node_modules/
+site/public/
+site/.quartz-cache/
+
+# Stray Obsidian-created files
+2026-*.md
+Untitled.base
