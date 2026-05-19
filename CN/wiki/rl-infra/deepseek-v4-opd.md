@@ -5,74 +5,110 @@ tags: [deepseek-v4, opd, on-policy-distillation, multi-teacher-kl, full-vocabula
 created: 2026-05-19
 updated: 2026-05-19
 status: mature
+paper: DeepSeek-V4 technical report
 ---
 
 # DeepSeek-V4 OPD：多教师全词表 On-Policy Distillation 替代 RL
 
-> [!info] 模型元信息
-> - **发布**：2026-04-24（DeepSeek-V4-Pro 和 DeepSeek-V4-Flash 同时）
-> - **Tech report**：仅以 PDF 形式托管在 HF：[huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf)（无 arXiv 提交）
-> - **Model cards**：[V4-Pro](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro)（1.6T 总 / 49B 激活）· [V4-Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash)（284B 总 / 13B 激活）
+> [!info] 论文元信息
+> - **Paper**：[DeepSeek-V4 tech report (HF PDF)](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf) —— DeepSeek, 2026-04-24（无 arXiv 提交）
+> - **Models**：[DeepSeek-V4-Pro](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro)（1.6T 总 / 49B 激活）· [DeepSeek-V4-Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash)（284B / 13B）
 > - **License**：MIT，开放权重
 > - **Context**：1M tokens
-> - **API**：同日上线，见 [api-docs.deepseek.com/updates](https://api-docs.deepseek.com/updates)
-> - **媒体**：[CNBC](https://www.cnbc.com/2026/04/24/deepseek-v4-llm-preview-open-source-ai-competition-china.html)、[MIT Technology Review](https://www.technologyreview.com/2026/04/24/1136422/why-deepseeks-v4-matters/)、[Bloomberg](https://www.bloomberg.com/news/articles/2026-04-24/deepseek-unveils-newest-flagship-a-year-after-ai-breakthrough)
+> - **API**：同日上线 —— [api-docs.deepseek.com/updates](https://api-docs.deepseek.com/updates)
+> - **OPD trainer 源码**：未发布
+> - **媒体**：[CNBC](https://www.cnbc.com/2026/04/24/deepseek-v4-llm-preview-open-source-ai-competition-china.html) · [MIT Tech Review](https://www.technologyreview.com/2026/04/24/1136422/why-deepseeks-v4-matters/) · [Bloomberg](https://www.bloomberg.com/news/articles/2026-04-24/deepseek-unveils-newest-flagship-a-year-after-ai-breakthrough)
 
 > [!abstract]+ TL;DR
-> DeepSeek-V4 相对 V3.2 做了一项 **关键方法学替换**：*"the mixed Reinforcement Learning (RL) stage was entirely replaced by On-Policy Distillation (OPD)"*（§5.1）。管线变成 **base → per-domain（SFT → GRPO）specialist → 多教师 OPD merge → V4**。OPD 损失是 $> 10$ 个 specialist teacher 的加权和：$\mathcal{L}_{\text{OPD}}(\theta) = \sum_i w_i\, D_{\text{KL}}(\pi_\theta \| \pi_{E_i})$，student 现采 rollout 上的反向 KL。相对 Thinking Machines Lab 博客（[[on-policy-distillation]]）和 MiniLLM 的算法新点是 **全词表 logit KL** —— V4 明确拒绝先前 on-policy distillation 工作的 token 级 KL 近似，理由是近似有高梯度方差、训练不稳。基础设施新点是 **在 1.6T-MoE 规模上让全词表 KL 跑起来** 的工程：teacher 在中央存储里只缓存隐藏状态（不是 logits）、按 teacher 排序的 sample 调度让 GPU 任一时刻最多挂一个 teacher 的 LM head、自研 TileLang exact-KL kernel、teacher 权重 FP4 QAT。**论文没报告 OPD vs GRPO 的 GPU-hour 对比** —— 网上 V4 评论里流传的成本声明继承自 TML 的 Qwen3 博客，不是 DeepSeek 自己的数字。
+> DeepSeek-V4 相对 V3.2 做了一项 **关键方法学替换**（tech report §5.1）：*"the mixed Reinforcement Learning (RL) stage was entirely replaced by On-Policy Distillation (OPD)."* Post-training 管线变成 **base → per-domain (SFT → GRPO) specialist → 多教师 OPD merge → V4**。OPD 损失是 $> 10$ 个 specialist teacher 的加权和：$\mathcal{L}_{\text{OPD}}(\theta) = \sum_i w_i\, D_{\text{KL}}(\pi_\theta \| \pi_{E_i})$，student 现采 rollout 上的反向 KL。相对 [Thinking Machines Lab 博客](https://thinkingmachines.ai/blog/on-policy-distillation/) 和 [[on-policy-distillation|MiniLLM/GKD]] 的算法新点是 **全词表 logit KL** —— V4 明确拒绝先前 on-policy distillation 工作的 token 级 KL 近似，理由是近似有高梯度方差、在规模上造成训练不稳。系统贡献是 **在 1.6T-MoE 规模上让全词表 KL 跑起来**：缓存 teacher 隐藏状态（不是 logits）、按 teacher 索引排 sample、自研 TileLang 精确 KL kernel、teacher FP4 QAT、复用 V3.2 rollout / WAL 基础设施。**论文没报告 OPD vs GRPO 的 GPU-hour 对比** —— 网上流传的成本声明继承自 TML 的 Qwen3 博客，不是 DeepSeek 自己的数。
 
 ---
 
-## 为什么重要
+## 背景：为什么 V4 要替换 V3.2 的 mixed-RL 阶段
 
-V4 是 **第一个完全押注在 OPD 上来做 post-training merge** 的旗舰级、开放权重模型。之前公开的 OPD 工作要么小规模（[[on-policy-distillation|Qwen3]] 0.6B–14B + 30B-A3B-MoE），要么把 OPD 当 RL 的组件（[Nemotron-Cascade 2 MOPD](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/)）。V4 是第一次有人在 1.6T 万亿级 MoE 上赌 OPD-替代-RL 假说并把 recipe 写出来。
+V3.2 / R1 用的是 "四阶段 mixed-RL" post-training recipe：SFT → reasoning RL → mixed RL → alignment RL。两个结构性问题让它在 V4 想达到的规模上既贵又不稳：
 
-如果 V4 推理表现稳得住（论文声称跟 GPT-5.2 / Gemini-3.0-Pro 在标准 reasoning benchmark 上具备竞争力），从 2026 起所有人在"是的，OPD 能在前沿规模替代 RL"这件事上都会引用 V4。如果守不住，V4 会成为 [[on-policy-distillation#opd-vs-rl-争论|OPD-replaces-RL 框架]] 在没有足够 RL 探索去超越 teacher 能力的情况下的反面案例。
+| 问题 | 为什么在规模上显现 | 代价 |
+| ---- | ----------------- | ---- |
+| **稀疏 outcome reward** | 16K+ token 推理 rollout 只收一个 0/1 信号 | 多数 token 没 credit assignment；从 scalar 反推用 GPU 贵 |
+| **mixed RL 中 specialist 回归** | 不同 domain（math、code、agent、IF）要不同 reward 信号；训一个回归另一些 | 要么重训（贵）要么接受回归 |
+| **没有干净的 reasoning 模式分离** | 单模型靠 mode token 处理 Non-think / Think High / Think Max 会能力稀释 | 需要架构层 workaround |
 
----
+V3.2 → V4 的设计思路：**拆成 specialist 独立用 GRPO 训，再用 OPD 合并**。RL 提供 per-domain exploration 与 reward 驱动训练；OPD 提供稠密 token 级信号，让合并 specialist 又快又稳。结果是迄今为止最激进的 [[on-policy-distillation|OPD]] 部署 —— V4 是第一个把 1.6T MoE *全押* 在 OPD-替换-合并-阶段假说上的旗舰。
 
-## 架构（简）
-
-只讲到能撑起 OPD 讨论的程度。完整架构分析不在本页范围内。
-
-**两个同时发布的 SKU：**
-
-| 模型 | 总参数 | 激活参数 | 架构 | Context |
-|------|--------|---------|------|---------|
-| DeepSeek-V4-Pro | 1.6T | 49B | MoE + hybrid CSA + HCA attention, mHC residuals, Muon optimizer | 1M |
-| DeepSeek-V4-Flash | 284B | 13B | 同形状，更小 | 1M |
-
-相对 V3 的关键架构变化：
-
-- **Hybrid attention** (CSA + HCA) —— 在 1M 上下文规模上替换了 V3 的纯 MLA。
-- **mHC residuals** —— 论文记号，社区解读尚不普及。
-- **Muon optimizer** —— 部分训练阶段从 AdamW 切到 Muon。
-- **MoE 专家数** —— 比 V3 增加；tech report 未公开具体数，但激活分数 (49/1600 ≈ 3 %) 跟 V3 的稀疏度持平。
-
-训练基础设施一节明说 infra **复用 V3.2 栈**（rollout 引擎、容错生成服务、KV 池）。新东西在 post-training 不在 pre-training。
+交叉参考：[[on-policy-distillation#背景为什么需要发明-on-policy-蒸馏|OPD 的 SFT-vs-RL 框架]] 给这个奠定了基础。
 
 ---
 
-## OPD 管线
+## 核心思想：多教师全词表 OPD
 
-### Stage 1 —— Specialist 训练（§5.1.1）
+> [!quote] 一句话总结贡献
+> Per-domain specialist 用 GRPO 训完后，通过 **精确每 token 全词表反向 KL** 对 $> 10$ 个 teacher 做 on-policy 蒸馏来合并成一个统一模型 —— 由一套缓存 teacher 隐藏状态而非 logits 的工程 recipe 在 1.6T 规模上跑起来。
 
-对每个 domain $D_k \in$ {数学、代码、agent、instruction-following、alignment、...}：
+三个支撑次级声明：
 
-1. 从 V4 base 起步。
+- **多教师合并 > 权重平均**。在不同 domain 上 GRPO 训出来的 specialist 不能直接平均权重 —— 能力会互相抵消。反向 KL OPD 进入统一 policy 保留 specialist 的行为指纹，因为 student 是相对每个 teacher 的分布被打分。
+- **全词表 KL 胜过 token 级近似**。先前 OPD 工作用单 token 采样估计 $V$ 维 KL —— 高方差 Monte Carlo 估计器，在长 rollout 训练上不稳。全词表给精确 KL，付出 $V$× 算力代价换更低梯度方差。
+- **基础设施让不可能变可行**。全词表 KL × 10+ teacher × 1.6T 模型 = 朴素不可行。工程 recipe（隐藏状态缓存、按 teacher 排 sample、teacher FP4 QAT、TileLang kernel）是把算法变成生产管线的部分。
+
+去掉任何一个：失去多教师就退化成单教师 OPD 带 TML 的所有限制；失去全词表就重引入方差病；失去工程就跑不起来。
+
+---
+
+## 实现细节
+
+### 管线总览
+
+```
+                  ┌──────────────────────────────────────────────┐
+V4 base ────►     │  Stage 1 (§5.1.1) —— Specialist 训练           │
+                  │                                                │
+                  │  for domain D in {math, code, agent, IF, ...}: │
+                  │      SFT(D)  →  GRPO(D)  →  best ckpt E_D     │
+                  │                                                │
+                  │  GRM（生成式奖励模型）：actor 自己也充当       │
+                  │  judge，给难验证任务出 reward                 │
+                  │                                                │
+                  │  3 种推理模式（Non-think / Think High /       │
+                  │  Think Max）训不同 specialist，分别用不同     │
+                  │  长度惩罚 + 上下文窗口                        │
+                  └─────────────────────┬──────────────────────────┘
+                                        │
+                                        ▼  10+ specialist
+                  ┌──────────────────────────────────────────────┐
+                  │  Stage 2 (§5.1.2) —— 多教师 OPD merge           │
+                  │                                                │
+                  │  student rollout y ~ π_θ                       │
+                  │  loss = Σ_i w_i · D_KL(π_θ || π_{E_i})         │
+                  │  对每个 π_{E_i} 跑全词表反向 KL                │
+                  │                                                │
+                  │  路由：prompt → 相关 specialist               │
+                  │ （选择性对齐；每个 prompt 上只有一个 teacher  │
+                  │  给得出有意义梯度）                           │
+                  └─────────────────────┬──────────────────────────┘
+                                        │
+                                        ▼
+                                   DeepSeek-V4
+```
+
+### Stage 1 —— Specialist 训练 (§5.1.1)
+
+对每个 domain $D_k$ ∈ `{math, coding, agent, IF, alignment, ...}`：
+
+1. 从 V4 base 起步（架构：hybrid CSA + HCA attention、mHC residuals、部分阶段 Muon optimizer）。
 2. **Domain 特定 SFT**，curated trace。
-3. **GRPO RL** 配 domain 特定 reward。*"超参基本与之前研究对齐"*（V3.2 / R1 时代）。
+3. **GRPO RL** 配 domain 特定 reward。论文说 *"超参基本与之前研究对齐"*（V3.2 / R1 时代）。
 4. 保存 domain specialist 为 $E_{D_k}$。
 
-**三种推理力度模式** —— Non-think / Think High / Think Max —— 通过 **在不同长度惩罚和上下文窗口约束下训练不同 specialist** 得到，然后在 Stage 2 一起合并。
+**GRM 贡献**：V4 引入一个 Generative Reward Model，*"the actor network natively functions as the GRM"* —— 联合优化打分 + 生成，替代难验证任务（alignment、IF、agentic）的 scalar RLHF reward。GRM 给 Stage 1 内的 GRPO 训练提供稠密 reward 信号。
 
-注意这一阶段 GRPO 还在用 —— V4 不是全局替换 GRPO，是替换 *V3.2 用来合并 specialist 的统一 mixed-RL post-training 阶段*。Per-domain RL 仍然做；变成 OPD 的是 *合并*。
+**推理模式 specialist**：Non-think / Think High / Think Max 由 **不同长度惩罚 + 不同上下文窗口下训的不同 specialist** 实现，而不是 mode token 条件化。Stage 2 的 OPD merge 把它们融合。
 
-**Generative Reward Model (GRM)：** V4 引入一个自评机制：*"the actor network natively functions as the GRM"* —— 联合优化打分 + 生成，替代难验证任务（alignment、instruction-following、agentic）的 scalar RLHF reward。这本身就是值得跟进的方法贡献；GRM 产出 specialist GRPO 训练用的稠密 reward 信号。
+注意：**Stage 1 里 GRPO 还在用**。V4 不是全局替换 GRPO —— 替换的是 V3.2 用来合并 specialist 的统一 *mixed-RL* 阶段。Per-domain RL 仍然做；变成 OPD 的是合并阶段。
 
-### Stage 2 —— 多教师 OPD merge（§5.1.2）
+### Stage 2 —— 多教师 OPD merge (§5.1.2)
 
-V4 之所以是 V4 的那次替换。Tech report 原话（line 1583）：
+让 V4 之所以是 V4 的那次替换。Tech report 原话（line 1583）：
 
 > *"Although the training pipeline largely mirrored that of DeepSeek-V3.2, a critical methodological substitution was made: the mixed Reinforcement Learning (RL) stage was entirely replaced by On-Policy Distillation (OPD)."*
 
@@ -84,190 +120,215 @@ $$
 
 性质：
 
-- **反向 KL**：student 在 KL 第一项 —— mode-seeking，跟 TML/MiniLLM 一致（见 [[on-policy-distillation#loss-函数|loss 推导]]）。
-- **On-policy**：轨迹每步从 $\pi_\theta$ 现采（论文 §5.1.2：*"Computing the reverse KL loss … requires sampling training trajectories from the student π_θ to maintain on-policy learning."*）。
-- **多教师**：$N > 10$ 个 specialist。
-- **权重 $w_i$**：*"typically determined by the relative importance of the expert"* —— 没公布固定 schedule。
-- **选择性对齐**：*"the unified policy π_θ selectively learns from the specialized expert relevant to the current task context"* —— prompt → 相关 teacher 的路由隐式在 per-prompt 的 domain 识别里；只有相关 teacher 在某 prompt 上提供有意义的梯度。
+| 维度 | 取值 | 备注 |
+| ---- | ---- | ---- |
+| KL 方向 | 反向（student 在第一项） | Mode-seeking；与 TML/MiniLLM 一致 |
+| 采样 | $y \sim \pi_\theta$（student rollout） | On-policy；匹配部署分布 |
+| Teacher 数 | $N > 10$ | 一个 domain specialist 一个 |
+| 权重 $w_i$ | "Relative importance of the expert" | 没公开 schedule |
+| 路由 | Per-prompt 到相关 teacher | 选择性对齐 —— 每 prompt 上只有一个 teacher 给得出强梯度 |
 
-### 论文引用的祖宗
+### 全词表 KL 的选择
 
-V4 OPD 一节显式引两条根（PDF line 1779）：
+相对 TML / MiniLLM 的真正算法差异点。论文论据（lines 1803–1812）：
 
-> *"we employ multi-teacher On-Policy Distillation (OPD; Gu et al. 2024; Lu and Lab 2025) as the primary technique for merging expert capabilities into the final model."*
+> *"prior works usually simplify the full-vocabulary KL loss into a token-level KL estimate … this approach … leads to high variance in gradient estimation and often causes training instability. Therefore, we adopt **full-vocabulary logit distillation in our OPD**."*
 
-- **Gu et al. 2024** = [MiniLLM](https://arxiv.org/abs/2306.08543) —— 反向 KL 作为策略梯度的推导。
-- **Lu and Lab 2025** = [Thinking Machines Lab 博客](https://thinkingmachines.ai/blog/on-policy-distillation/) —— "RL 替代品"从业者叙事。
+| | Token 级 OPD（TML、MiniLLM、GKD 默认） | 全词表 OPD（V4） |
+| --- | --- | --- |
+| 估计器 | $V$ 维 KL 的单 token 采样 | 解析精确 KL |
+| 梯度 | $\nabla \log\pi_\theta(y_t) \cdot \log(\pi_T(y_t)/\pi_\theta(y_t))$ | $\sum_v \pi_\theta(v) \log(\pi_\theta(v)/\pi_T(v))$ |
+| 方差 | 高；在长 rollout 上 compound | 低 |
+| 每 token 内存 | $O(1)$ | $O(V)$，$V \approx 100$K |
+| 每 token 带宽 | $O(1)$ | $O(V)$ —— 没工程就不可行 |
+| 1.6T 规模可行性 | trivial | 难 —— 需要 §5.2.2 基础设施 |
 
-DeepSeek 没声称发明 OPD。新的是把它扩到万亿级 MoE 规模的多教师全词表部署。
+全词表形式从 GKD（2023）起在数学上就显然。没人在规模上用是因为内存 / 带宽不可行。V4 的贡献是让它跑起来。
 
----
+### 让全词表 OPD 可行的基础设施 (§5.2.2)
 
-## 真正的算法新点：全词表 KL
+五项工程动作让 10+ teacher × 全词表 KL × 1.6T 模型真的能跑：
 
-这是 V4 OPD 跟 TML recipe 不同的地方。论文论据（lines 1803-1812）：
+**1. 缓存 teacher 隐藏状态，不是 logits**
 
-> *"prior works usually simplify the full-vocabulary KL loss into a token-level KL estimate … reuse RL framework by replacing $\text{sg}\,\log(\pi_E / \pi_\theta)$ as the per-token advantage estimate … this approach … leads to high variance in gradient estimation and often causes training instability. Therefore, we adopt **full-vocabulary logit distillation in our OPD**. Preserving the complete logit distribution … yields more stable gradient estimates and ensures faithful distillation."*
+朴素是 $O(|V| \times N_{\text{tokens}} \times N_{\text{teachers}})$ —— 每 epoch TB 级。V4 只缓存 teacher **最后一层隐藏状态**（不缓存 LM head 输出），训练时再 **在线跑 LM head**：
 
-两种配置：
+```python
+# 预训练前 per teacher specialist
+for prompt in training_data:
+    h_E = teacher_E.last_hidden_states(prompt)   # 每 token O(d_model)
+    store(h_E)                                   # 比 O(V) 小 ~50×
 
-| | Token 级 OPD（先前工作、TML、MiniLLM） | 全词表 OPD（DeepSeek-V4） |
-|---|---|---|
-| 比较什么 | teacher / student 在 *被采到的那个 token* 上的概率 | teacher / student 在 *所有词表 token* 上的概率分布 |
-| 梯度形式 | $\nabla_\theta \log\pi_\theta(y_t) \cdot \log\frac{\pi_T(y_t)}{\pi_\theta(y_t)}$（REINFORCE 风格） | $\sum_v \pi_\theta(v) \log\frac{\pi_\theta(v)}{\pi_T(v)}$ 直接 KL 梯度 |
-| 方差 | 高 —— $V$ 维 KL 单 token 采样 | 低 —— 完整分布上解析 KL |
-| 每 token 内存 | $O(1)$ —— 两个 scalar logprob | $O(V)$ —— 两端的完整 softmax |
-| 网络带宽（teacher 远程时） | 每 token $O(1)$ | 每 token $O(V)$，$V \approx 100$K |
-| 是否忠实 | sequence 级 KL 的有偏估计 | 精确的 per-token KL |
-
-全词表形式从 GKD（2023）起在数学上一直是显然的。**没人在规模上用是因为 $O(V \times \text{tokens} \times N_{\text{teachers}})$ 的内存和带宽不可行。** V4 用 §5.2.2 的基础设施 recipe 让它可行。
-
----
-
-## 让全词表 OPD 跑起来的基础设施（§5.2.2）
-
-对 NVIDIA reader 来说真正有意思的部分。引论文 "Efficient Teacher Scheduling for Full-Vocabulary OPD" 一节：
-
-### 1. 隐藏状态缓存（不是 logits）
-
-朴素做法 —— 对所有训练数据缓存每 token 每 teacher 的 logits —— 是 $O(|V| \times N_{\text{tokens}} \times N_{\text{teachers}})$。$|V| = 100$K、$N_{\text{tokens}} = $ 百万级、$N_{\text{teachers}} \geq 10$，是 TB 级 per epoch —— 不可行。
-
-V4 的招：**只缓存 teacher 最后一层的隐藏状态**（不是 logits），训练时再 **在线跑预测 head**：
-
-```
-预训练前 per teacher：
-  对每个训练 prompt x：
-    h_E = teacher_E.last_hidden_states(x)    # 一次 forward，不过 LM head
-    把 h_E 存入中央 buffer                    # 每 token O(d_model)，比 O(V) 小 ~50×
-
-训练时：
-  对每个 minibatch：
-    sample student rollout y ~ π_θ
-    加载该 rollout prompt 的 h_E
-    teacher_logits = teacher_E.lm_head(h_E)  # 在缓存的隐藏状态上跑 head
-    算全词表 KL(π_θ || softmax(teacher_logits))
+# 训练时
+for batch in dataloader:
+    y = sample_rollout(student)                  # on-policy
+    h_E = load_cached_hidden_states(batch)
+    teacher_logits = teacher_E.lm_head(h_E)      # 在缓存 h 上跑 head
+    loss = full_vocab_kl(student_logits, teacher_logits)
 ```
 
-相对 logit 缓存省 ~50× 内存（$d_{\text{model}} = 2048$、$V \approx 100$K 时）。
+在 $d_{\text{model}} = 2048$、$V \approx 100$K 时省 ~50× 内存。
 
-### 2. 按 teacher 索引排 sample
+**2. 按主 teacher 排 sample**
 
-$> 10$ 个 teacher 时不可能所有 teacher 的 LM head 同时驻留 GPU。V4 在数据 dispatcher 按 sample 主 teacher 排序，让任一 microbatch 内只需要挂一个 teacher 的 LM head：
+$> 10$ 个 teacher 时不可能所有 LM head 同时驻 GPU。V4 在 data dispatcher 按 sample 主 teacher 索引排序，让一个 microbatch 内 **最多一个 teacher LM head 驻 GPU**：
 
 ```
-Microbatch dispatcher：
-  按主 teacher index 排 sample
-  在每个 "teacher chunk" 内部：
-    把 teacher_E.lm_head 加载到 GPU
-    对 chunk 内所有 sample 算 KL
-  进下一个 teacher chunk
+Dispatcher:
+  group(samples, key=primary_teacher_index)
+  for teacher_chunk in groups:
+      gpu_load(teacher_chunk.teacher.lm_head)
+      compute_kl_for_all(teacher_chunk.samples)
 ```
 
-任一时刻每个 data-parallel rank 上 GPU 内最多一个 teacher head。代价是每 epoch 要加载 $\geq 10$ 个 LM head，靠 critical path 之外的 async I/O 摊。
+代价：每 epoch 加载 $\geq 10$ 个不同 LM head —— 靠 critical path 外的 async I/O 摊。
 
-### 3. Critical path 之外的 async I/O
+**3. Critical path 之外的 async I/O**
 
-Teacher 权重住在 **中央分布式存储**，**ZeRO 风格参数分片**，按需取。隐藏状态缓存同上。前一个 teacher chunk 算的时候后一个 async 加载。
+Teacher 权重住中央分布式存储，ZeRO 风格参数分片，按需取。隐藏状态缓存同上。前一个 teacher chunk 算的时候后一个 async 加载。
 
-### 4. 自研 TileLang 精确 KL kernel
+**4. 自研 TileLang 精确 KL kernel**
 
-TileLang 是 NVIDIA 最近开发的 tile-based 编程模型（类似 Triton）。V4 用自研 TileLang kernel 算精确的 teacher-student KL，融合 softmax —— 避开中间 logit materialization 和标准 "先算 logits 再算 loss" 的两遍模式。
+TileLang 是 NVIDIA 最近开发的 tile-based 编程模型（类似 Triton）。V4 用自研 kernel 算精确的 teacher-student KL **融合 softmax**，避开 "logits → loss" 两遍模式。
 
-### 5. Teacher FP4 QAT
+**5. Teacher FP4 QAT**
 
-Teacher 权重 **FP4 量化**（QAT，不是后训练量化）以塞进存储、让按需加载的带宽可行。Student 保持全精度。论文论据：teacher 提供 *目标分布*（不是梯度），FP4 推理可接受精度。
+Teacher 权重 **FP4 量化 via QAT**（不是后训练量化），以塞进存储 + 让按需加载带宽可行。Student 保持全精度。论据：teacher 提供 *目标分布*（不是梯度），FP4 推理精度可接受。
 
-### 6. Rollout infra 复用
+**6. 复用 V3.2 rollout / WAL 栈**
 
 OPD rollout 跑在 **Stage 1 GRPO 同一套 preemptible、容错、WAL-based 生成服务**上。从基础设施视角看 OPD 就是 RL 减 reward —— 同 scheduler、同 rollout 引擎、同容错。
 
-> [!important] Recipe 洞察
-> V4 OPD 这一节读起来不像算法论文，更像 *一篇把一个先前只是假设的算法做到能跑的系统论文*。数学（Eq. 29）一行；工程（隐藏状态缓存 + 按 teacher 排 sample + TileLang + FP4 QAT + 复用 RL infra）才是把 "1.6T 规模多教师全词表 KL" 从研究梦变成生产管线的部分。
+> [!important] 系统洞察
+> V4 §5.2.2 读起来不像算法论文，更像 *一篇把一个先前只是假设的算法做到能跑的系统论文*。数学（Eq. 29）一行；工程（隐藏状态缓存 + 按 teacher 排 sample + TileLang + FP4 QAT + 复用 RL infra）才是把 "1.6T 规模多教师全词表 KL" 从研究梦变成生产管线的部分。
 
 ---
 
-## 论文 *没有* 报告的
+## 实验
 
-为了校准认知，V4 tech report 里缺的三块：
+V4 是模型发布不是受控研究，所以这一节报告论文报告了什么、缺什么。
 
-1. **OPD vs GRPO 的 GPU-hour 对比**。论文 *没* 公布"OPD 成本 vs mixed-RL 阶段成本"。V4 评论里流传的"便宜 10×"声明 **继承自 TML 的 Qwen3 博客**，不是 V4 自己的数。
-2. **消融："V4 用 mixed RL 会比 V4 用 OPD 差"**。替换的合理性靠定性论证（避免 weight-merging 退化、全词表 KL 梯度方差更低）支撑，没有 A/B。
-3. **具体权重 $w_i$**。只说"相对重要性"，没 schedule、没学习路由机制描述。
-4. **OPD trainer 源码**。没公开。训练栈基于 V3.2 基础设施，那也是闭源的。
+### 论文报告的
 
-跟 DeepSeek 一贯的发布模式一致（权重开、训练栈闭），但如果想复现 recipe 要注意。
+- **推理质量**：V4-Pro 在标准 reasoning benchmark（AIME、GPQA、code 等）上定位为与 GPT-5.2 和 Gemini-3.0-Pro 具备竞争力。V4-Pro 声称开源 SimpleQA SOTA。
+- **架构验证**：hybrid CSA + HCA attention、mHC residuals、Muon optimizer 下的 1M 上下文 —— 但架构故事独立于 OPD 故事。
+- **OPD 管线验证**：合并产出一个单一统一模型，论文声称保留了 per-domain specialist 的能力。**没**给出 "V4 用 mixed RL 会更差" 的消融。
 
----
+### 论文 *没* 报告的
 
-## V4 OPD 跟其他的关系
+| 缺什么 | 为什么重要 | 流传声明的来源 |
+| ------ | ---------- | -------------- |
+| GPU-hour 对比：OPD merge vs mixed-RL merge | 替换的全部理由本应是效率 | "便宜 10×" 标题继承自 [TML 的 Qwen3 博客](https://thinkingmachines.ai/blog/on-policy-distillation/)，不是 V4 |
+| 消融：V4-with-mixed-RL vs V4-with-OPD | 证明 OPD *更好* 而不只是 *不同* | 无 —— 替换靠定性论证 |
+| 具体 $w_i$ schedule | 路由是学的还是手调的 | Tech report 只说 "relative importance" |
+| OPD trainer 源码 | 可复现性 | DeepSeek `github.com/deepseek-ai` 到 2026-05 没有 V4 / OPD repo |
 
-简谱：
+### V4 OPD 与其它 OPD 部署的关系
 
 | | GKD (2023) | MiniLLM (2023) | TML OPD (2025) | Qwen3 小 (2025) | Nemotron-Cascade 2 MOPD (2026) | **DeepSeek-V4 OPD (2026)** |
-|---|---|---|---|---|---|---|
-| Teacher 数 | 1 | 1 | 1 | 1 (更大 Qwen3) | 多 (per-domain best ckpt) | 多 (per-domain specialist) |
-| 采样 | $\lambda$ 旋钮 | student | student | student | student | student |
-| KL 方向 | $\beta$ 旋钮 (gen. JSD) | 反向 | 反向 | 反向 | 反向 | 反向 |
+| --- | --- | --- | --- | --- | --- | --- |
+| Teacher 数 | 1 | 1 | 1 | 1 | 多（per-domain ckpt） | **多**（per-domain specialist） |
+| 采样 | $\lambda$ 旋钮 | student | student | student | student | **student** |
+| KL 方向 | $\beta$ 旋钮 | 反向 | 反向 | 反向 | 反向 | **反向** |
 | KL 形式 | token 级 | token 级 (as PG) | token 级 | token 级 | token 级 | **全词表** |
-| 管线角色 | KD 原语 | KD 原语 | RL 替代品 (博客框架) | 替代完整 RL 的 stage 3-4 | 与 cascade RL 交错做回归恢复 | **整段 post-training merge 阶段** |
+| 管线角色 | KD 原语 | KD 原语 | RL 替代品（博客） | 替代 RL stage 3-4 | 与 cascade RL 交错做回归恢复 | **整段 post-training merge 阶段** |
 | 模型规模 | T5 / PaLM-2 | medium dense | Qwen3-8B | Qwen3 0.6B-30B | 30B 激活 MoE | **1.6T MoE** |
-| 源码 | google-deepmind | thu-coai/MiniLLM | (cookbook) | (Qwen) | (NVIDIA) | (闭源) |
+| 源码 | open | open | partial (cookbook) | partial (Qwen) | partial (NVIDIA) | **闭源** |
 
-V4 在每个维度上都是最激进位置 —— 模型最大、管线角色最广、teacher 最多、全词表 KL。
-
----
-
-## 评论与延伸阅读
-
-发布后窗口（2026-04 至 2026-05）我找到的几篇值得读：
-
-- **Andrew Lukyanenko** —— [V4 Review](https://artgor.medium.com/deepseek-v4-review-why-million-token-context-needs-efficient-attention-not-just-larger-windows-6dc8e74a00b1)。讲替换：*"V4 replaces the unified GRPO pipeline from DeepSeek-R1 with a compositional alternative … decomposing into specialists and merging via full-vocabulary KL."*
-- **OutcomeSchool** —— [Decoding DeepSeek V4](https://outcomeschool.com/blog/decoding-deepseek-v4)。讲为什么 on-policy 在合并阶段重要：*"the student never sees the kind of outputs it actually produces at inference time. With OPD, the student samples its own trajectories and the teacher corrects each token … more stable and faithful knowledge transfer than weight merging or mixed RL."*
-- **BSWEN** —— [Two-Stage Post-Training Pipeline of DeepSeek V4](https://docs.bswen.com/blog/2026-04-25-deepseek-v4-two-stage-post-training/)。独立印证 Eq. 29 与全词表论据。
-- **qingkeai.online（中文）** —— [DeepSeek V4 OPD 分析](https://qingkeai.online/archives/DeepSeek-V4-OPD)。把 OPD 框成 specialist 合并时对抗灾难性遗忘的工具。
-- **Fireworks AI** —— [What DeepSeek V4 Says About Training Platforms](https://fireworks.ai/blog/what-deepseek-v4-says-about-training-platforms)。从基础设施视角写（对 NVIDIA 训练 infra 读者最相关）。
-
-**Sebastian Raschka V3 → V3.2 深度解析**（[magazine post](https://magazine.sebastianraschka.com/p/technical-deepseek)）**没有覆盖 V4 / OPD** —— 比 V4 早几个月。他出 V4 OPD 跟进会很有价值；2026-05 中旬还没出。
+V4 在每个维度上都是最激进位置。
 
 ---
 
-## 诚实评估
+## 优势与限制
 
-**V4 OPD 真正新的点**（跟先前 on-policy distillation 工作相比）：
+最强两点：(1) **第一个旗舰规模、完全开放权重的演示**，证明 OPD 能完全替代 mixed-RL post-training —— 2026 起这就是标准引用；(2) **全词表 KL 作为方差减少手段** 是真正的算法主张，不是 marketing —— 让它在 1.6T 规模可行的工程本身就是贡献。
 
-1. **旗舰规模的全词表 KL**。TML 和 MiniLLM 用 token 级近似是因为便宜；V4 证明配合正确的 infra（隐藏状态缓存 + 按 teacher 排 sample + TileLang + FP4 QAT）*精确* 的 per-token KL 在 1.6T MoE 规模也可行。方差降低在大规模下更重要，因为梯度不稳定会累积。
-2. **多教师合并作为 post-training 范式**。先前 OPD 是单教师。V4 的 $\sum_i w_i D_{\text{KL}}$ 跨 $> 10$ 个 specialist 是 *质上* 不同的用法 —— 不是"压缩一个 teacher"，是"合并 specialist" —— 这一形式可以推广到任何你有正交能力想合并的场景。
-3. **按推理力度分 specialist**。给 Non-think / Think High / Think Max 各训一个 specialist 再用 OPD 合并，对"一个模型多种推理力度"是一个干净的架构答案。之前的做法（一个模型按 mode token 条件化）有能力稀释问题。
+诚实承认的限制：
 
-**回收的部分（论文正确引用）：**
+- **没有 vs GRPO 的成本消融**。论文不公布 GPU-hour 对比。V4 评论里任何"比 RL 便宜 10×"声明都来自 TML 的 Qwen3 博客，**对 V4 没被验证**。
+- **没有 vs mixed-RL 的 A/B**。替换靠定性合理化（避免 weight-merging 退化、全词表 KL 梯度方差更低）。没有 V4 规模上 OPD 击败继续 mixed RL 的数据。
+- **OPD trainer 闭源**。V4 OPD 构建于其上的 V3.2 post-training 栈也是闭源的。要重新实现得从头搭建 hidden-state-cache + TileLang kernel + FP4 QAT + sample-sort dispatcher。
+- **Specialist 路由不透明**。$w_i$ 权重和 prompt-to-teacher 路由逻辑没详细到能复现。
+- **继承 OPD 的结构限制**。[[on-policy-distillation#优势与限制|OPD 作为技术的限制]] 全部适用：被 teacher 能力上限封顶、冷启动脆弱等。V4 的 specialist 都从同一 base GRPO 训出来，跨家族负迁移风险弱化，但能力天花板论点仍成立。
 
-- 反向 KL on-policy 形式（MiniLLM 2023）。
-- "OPD 作为 RL 替代品"叙事（TML 2025-10）。
-- GRPO specialist 训练（DeepSeek-V3 / R1 栈）。
-
-**Marketing 或没被验证的：**
-
-- 成本声明。论文没发 GPU-hour 对比；评论里"比 RL 便宜 10×"的标题来自把 TML 的 Qwen3 数字洗到 V4 讨论里。
-- 替换决策靠定性，没实证。没有 V4-with-mixed-RL 的消融。
-- 1.6T-MoE 规模声明独立无法验证因为 trainer 闭源。
-
-**总结。** V4 OPD recipe 是迄今为止 on-policy distillation 最雄心勃勃的部署，工程足够具体到可复现（如果有基础设施），从 token 级 KL 转向全词表 KL 的方向值得认真对待。"完整管线替换"的声明大胆，独立验证还没出，但作为 *recipe 来研究* 它是 2026 的标准参考。
+> [!warning] marketing 与真正起作用的部分
+> *起作用*：V4（post-OPD）达到具备竞争力的 reasoning 数字。全词表 KL + 多教师合并 recipe 具体到可重新实现。*marketing 或未验证*：成本声明、"OPD 严格胜过 mixed RL" 的暗示。任何 V4 成本声明都当成继承自 TML 而不是 V4 结果来对待。
 
 ---
 
-## 训模型时该带走什么
+## 这意味着什么
 
-1. **如果你有同家族的强 teacher（或一组 specialist）**：试 OPD 再考虑 RL。从 HF TRL 的 `GKDTrainer`（token 级）开始原型；上规模时考虑全词表 KL。
-2. **要合并 specialist**：V4 是标准 recipe —— 各 domain 用 GRPO 训，再用多教师反向 KL OPD 合并。加权和 $\sum_i w_i D_{\text{KL}}$ 结构组合性好。
-3. **要前沿能力扩展**：不要指望 OPD 独自解决。当目标超过 teacher 时叠 OPD warm-start + GRPO（或 [KDRL](https://arxiv.org/abs/2506.02208) 联合目标）。
-4. **要基础设施**：全词表 KL 在缓存 teacher 隐藏状态（不缓存 logits）、按 teacher 排 sample、teacher FP4 QAT 之下可行。可复用的洞察是 **OPD 在基础设施层看就是 RL 减 reward** —— 同 rollout 引擎、同容错、同 scheduler。
+三条值得跟踪的预测：
+
+1. **OPD-作为-merge-阶段会变成 MoE post-training 的默认**。V4 是 proof-of-concept。预期 Qwen、Mistral、开源社区在 6–12 个月内跟进。"per-domain-or-mode specialist + OPD merge" 架构回答了任何训大 MoE 模型的人都面临的真实问题（统一 RL 下的能力稀释）。
+2. **规模上的 OPD 默认会用全词表 KL**。Token 级估计器的方差病真实存在且随 rollout 长度增长 —— 对 16K+ token reasoning 模型恰好是错误的 scaling 方向。等 V4 工程 recipe 被 HF TRL / veRL / NeMo-RL 复现，token 级 OPD 会退到小规模原型阶段。
+3. **有意思的前沿移到 teacher 多样性**。多教师 OPD 标配后，下个问题是合并哪些 teacher —— 同家族 specialist（V4 现状）、跨家族（GOLD 风格）、多智能体辩论（MAD-OPD）、还是 RL reward head（KDRL）。多样性工程变成差异化点。
+
+这 *不是*：万能 RL 杀手。V4 在 Stage 1 specialist 训练里还在用 GRPO。前沿能力扩展 —— 推过最强可得 teacher —— 仍然需要 RL exploration。V4 证明 OPD 能 *替换合并*，不是 *消除 RL*。
+
+---
+
+## 源码与复现
+
+### 公开发布状态
+
+| Artifact | 状态 |
+| -------- | ---- |
+| 模型权重（V4-Pro, V4-Flash） | ✓ 开放，MIT |
+| Tech report | ✓ HF 上的 PDF |
+| OPD trainer 源码 | ✗ 未发布 |
+| 隐藏状态缓存 / TileLang KL kernel | ✗ 未发布 |
+| Specialist checkpoint / 权重 $w_i$ | ✗ 未发布 |
+| V3.2 post-training 基础设施 | ✗ 闭源（V4 OPD 构建在其上） |
+
+含义：V4 OPD recipe 是 **paper-only**。要复现得在现有 trainer（HF TRL `GKDTrainer`、veRL、NeMo-RL）上重新实现 §5.2.2 的完整基础设施。
+
+### 最小复现路径
+
+```python
+# 概念草图 —— 完整实现需要 §5.2.2 基础设施
+from trl import GKDConfig, GKDTrainer
+from transformers import AutoModelForCausalLM
+
+student = AutoModelForCausalLM.from_pretrained("deepseek-ai/DeepSeek-V4-Base")  # 假设有
+
+teachers = [
+    AutoModelForCausalLM.from_pretrained(f"deepseek-ai/V4-specialist-{d}")
+    for d in ["math", "code", "agent", "IF", "alignment", ...]   # 10+ specialist
+]
+weights = {d: w_d for d, w_d in importance_per_domain.items()}
+
+# V4 风格多教师全词表 KL（stock TRL 不支持 —— 需要自定义 training_step）
+def opd_loss(student_logits, teacher_logits_per_specialist, weights):
+    return sum(
+        weights[i] * full_vocab_kl(student_logits, teacher_logits_per_specialist[i])
+        for i in range(len(teachers))
+    )
+```
+
+需要在 stock TRL 上建的基础设施部分：
+
+1. **多 teacher logit 拉取** —— 当前 `GKDTrainer` 只支持单 teacher。
+2. **隐藏状态缓存层** —— 预算 teacher 隐藏状态，存中央 buffer。
+3. **Sample-sort-by-teacher dispatcher** —— GPU 内最多一个 teacher LM head。
+4. **全词表精确 KL kernel** —— Triton 或 TileLang 实现；不是 `generalized_jsd_loss` 里的 JSD 分支。
+5. **Teacher FP4 QAT** —— 存储 / 加载用。
+
+### 最接近 V4 的可用参考实现
+
+| 项目 | 给你什么 | 距 V4 还差什么 |
+| ---- | -------- | -------------- |
+| [HF TRL `GKDTrainer`](https://github.com/huggingface/trl/blob/main/trl/trainer/gkd_trainer.py) | 单 teacher 反向 KL OPD，token 级 | 多教师、全词表、基础设施缺 |
+| [veRL `algo/opd`](https://verl.readthedocs.io/en/latest/algo/opd.html) | 多教师路由 via `data_source` | 仅 token 级；无隐藏状态缓存 |
+| [NeMo-RL OPD (#1445)](https://github.com/NVIDIA-NeMo/RL/discussions/1445) | Top-k 限制 KL（带宽优化） | 最接近全词表；无公开多教师管线 |
+| [Tinker cookbook](https://github.com/thinking-machines-lab/tinker-cookbook) | 单 + 多教师 OPD recipe | Token 级，无全词表路径 |
 
 ---
 
 ## 相关阅读
 
-- [[on-policy-distillation]] —— 总伞技术（算法 + 变体 + 争论）；V4 OPD 是其旗舰规模实例。
-- [[grpo]] —— V4 Stage 1 specialist 训练用的 RL 算法，也是 Stage 2 merge 被替换掉的那个。
+- [[on-policy-distillation]] —— OPD 总伞页（起源 paper、数学、变体、争论）；V4 OPD 是其旗舰规模实例。
+- [[grpo]] —— V4 Stage 1 specialist 训练用的 RL 算法；Stage 2 merge 被替换掉的那个。
 - [[ppo-for-llm]] —— 两阶段共享的 KL 正则的 trust-region 直觉。
 - [[rlhf-overview]] —— V4 在 merge 阶段颠覆的标准 post-training 管线。
 - [[parallelism-strategies-deep-dive#14. 实战案例：DeepSeek-V3]] —— V4 借鉴的 V3 架构和并行基础。
@@ -276,12 +337,12 @@ V4 在每个维度上都是最激进位置 —— 模型最大、管线角色最
 
 ## 参考文献
 
-- **DeepSeek-V4 tech report**：[HF PDF](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf)
+- **DeepSeek-V4 tech report**：[HF PDF](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf)（无 arXiv）
 - **DeepSeek-V4-Pro model card**：[huggingface.co/deepseek-ai/DeepSeek-V4-Pro](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro)
 - **DeepSeek-V4-Flash model card**：[huggingface.co/deepseek-ai/DeepSeek-V4-Flash](https://huggingface.co/deepseek-ai/DeepSeek-V4-Flash)
 - **API 更新**：[api-docs.deepseek.com/updates](https://api-docs.deepseek.com/updates)
+- **GKD（V4 引用的 OPD 原 paper）**：Agarwal et al., ICLR 2024。[arXiv:2306.13649](https://arxiv.org/abs/2306.13649)
+- **MiniLLM（V4 引用）**：Gu et al., NeurIPS 2024。[arXiv:2306.08543](https://arxiv.org/abs/2306.08543)
 - **Thinking Machines Lab — On-Policy Distillation 博客**（V4 引用）：[thinkingmachines.ai/blog/on-policy-distillation](https://thinkingmachines.ai/blog/on-policy-distillation/)
-- **MiniLLM**（V4 引用）：Gu et al., [arXiv:2306.08543](https://arxiv.org/abs/2306.08543)
-- **GKD**（总数学）：Agarwal et al., [arXiv:2306.13649](https://arxiv.org/abs/2306.13649)
-- **独立 V4 解读**：[Lukyanenko](https://artgor.medium.com/deepseek-v4-review-why-million-token-context-needs-efficient-attention-not-just-larger-windows-6dc8e74a00b1)、[OutcomeSchool](https://outcomeschool.com/blog/decoding-deepseek-v4)、[BSWEN](https://docs.bswen.com/blog/2026-04-25-deepseek-v4-two-stage-post-training/)、[qingkeai.online](https://qingkeai.online/archives/DeepSeek-V4-OPD)、[Fireworks AI](https://fireworks.ai/blog/what-deepseek-v4-says-about-training-platforms)
-- **媒体**：[CNBC](https://www.cnbc.com/2026/04/24/deepseek-v4-llm-preview-open-source-ai-competition-china.html)、[MIT Technology Review](https://www.technologyreview.com/2026/04/24/1136422/why-deepseeks-v4-matters/)、[Bloomberg](https://www.bloomberg.com/news/articles/2026-04-24/deepseek-unveils-newest-flagship-a-year-after-ai-breakthrough)
+- **独立 V4 解读**：[Lukyanenko](https://artgor.medium.com/deepseek-v4-review-why-million-token-context-needs-efficient-attention-not-just-larger-windows-6dc8e74a00b1) · [OutcomeSchool](https://outcomeschool.com/blog/decoding-deepseek-v4) · [BSWEN](https://docs.bswen.com/blog/2026-04-25-deepseek-v4-two-stage-post-training/) · [qingkeai.online](https://qingkeai.online/archives/DeepSeek-V4-OPD) · [Fireworks AI](https://fireworks.ai/blog/what-deepseek-v4-says-about-training-platforms)
+- **媒体**：[CNBC](https://www.cnbc.com/2026/04/24/deepseek-v4-llm-preview-open-source-ai-competition-china.html) · [MIT Technology Review](https://www.technologyreview.com/2026/04/24/1136422/why-deepseeks-v4-matters/) · [Bloomberg](https://www.bloomberg.com/news/articles/2026-04-24/deepseek-unveils-newest-flagship-a-year-after-ai-breakthrough)
