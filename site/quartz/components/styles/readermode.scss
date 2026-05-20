@@ -32,12 +32,11 @@
 
   & .sidebar.left,
   & .sidebar.right {
-    opacity: 0;
+    visibility: hidden;
     pointer-events: none;
     overflow: hidden;
     padding-left: 0;
     padding-right: 0;
-    transition: opacity 0.2s ease;
   }
 
   & .readermode {
@@ -45,7 +44,8 @@
     top: 1rem;
     left: 1rem;
     z-index: 1000;
-    opacity: 0.35;
+    visibility: visible;
+    opacity: 0.4;
     pointer-events: auto;
     transition: opacity 0.2s ease;
 
