@@ -413,22 +413,25 @@ curl -sL -o /tmp/<slug>.pdf "https://arxiv.org/pdf/<arxiv-id>"
 mkdir -p /tmp/<slug>-figs
 pdfimages -all -j /tmp/<slug>.pdf /tmp/<slug>-figs/fig
 
-# 3. Inspect each image (`Read` tool) — pick types 1-3, skip logos / small icons
-# 4. Copy chosen figures to both EN and CN wiki sources:
-mkdir -p "EN/sources/papers/<slug>/figs" "CN/sources/papers/<slug>/figs"
-cp /tmp/<slug>-figs/fig-XYZ.png "EN/sources/papers/<slug>/figs/<descriptive-name>.png"
-cp /tmp/<slug>-figs/fig-XYZ.png "CN/sources/papers/<slug>/figs/<descriptive-name>.png"
+# 3. Inspect each image (`Read` tool) — pick types 1-3, skip logos / small icons.
+# 4. Copy chosen figures to BOTH EN and CN — but NOT to sources/ (it's in
+#    Quartz ignorePatterns). Use wiki/<category>/<slug>-figs/ instead:
+mkdir -p "EN/wiki/<category>/<slug>-figs" "CN/wiki/<category>/<slug>-figs"
+cp /tmp/<slug>-figs/fig-XYZ.png "EN/wiki/<category>/<slug>-figs/<descriptive-name>.png"
+cp /tmp/<slug>-figs/fig-XYZ.png "CN/wiki/<category>/<slug>-figs/<descriptive-name>.png"
 ```
 
-**Embedding in the page**: use relative paths from the wiki page:
+**Why `wiki/<category>/<slug>-figs/` and not `sources/papers/<slug>/figs/`** (the 2026-05-20 lesson): Quartz's `quartz.config.ts` has `**/sources/**` in `ignorePatterns`, so anything under `sources/` gets dropped from the build output — the page renders but image requests 404. The fix is to colocate figures next to their wiki page in the same `wiki/<category>/` directory. The original `sources/papers/<slug>/` directory is still where the citation.md and the raw PDF live; just don't put images there.
+
+**Embedding in the page**: same-directory relative path (the markdown file is `wiki/<category>/<slug>.md`, the figure is in `wiki/<category>/<slug>-figs/...`):
 
 ```markdown
-![System architecture, paper Fig. 1](../../sources/papers/<slug>/figs/system-architecture.png)
+![System architecture, paper Fig. 1](<slug>-figs/system-architecture.png)
 ```
 
 **Naming**: `system-architecture.png`, `throughput-vs-nodes.png`, `acceptance-length-curve.png` — descriptive lowercase-hyphen. Don't keep the `fig-002` style from pdfimages.
 
-**Why mirror to both EN/ and CN/**: figures are language-agnostic, but the bilingual wiki uses parallel paths. Mirroring keeps relative image links symmetric across languages.
+**Why mirror to both EN/ and CN/**: figures are language-agnostic, but the bilingual wiki uses parallel paths. Mirroring keeps relative image links symmetric across languages — both `EN/wiki/.../<slug>.md` and `CN/wiki/.../<slug>.md` reference the same `<slug>-figs/...` path that resolves in their respective language tree.
 
 #### Annotated Q&A template
 
@@ -773,8 +776,9 @@ Step-by-step for the four most common workflows.
      curl -sL -o /tmp/<slug>.pdf "https://arxiv.org/pdf/<arxiv-id>"
      pdfimages -all -j /tmp/<slug>.pdf /tmp/<slug>-figs/fig
      Inspect each fig-NNN.png via Read; copy types 1-3 to BOTH
-     EN/sources/papers/<slug>/figs/ and CN/sources/papers/<slug>/figs/
-     with descriptive names. Skip logos and tiny icons.
+     EN/wiki/<category>/<slug>-figs/ and CN/wiki/<category>/<slug>-figs/
+     with descriptive names. **NOT** under sources/ — that's in
+     Quartz ignorePatterns and won't be published. Skip logos and tiny icons.
 7. Write the page using the Part 2 hybrid skeleton (Summary + Depth) + Part 3 format.
    Embed figures at relevant sections (system arch under "How it works",
    experiment plots under "Headline evidence").

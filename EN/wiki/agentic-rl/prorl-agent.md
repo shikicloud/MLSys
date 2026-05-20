@@ -93,7 +93,7 @@ The "rootless sandbox" column is the deployment-realism contribution that lets t
 
 The trainer's API contract is `① POST /add_llm_server → ② POST /start → ③ POST /process { instance, sampling_params }` (blocks) `→ ④ ← (token_ids, logprobs, reward, timing)`.
 
-![ProRL-Agent-Server process placement (paper Fig.)](../../sources/papers/prorl-agent/figs/system-architecture.png)
+![ProRL-Agent-Server process placement (paper Fig.)](prorl-agent-figs/system-architecture.png)
 
 The paper figure above shows the two-cluster placement (GPU-node trainer cluster on the left, CPU/GPU server cluster on the right). The Mermaid below adds the in-process detail — three queues, FastAPI parent + multiprocessing child, sandbox / vLLM externals.
 
@@ -336,7 +336,7 @@ Not novel research — just the right engineering. The ablation later shows acti
 
 **Scalability** (paper Fig.):
 
-![Throughput vs. number of nodes (paper Fig.)](../../sources/papers/prorl-agent/figs/throughput-vs-nodes.png)
+![Throughput vs. number of nodes (paper Fig.)](prorl-agent-figs/throughput-vs-nodes.png)
 
 Near-linear with rollout-node count for SWE tasks; 4B scales best (smaller per-rollout footprint), 14B saturates earliest (per-node compute cap).
 

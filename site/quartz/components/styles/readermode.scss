@@ -33,16 +33,20 @@
     column-gap 0.2s ease;
 }
 
-/* List/folder pages render their article inside .popover-hint (sibling of
-   .center), not inside .center itself, so the .center > article { grid-area }
-   rule misses and the article auto-places into the wrong grid cell. Force the
-   list-page article into grid-center too. */
-.popover-hint > article {
+/* List/folder pages render two elements as siblings of .center:
+   - .popover-hint > article (the markdown body, including any prose H2s)
+   - .page-listing (the "N items under this folder" listing of child pages)
+   Neither is inside .center, so the .center > article { grid-area: grid-center }
+   rule misses and they auto-place into the wrong grid cells. Force both into
+   grid-center. */
+.popover-hint > article,
+.page-listing {
   grid-area: grid-center;
 }
 
 :root[left-sidebar="hidden"]:not([right-sidebar="hidden"]) .center > article,
 :root[left-sidebar="hidden"]:not([right-sidebar="hidden"]) .popover-hint > article,
+:root[left-sidebar="hidden"]:not([right-sidebar="hidden"]) .page-listing,
 :root[left-sidebar="hidden"]:not([right-sidebar="hidden"]) .page-header {
   padding-left: 6rem;
 }
@@ -57,6 +61,7 @@
 
 :root[right-sidebar="hidden"]:not([left-sidebar="hidden"]) .center > article,
 :root[right-sidebar="hidden"]:not([left-sidebar="hidden"]) .popover-hint > article,
+:root[right-sidebar="hidden"]:not([left-sidebar="hidden"]) .page-listing,
 :root[right-sidebar="hidden"]:not([left-sidebar="hidden"]) .page-header {
   padding-right: 6rem;
 }
