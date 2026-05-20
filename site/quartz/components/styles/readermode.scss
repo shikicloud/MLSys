@@ -23,7 +23,7 @@
 
 :root[reader-mode="on"] {
   & #quartz-body {
-    grid-template-columns: 0 minmax(0, 1fr) 0 !important;
+    grid-template-columns: 1fr minmax(0, 900px) 1fr !important;
     column-gap: 0 !important;
     transition:
       grid-template-columns 0.2s ease,
