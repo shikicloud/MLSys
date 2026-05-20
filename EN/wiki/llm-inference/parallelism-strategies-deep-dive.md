@@ -1394,6 +1394,38 @@ Concrete implementations of this hybrid pattern:
 >
 > **So the public docs' "Context parallelism distributes the processing of long sequences across multiple GPUs" hides three completely different algorithms behind one knob** — Ulysses for vanilla long-prefill, Star for sparse long-context retrieval, Helix for MNNVL-decode. Not one CP; three.
 
+> [!question]+ Shiki — Why does TRT-LLM ship so many CP variants but vLLM/SGLang don't, and has Meta's inference CP actually been deployed? (2026-05-20)
+>
+> Two related questions about the *deployment reality* of inference CP. Short answer: **TRT-LLM is the outlier**, and **Meta's paper is effectively single-customer in 2026**.
+>
+> **Why TRT-LLM ships 4 variants and the OSS engines don't — four drivers:**
+>
+> 1. **Customer pull.** NVIDIA's hyperscaler customers (Meta's Llama 405B 1M-prefill, OpenAI/Anthropic internal, NVIDIA's own labs) are exactly the long-context inference user base. TRT-LLM is positioned as the "performance flagship" for them. vLLM and SGLang serve a broader OSS community whose median use case is 4K-32K context — long-context is a minority demand.
+> 2. **Hardware showcase / lock-in.** Helix is uniquely valuable on **MNNVL** fabrics (NVL72 / GB200). NVIDIA has a commercial motivation to ship CP algorithms that *only run well on their flagship hardware* — it sells more NVL72 racks. vLLM and SGLang aim for hardware portability (H100 / A100 / MI300 must all work), so they avoid topology-specific algorithms.
+> 3. **Engineering manpower.** TRT-LLM has hundreds of NVIDIA engineers; vLLM ~30 active maintainers, SGLang ~10. Maintaining 4 different CP code paths (with their distinct kernels, schedulers, KV cache configs) is expensive — OSS projects can't afford it.
+> 4. **Explicit OSS choices.**
+>    - **vLLM**: prefill-CP RFCs [#22693](https://github.com/vllm-project/vllm/issues/22693) and [#26133](https://github.com/vllm-project/vllm/issues/26133) closed as "not planned". They prioritize **DCP** (MLA KV-cache dedup) because that's the actual pain point for the typical vLLM user (TP=8 serving DeepSeek-V3/V4-class MLA models with KV duplicated 8×).
+>    - **SGLang**: explicitly chose **PP** over CP for million-token serving. LMSYS blog (2026-01-15): *"CP requires intrusive per-model modifications to the attention mechanism; PP has lower comm volume."* Their bet: pipeline depth + chunked context > sequence sharding.
+>
+> **Has Meta's CP actually been deployed?**
+>
+> | Who | Status |
+> | --- | ------ |
+> | **Meta itself** | ✅ Llama 405B 1M-prefill serving (the [paper](https://arxiv.org/abs/2411.01783) is essentially their production deployment writeup; 77 s on 128 H100s). |
+> | **TRT-LLM** | ❌ Does *not* implement Meta's pass-KV / pass-Q. Ships Ulysses (head-dim alltoall) + Star (anchor-block sparse) + Helix (MNNVL decode) instead — same problem, different algorithms. |
+> | **vLLM** | ❌ Prefill-CP RFCs closed; only DCP (KV dedup) shipped. |
+> | **SGLang** | ❌ Explicitly chose PP. |
+> | **Anthropic / OpenAI / Google** | Unknown — no public disclosure. Most likely use KV compression + PP / chunked prefill rather than Meta-style CP. |
+>
+> **Why Meta's exact technique didn't spread:**
+>
+> 1. **No open-source reference implementation.** Paper out 2024-11, inference engine never released. Adopting requires re-implementing pass-KV / pass-Q decision logic (paper Algorithm 1) from scratch.
+> 2. **Engine integration cost.** Pass-KV vs pass-Q is a *per-step* decision based on current cache state and query batch size. Most engines don't have the abstraction for this — their CP communicators are static.
+> 3. **Niche use case.** Only valuable at 512K-1M context. Most production workloads sit at 4K-128K, where TP / DP / chunked prefill already work fine.
+> 4. **Hardware coupling.** The 128-H100 topology assumed in the paper isn't trivially portable to B200 / H200 / GB200 — the comm/compute balance shifts, and the optimal decision boundary in Algorithm 1 moves.
+>
+> **The bottom line:** Meta's paper was *influential* — it established the framing that "inference CP is possible and worth engineering for". But in 2026 it's effectively a **single-customer technique**: Meta uses it; everyone else either skipped CP (vLLM, SGLang) or implemented different algorithms under the same name (TRT-LLM's Ulysses/Star/Helix). The paper's *idea* shapes the field; its *specific algorithm* doesn't.
+
 ### 7.7 Limitations
 
 | Limitation | Detail |
