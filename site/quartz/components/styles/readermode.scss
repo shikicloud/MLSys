@@ -22,13 +22,21 @@
 }
 
 :root[reader-mode="on"] {
+  & #quartz-body {
+    grid-template-columns: 0 minmax(0, 1fr) 0 !important;
+    column-gap: 0 !important;
+    transition:
+      grid-template-columns 0.2s ease,
+      column-gap 0.2s ease;
+  }
+
   & .sidebar.left,
   & .sidebar.right {
     opacity: 0;
+    pointer-events: none;
+    overflow: hidden;
+    padding-left: 0;
+    padding-right: 0;
     transition: opacity 0.2s ease;
-
-    &:hover {
-      opacity: 1;
-    }
   }
 }
