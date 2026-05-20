@@ -21,12 +21,37 @@
   }
 }
 
-/* Single-side hidden: don't change the grid at all. The hidden sidebar's 320px
-   column stays as empty whitespace, the visible sidebar keeps its full width, the
-   article keeps its natural ~860px width. Only contents are hidden (via the rules
-   below).
+/* Single-side hidden: collapse the hidden sidebar's column to 0 so the article
+   can claim that freed space, but add a comfortable padding on the article so
+   it doesn't slam into the viewport / page edge. */
 
-   Both hidden: switch to a centered 900px article layout with symmetric gutters. */
+:root[left-sidebar="hidden"]:not([right-sidebar="hidden"]) #quartz-body {
+  grid-template-columns: 0 1fr 320px !important;
+  column-gap: 0 !important;
+  transition:
+    grid-template-columns 0.2s ease,
+    column-gap 0.2s ease;
+}
+
+:root[left-sidebar="hidden"]:not([right-sidebar="hidden"]) .center > article,
+:root[left-sidebar="hidden"]:not([right-sidebar="hidden"]) .page-header {
+  padding-left: 6rem;
+}
+
+:root[right-sidebar="hidden"]:not([left-sidebar="hidden"]) #quartz-body {
+  grid-template-columns: 320px 1fr 0 !important;
+  column-gap: 0 !important;
+  transition:
+    grid-template-columns 0.2s ease,
+    column-gap 0.2s ease;
+}
+
+:root[right-sidebar="hidden"]:not([left-sidebar="hidden"]) .center > article,
+:root[right-sidebar="hidden"]:not([left-sidebar="hidden"]) .page-header {
+  padding-right: 6rem;
+}
+
+/* Both hidden: switch to a centered 900px article layout with symmetric gutters. */
 :root[left-sidebar="hidden"][right-sidebar="hidden"] #quartz-body {
   grid-template-columns: minmax(0, 1fr) minmax(0, 900px) minmax(0, 1fr) !important;
   column-gap: 0 !important;
