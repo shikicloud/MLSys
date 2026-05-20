@@ -1365,9 +1365,11 @@ Concrete implementations of this hybrid pattern:
 >
 > So when you see "CP" in inference contexts: check whether they mean (1) Meta-paper CP for long-context prefill, (2) vLLM's DCP which is really KV dedup, or (3) TRT-LLM's API knob which is variant 1 exposed as a config. All three coexist under the same two letters.
 
-> [!question]+ Shiki — TensorRT-LLM CP variants — what does it actually implement? (2026-05-20)
+> [!question]+ Shiki — TRT-LLM CP — what variants are implemented, why does TRT-LLM ship 4 while vLLM/SGLang ship 1, and has Meta's algorithm been adopted? (2026-05-20)
 >
-> Investigated the local TRT-LLM repo (`tensorrt_llm/mapping.py:25-34`). Source ships **four** `CpType` values, all selected via `cp_config={"cp_type": ...}`. Default is `ULYSSES`. Three are real; one is an enum stub.
+> Three questions, one TRT-LLM-shaped story. Short answers: TRT-LLM ships **4** named CpType variants (3 real + 1 stub); the OSS engines ship **1 each** (vLLM PCP, SGLang DSV4-NSA-CP) for clear customer / manpower / hardware reasons; and **Meta's specific pass-KV/pass-Q algorithm remains single-customer in 2026** — every major engine ships *some* CP, but nobody copied Meta's exact kernel.
+>
+> **(1) What does TRT-LLM ship — the four `CpType` variants.** Investigated the local TRT-LLM repo (`tensorrt_llm/mapping.py:25-34`). Source ships **four** `CpType` values, all selected via `cp_config={"cp_type": ...}`. Default is `ULYSSES`. Three are real; one is an enum stub.
 >
 > | `cp_type` | Status | Algorithm | Where in code |
 > | --------- | ------ | --------- | ------------- |
@@ -1376,63 +1378,49 @@ Concrete implementations of this hybrid pattern:
 > | `HELIX` | ✅ real | Helix Parallelism (NVIDIA): KV cache **sharded by token** across CP ranks for decode, with **MNNVL** (multi-node NVLink) hardware-accelerated `all_to_all`. Non-attention layers repurpose CP ranks **back to TP** (`mapping.py:533 repurpose_helix_cp_to_tp`). | `_mnnvl_utils.py:359 HelixCpMnnvlMemory`, `_torch/distributed/ops.py:366 HelixAllToAllNative`, custom ops `trtllm::alltoall_helix`, `trtllm::helix_post_process`. `_torch/modules/attention.py:437-439` asserts `cp_type == HELIX` whenever `cp_size > 1` reaches the new PyTorch attention module — not because Helix is "the only real CP", but because Ulysses collapses its CP group into TP earlier (`mapping.py:94-97`) and Star is handled at the request-scheduling layer, so by the time control reaches `Attention.forward` only Helix still has `attn_cp_size > 1` to honor. |
 > | `RING` | 🟡 enum-only | Reserved name. `CpType.RING = "RING"` exists in `mapping.py:30-31`, but `grep -rn 'CpType.RING'` returns **zero usages** across the repo. No dispatch, no kernel. | — |
 >
-> **How to read the four:**
->
 > **All three implemented variants are genuinely CP** — they just live at different abstraction layers:
-> - **Ulysses** does CP in the **TP communicator** (head all-to-all reuses the TP group).
-> - **Star** does CP at the **request-scheduling layer** (context partitioned and dispatched to cp_size ranks, each rank runs a standard local attention).
-> - **Helix** does CP **inside the attention kernel itself** (token-sharded KV + MNNVL alltoall).
+> - **Ulysses** does CP in the **TP communicator** (head all-to-all reuses the TP group). Use case: long-context prefill on single-node multi-GPU.
+> - **Star** does CP at the **request-scheduling layer** (context partitioned and dispatched to cp_size ranks, each rank runs a standard local attention). Sparse approximation; needle-in-a-haystack retrieval over 128K-512K contexts.
+> - **Helix** does CP **inside the attention kernel itself** (token-sharded KV + MNNVL alltoall). The *decode-time* CP path — exactly what the Meta paper said decode shouldn't do, but Helix bypasses the per-step cost by using MNNVL `all_to_all` (NVL72-class fabric) and repurposing CP ranks to TP for FFN.
+> - **Ring** is unimplemented — probably a placeholder for a future pass-KV / pass-Q kernel or training-side Ring Attention vocabulary alignment.
 >
-> So "real CP" isn't a Helix-exclusive label — Ulysses and Star are real CP too, just relabeled or moved up the stack.
+> So "real CP" isn't a Helix-exclusive label — Ulysses and Star are real CP too, just relabeled or moved up the stack. The public docs' one-sentence description (*"Context parallelism distributes the processing of long sequences across multiple GPUs"*) hides three completely different algorithms behind one knob.
 >
-> Per-variant detail:
->
-> - **Ulysses (default)** is what the prior Q&A discussed: head-dimension all-to-all, but TRT-LLM implements it by *fusing* the CP group into TP rather than as a separate parallel axis. Use case: long-context prefill on single-node multi-GPU. Constraint baked in: `attn_cp_size != 1 && cp_type == ULYSSES` is a hard error (`mapping.py:109-112`).
-> - **Star Attention** is the *sparse* CP path — not a generic long-sequence solver. Each rank only sees its own block + the anchor block. Designed for needle-in-a-haystack-style retrieval over very long contexts (the example script targets NIAH up to 512K). Different value proposition than Ring/Ulysses: trades accuracy for compute.
-> - **Helix** is the *decode-time* CP path — exactly the thing the Meta paper said decode shouldn't do, but Helix bypasses the per-step cost by (a) using MNNVL `all_to_all` (NVL72-class fabric) instead of NCCL ring rotation, and (b) repurposing CP ranks to TP for FFN so the CP communication is only paid where it has to be. NVIDIA's answer to "make CP work at decode now that GB200/NVL72 exists."
-> - **Ring** is reserved but unimplemented — probably a placeholder for a future pass-KV / pass-Q kernel, or for symmetry with the training-side Ring Attention vocabulary. Today, "ring semantics" in TRT-LLM are achieved via Ulysses-style head-sharding instead.
->
-> **So the public docs' "Context parallelism distributes the processing of long sequences across multiple GPUs" hides three completely different algorithms behind one knob** — Ulysses for vanilla long-prefill, Star for sparse long-context retrieval, Helix for MNNVL-decode. Not one CP; three.
-
-> [!question]+ Shiki — Why does TRT-LLM ship so many CP variants but vLLM/SGLang don't, and has Meta's inference CP actually been deployed? (2026-05-20)
->
-> Two related questions about the *deployment reality* of inference CP. Short answer: **all three major engines ship CP, but TRT-LLM ships 4 variants while vLLM/SGLang ship 1 each**, and **Meta's specific algorithm is effectively single-customer in 2026**.
->
-> **CP shipped — engine matrix (as of 2026-05):**
+> **(2) How TRT-LLM compares to vLLM/SGLang — engine matrix (2026-05):**
 >
 > | Engine | Prefill CP | Decode CP | # of named variants |
 > | ------ | ---------- | --------- | ------------------- |
 > | **TRT-LLM** | Ulysses + Star | Helix | **4** (incl. `RING` enum-only stub) |
-> | **vLLM** | PCP (PR #28718, 2025-11-19) | DCP (PR #24864, KV-dedup trick) | **2** (PCP + DCP) |
+> | **vLLM** | PCP (PR [#28718](https://github.com/vllm-project/vllm/pull/28718), 2025-11-19) | DCP (PR #24864, KV-dedup trick) | **2** (PCP + DCP) |
 > | **SGLang** | NSA Prefill CP for DSV4 (`--enable-nsa-prefill-context-parallel`) | — | **1** (DSV4-scoped) |
 >
-> **Why TRT-LLM ships 4 variants while vLLM/SGLang ship 1 each — four drivers:**
+> **(3) Why TRT-LLM ships 4 variants while vLLM/SGLang ship 1 each — four drivers:**
 >
 > 1. **Customer pull.** NVIDIA's hyperscaler customers (Meta's Llama 405B 1M-prefill, OpenAI/Anthropic internal, NVIDIA's own labs) are exactly the long-context inference user base. TRT-LLM is positioned as the "performance flagship" for them. vLLM and SGLang serve a broader OSS community whose median use case is 4K-32K context — long-context is a minority demand, so one good CP variant suffices.
 > 2. **Hardware showcase / lock-in.** Helix is uniquely valuable on **MNNVL** fabrics (NVL72 / GB200). NVIDIA has a commercial motivation to ship CP algorithms that *only run well on their flagship hardware* — it sells more NVL72 racks. vLLM and SGLang aim for hardware portability (H100 / A100 / MI300 must all work), so they avoid topology-specific algorithms.
 > 3. **Engineering manpower.** TRT-LLM has hundreds of NVIDIA engineers; vLLM ~30 active maintainers, SGLang ~10. Maintaining 4 different CP code paths (with their distinct kernels, schedulers, KV cache configs) is expensive — OSS projects can afford one, not four.
 > 4. **Scope discipline in OSS.**
->    - **vLLM**: the earlier prefill-CP RFCs ([#22693](https://github.com/vllm-project/vllm/issues/22693), [#26133](https://github.com/vllm-project/vllm/issues/26133)) were closed as "not planned" — but PR [#28718](https://github.com/vllm-project/vllm/pull/28718) (PCP) shipped via direct implementation anyway on 2025-11-19. They took the *minimal* path: piggyback on DCP's KV-cache interleaving infrastructure, ship one prefill-CP variant (Ulysses-leaning, AllReduce + ReduceScatter comm pattern), call it done.
+>    - **vLLM**: prefill-CP RFCs ([#22693](https://github.com/vllm-project/vllm/issues/22693), [#26133](https://github.com/vllm-project/vllm/issues/26133)) were closed as "not planned" — but PR [#28718](https://github.com/vllm-project/vllm/pull/28718) (PCP) shipped via direct implementation anyway on 2025-11-19. They took the *minimal* path: piggyback on DCP's KV-cache interleaving infrastructure, ship one prefill-CP variant (Ulysses-leaning, AllReduce + ReduceScatter comm pattern), call it done.
 >    - **SGLang**: declined *generic* CP per [LMSYS blog 2026-01-15](https://www.lmsys.org/blog/2026-01-15-chunked-pipeline/) — "CP requires intrusive per-model modifications." But when DeepSeek-V4's NSA attention demanded it, they shipped a *DSV4-scoped* prefill CP (round-robin token slicing + `cp_all_gather`). Their philosophy: no generic CP layer, but per-model CP when the attention variant requires it.
 >
-> **Has Meta's CP actually been deployed?**
+> **(4) Has Meta's specific algorithm been adopted?**
 >
 > | Who | Status |
 > | --- | ------ |
 > | **Meta itself** | ✅ Llama 405B 1M-prefill serving (the [paper](https://arxiv.org/abs/2411.01783) is essentially their production deployment writeup; 77 s on 128 H100s). |
-> | **TRT-LLM** | ❌ Does *not* implement Meta's pass-KV / pass-Q. Ships Ulysses (head-dim alltoall) + Star (anchor-block sparse) + Helix (MNNVL decode) instead — same problem, different algorithms. |
-> | **vLLM** | ✅ PCP merged 2025-11-19 (PR [#28718](https://github.com/vllm-project/vllm/pull/28718)) — own algorithm (AllReduce + ReduceScatter, Ulysses-leaning), *not* Meta's pass-KV / pass-Q. |
-> | **SGLang** | ✅ NSA Prefill CP for DSV4 (`--enable-nsa-prefill-context-parallel`, multiple PRs through 2026-05) — round-robin tokens + `cp_all_gather`, *not* Meta's algorithm. Scoped to one model. |
+> | **TRT-LLM** | ❌ Does *not* implement Meta's pass-KV / pass-Q. Ships Ulysses + Star + Helix instead — same problem, different algorithms. |
+> | **vLLM** | ✅ PCP merged 2025-11-19 — own algorithm (AllReduce + ReduceScatter, Ulysses-leaning), *not* Meta's pass-KV / pass-Q. |
+> | **SGLang** | ✅ NSA Prefill CP for DSV4 — round-robin tokens + `cp_all_gather`, *not* Meta's algorithm. Scoped to one model. |
 > | **Anthropic / OpenAI / Google** | Unknown — no public disclosure. Most likely use KV compression + PP / chunked prefill rather than Meta-style CP. |
 >
-> **Why Meta's exact technique didn't spread:**
+> Why Meta's exact technique didn't spread:
 >
 > 1. **No open-source reference implementation.** Paper out 2024-11, inference engine never released. Adopting requires re-implementing pass-KV / pass-Q decision logic (paper Algorithm 1) from scratch.
 > 2. **Engine integration cost.** Pass-KV vs pass-Q is a *per-step* decision based on current cache state and query batch size. Most engines don't have the abstraction for this — their CP communicators are static.
 > 3. **Niche use case.** Only valuable at 512K-1M context. Most production workloads sit at 4K-128K, where TP / DP / chunked prefill already work fine.
 > 4. **Hardware coupling.** The 128-H100 topology assumed in the paper isn't trivially portable to B200 / H200 / GB200 — the comm/compute balance shifts, and the optimal decision boundary in Algorithm 1 moves.
 >
-> **The bottom line:** Meta's paper was *influential* — it established the framing that "inference CP is possible and worth engineering for". By 2026 every major engine has shipped *some* CP variant inspired by that framing (vLLM PCP, SGLang NSA-CP, TRT-LLM Ulysses/Star/Helix). But the paper's *specific algorithm* (pass-KV / pass-Q hybrid) remains a **single-customer technique** used only by Meta — everyone else picks a different algorithm under the same name. The paper's *idea* shapes the field; its *specific kernel* doesn't.
+> **The bottom line.** Meta's paper was *influential* — it established the framing that "inference CP is possible and worth engineering for". By 2026 every major engine has shipped *some* CP variant inspired by that framing (vLLM PCP, SGLang NSA-CP, TRT-LLM Ulysses/Star/Helix). But the paper's *specific algorithm* (pass-KV / pass-Q hybrid) remains a **single-customer technique** used only by Meta — everyone else picks a different algorithm under the same name. The paper's *idea* shapes the field; its *specific kernel* doesn't.
 
 ### 7.7 Limitations
 
