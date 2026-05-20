@@ -21,12 +21,11 @@
   }
 }
 
-/* Whenever either sidebar is hidden, keep the article centered with truly equal gutters.
-   Use minmax(0, 1fr) so the gutter columns can't be inflated by the hidden sidebar's
-   own min-content width — otherwise the gutter would stretch to whatever the (still
-   laid-out, visibility:hidden) sidebar children require, and the article shifts. */
-:root[left-sidebar="hidden"] #quartz-body,
-:root[right-sidebar="hidden"] #quartz-body {
+/* Only when BOTH sidebars are hidden, switch to a centered 900px article layout.
+   When only one sidebar is hidden, keep the default 320 / auto / 320 grid — the
+   visible sidebar then keeps its full width and isn't squished, while the hidden
+   sidebar's 320px column becomes empty whitespace. */
+:root[left-sidebar="hidden"][right-sidebar="hidden"] #quartz-body {
   grid-template-columns: minmax(0, 1fr) minmax(0, 900px) minmax(0, 1fr) !important;
   column-gap: 0 !important;
   transition:
