@@ -21,10 +21,29 @@
   }
 }
 
-/* Only when BOTH sidebars are hidden, switch to a centered 900px article layout.
-   When only one sidebar is hidden, keep the default 320 / auto / 320 grid — the
-   visible sidebar then keeps its full width and isn't squished, while the hidden
-   sidebar's 320px column becomes empty whitespace. */
+/* Three hidden states, each with its own grid:
+   - Only LEFT hidden  → collapse left column; article + right sidebar fill the page.
+   - Only RIGHT hidden → collapse right column; left sidebar + article fill the page.
+   - BOTH hidden       → article centered at 900px with symmetric gutters.
+   Article uses `1fr` (not `auto`) so it actively claims the freed space rather than
+   shrinking to content width. */
+
+:root[left-sidebar="hidden"]:not([right-sidebar="hidden"]) #quartz-body {
+  grid-template-columns: 0 1fr 320px !important;
+  column-gap: 0 !important;
+  transition:
+    grid-template-columns 0.2s ease,
+    column-gap 0.2s ease;
+}
+
+:root[right-sidebar="hidden"]:not([left-sidebar="hidden"]) #quartz-body {
+  grid-template-columns: 320px 1fr 0 !important;
+  column-gap: 0 !important;
+  transition:
+    grid-template-columns 0.2s ease,
+    column-gap 0.2s ease;
+}
+
 :root[left-sidebar="hidden"][right-sidebar="hidden"] #quartz-body {
   grid-template-columns: minmax(0, 1fr) minmax(0, 900px) minmax(0, 1fr) !important;
   column-gap: 0 !important;
