@@ -47,8 +47,10 @@ $tabletGrid: (
       "grid-sidebar-left grid-footer"',
 );
 $desktopGrid: (
+  // Use CSS custom properties (with $sidePanelWidth as the fallback) so the
+  // SidebarResizer can drag-update widths at runtime.
+  templateColumns: "var(--sidebar-left-width, #{$sidePanelWidth}) auto var(--sidebar-right-width, #{$sidePanelWidth})",
   templateRows: "auto auto auto",
-  templateColumns: "#{$sidePanelWidth} auto #{$sidePanelWidth}",
   rowGap: "5px",
   columnGap: "5px",
   templateAreas:

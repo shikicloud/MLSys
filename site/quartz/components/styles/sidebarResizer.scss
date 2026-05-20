@@ -1,0 +1,58 @@
+@use "../../styles/variables.scss" as *;
+
+// A thin, invisible strip at the inner edge of each sidebar. Hover reveals a
+// subtle bar; drag updates the sidebar's column width via CSS custom property.
+// Anchored to the sidebar (which is position: sticky) so it tracks scroll.
+
+.sidebar-resizer {
+  position: absolute;
+  top: 0;
+  bottom: 0;
+  width: 8px;
+  cursor: ew-resize;
+  z-index: 5;
+  background: transparent;
+  transition: background 0.15s ease;
+}
+
+.sidebar.left .sidebar-resizer[data-side="left"] {
+  right: -4px;
+}
+
+.sidebar.right .sidebar-resizer[data-side="right"] {
+  left: -4px;
+}
+
+.sidebar-resizer:hover,
+.sidebar-resizer:active,
+body.sidebar-resizing .sidebar-resizer {
+  background: var(--lightgray);
+}
+
+// While dragging, kill text selection and force the resize cursor everywhere
+// so the cursor doesn't flicker between i-beam and ew-resize when the mouse
+// crosses over text.
+body.sidebar-resizing {
+  cursor: ew-resize !important;
+  user-select: none;
+
+  & * {
+    cursor: ew-resize !important;
+    user-select: none;
+  }
+}
+
+// Hide the handle entirely when its sidebar is collapsed by reader-mode —
+// there's nothing left to resize, and the handle would float in dead space.
+:root[left-sidebar="hidden"] .sidebar.left .sidebar-resizer,
+:root[right-sidebar="hidden"] .sidebar.right .sidebar-resizer {
+  display: none;
+}
+
+@media all and not ($desktop) {
+  // Resizer is desktop-only — mobile / tablet layouts already use a different
+  // grid that doesn't have side-by-side sidebars.
+  .sidebar-resizer {
+    display: none;
+  }
+}

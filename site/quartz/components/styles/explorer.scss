@@ -128,12 +128,21 @@ button.desktop-explorer {
 
     & li > a {
       color: var(--dark);
-      opacity: 0.75;
+      opacity: 0.6;
       pointer-events: all;
+      font-size: 0.85rem;
+      line-height: 1.35rem;
+      padding-left: 0.35rem;
+      display: inline-block;
+
+      &:hover {
+        opacity: 0.9;
+      }
 
       &.active {
         opacity: 1;
         color: var(--tertiary);
+        font-weight: $semiBoldWeight;
       }
     }
   }

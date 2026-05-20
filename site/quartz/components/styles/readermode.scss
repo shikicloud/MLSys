@@ -26,7 +26,7 @@
    it doesn't slam into the viewport / page edge. */
 
 :root[left-sidebar="hidden"]:not([right-sidebar="hidden"]) #quartz-body {
-  grid-template-columns: 0 1fr 320px !important;
+  grid-template-columns: 0 1fr var(--sidebar-right-width, 320px) !important;
   column-gap: 0 !important;
   transition:
     grid-template-columns 0.2s ease,
@@ -39,7 +39,7 @@
 }
 
 :root[right-sidebar="hidden"]:not([left-sidebar="hidden"]) #quartz-body {
-  grid-template-columns: 320px 1fr 0 !important;
+  grid-template-columns: var(--sidebar-left-width, 320px) 1fr 0 !important;
   column-gap: 0 !important;
   transition:
     grid-template-columns 0.2s ease,
