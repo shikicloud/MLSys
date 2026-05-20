@@ -28,11 +28,26 @@ const loadSavedWidths = () => {
 // next page, so resizes don't visually pop on every navigation.
 loadSavedWidths()
 
+const sidebarHasContent = (sidebar: HTMLElement) => {
+  // Don't count an already-injected resizer as "content".
+  for (const child of Array.from(sidebar.children)) {
+    if (!(child as HTMLElement).classList.contains("sidebar-resizer")) {
+      return true
+    }
+  }
+  return false
+}
+
 const ensureResizer = (side: "left" | "right") => {
   const sidebar = document.querySelector(
     `.sidebar.${side}`,
   ) as HTMLElement | null
   if (!sidebar) return
+
+  // List / folder pages render `right: []`, leaving an empty .sidebar.right
+  // element in the DOM. Resizing an empty column is meaningless and the
+  // resize-cursor on its inner edge is just noise — skip injection there.
+  if (!sidebarHasContent(sidebar)) return
 
   // Skip if already injected for this sidebar.
   if (sidebar.querySelector(`.sidebar-resizer[data-side="${side}"]`)) return
