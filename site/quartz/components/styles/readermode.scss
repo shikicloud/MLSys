@@ -39,4 +39,18 @@
     padding-right: 0;
     transition: opacity 0.2s ease;
   }
+
+  & .readermode {
+    position: fixed;
+    top: 1rem;
+    left: 1rem;
+    z-index: 1000;
+    opacity: 0.35;
+    pointer-events: auto;
+    transition: opacity 0.2s ease;
+
+    &:hover {
+      opacity: 1;
+    }
+  }
 }
