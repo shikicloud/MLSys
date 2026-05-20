@@ -165,9 +165,11 @@ Use headers that name the *thing* being discussed, not the analytical role.
 
 The reader doesn't care about my analysis structure. They care about the topic. Save axis-named thinking for chat replies and private notes.
 
-### The recommended report skeleton
+### The recommended report skeleton (hybrid: Summary + Depth)
 
-This is the canonical structure for a paper-review page. Concept pages are similar but skip "Source code & reproduction" and may collapse "Strengths and limitations" into "Trade-offs."
+The canonical structure is **two-layer**: a self-contained Summary block readers can grok in 2 minutes, followed by a Depth section for careful readers. **Supporting machinery** that's important but skippable sits in collapsible `> [!note]-` callouts; **full experimental tables** sit in collapsible `> [!example]-` callouts so the main flow shows just the headline + the critical ablation.
+
+This format was locked on 2026-05-20 after iterating Sample A (inverted pyramid) and Sample C (two-layer); the final landed on C's two-layer base + A's collapsibles. **Don't revert to the old "TL;DR → Background → Key idea → How it works → Experiments → Strengths → What this means → Source → Related" sequential structure** — it treated all sub-sections as equal weight and buried the punchline.
 
 ```markdown
 ---
@@ -188,113 +190,124 @@ code: github URL            # paper-review pages only
 > - **Code**: [org/repo](url) (branch, commit, license)
 > - **Authors**: full list
 
-> [!abstract]+ TL;DR
-> 2–4 sentences: what it is, why it matters, the headline result with a number.
+---
+
+## Summary (read this if you have 2 minutes)
+
+**What it is.** 2-3 sentences naming the system / concept and what it does.
+
+**The one idea.** 1 paragraph (3-5 sentences). Name the contribution. List 2-4
+sub-pieces if the idea has structure ("Three pieces hold it up: ...").
+End with "Remove any one and the system becomes X, Y, Z" if applicable.
+
+**Headline result.** 1 paragraph or a tight table. Lead with the biggest
+number. Frame the comparison ("roughly 2× SkyRL-Agent's 9.4 %"). Mention the
+*one* critical ablation that proves the architecture (not the algorithm)
+matters.
+
+**Why it matters.** 2-4 bullets, each a concrete implication, NOT
+restatement of the idea. E.g. "Trainer swap becomes free", "Deployable on
+shared HPC". Close with a 12-month prediction if you have one.
 
 ---
+
+# Depth (drill-down starts here)
+
+The summary above is the executive layer. Everything below is for the
+careful reader who wants full architecture and code-level detail.
 
 ## Background: <content-descriptive title>
 
-Narrative covering what the field was doing and why it was unsatisfying.
-This subsumes the Position + Motivation axes. Insert a comparison table here
-if multiple prior works exist.
+Detailed narrative — preserve full prior-work comparison table. This isn't
+abbreviated in the new template. Length is OK; the reader who got past the
+Summary chose to read deep.
 
-| Framework | Property A | Property B |
-|-----------|-----------|------------|
-| Prior #1  | ...       | ...        |
-| **This paper** | ✓    | ✓          |
+| Framework | Property A | Property B | Property C |
+|-----------|-----------|------------|------------|
+| Prior #1  | ✗         | ✗          | ✓          |
+| **This work** | ✓     | ✓          | ✓          |
 
-### Subsection if needed (e.g., what's already been tried)
+Shiki Q&A glossary callouts often live here — see "Logging Q&A inline".
 
----
+## <"Three components in detail" or "How it works">
 
-## The key idea: <name the thing>
+If the paper has a system-architecture figure, embed it here under the H2
+heading, before the components.
 
-> [!quote] The contribution in one sentence
-> Crisp restatement of the core delta, ideally in author voice.
+![System architecture, paper Fig. N](../../sources/papers/<slug>/figs/system-architecture.png)
 
-Three or four sub-claims that hold the contribution up. Each claim gets one
-or two sentences. Don't over-decompose.
+Then split into 3-5 component subsections, each named for *what the
+component is* (not "Sub-system 1"). Bias toward fewer, larger subsections
+than the paper's structure — the reader thinks in concepts, not section
+numbers.
 
-> [!tip] Recommended config / mode
-> Practical guidance lives in callouts so it's findable.
+### Component 1 — <name>
 
----
+Full content: API, code from the repo, implementation notes, the silent
+killer it avoids. Embed inline Shiki Q&A callouts at the place where the
+relevant content was originally discussed.
 
-## How it works
+### Component 2 — <name>
 
-### Where it sits in the pipeline
+### Component 3 — <name>
 
-ASCII diagram showing the flow.
+### Supporting machinery (skim or skip)
 
-### Subsection: API / configuration
+This is the *escape hatch* for content that's important to the implementation
+but not load-bearing for understanding the contribution. Use the collapsible
+note callout (`> [!note]-` — note the trailing `-` which makes it default-
+collapsed).
 
-Real Pydantic models, real env-var gates, real CLI flags — not paraphrases.
+> [!note]- AgentHandler plugin interface — open if you're integrating
+>
+> [the full content lives here — code blocks, tables, prose, all OK]
 
-```python
-# memory_pool.py
-_hadamard_enabled = 1 if os.environ.get("HADAMARD", "0") in (...) else 0
-```
+> [!note]- LLM backend load balancing — open if you're tuning prefix-cache hit rate
+>
+> [full content]
 
-### Subsection: a key algorithm or kernel
+## Headline evidence
 
-Show the actual code from the source repo. Walk through what each step does
-in prose between code blocks. Cite the file path inline:
-*"From `openhands/nvidia/registry.py`:"*
+**Setup.** Hardware, hyperparameters, models, dataset — one paragraph.
 
-> [!note] Implementation detail worth highlighting
-> A subtle point that's easy to miss in a quick read.
+**The main result** (a table, or a figure embed):
 
-### Subsection: another concrete mechanism
+| Model | Baseline | After | Δ |
+|-------|---------:|------:|---:|
 
-Continue with named subsections for each major mechanism. 4–8 `###`
-subsections under "How it works" is normal for a paper-review page.
+> [!success] The headline number
+> One-sentence framing — the comparison that matters most.
 
----
+**The critical ablation: removing <component>.** 2-3 sentences on the
+*one* ablation that proves the architecture (not the algorithm) matters.
 
-## Experiments
+If there's a key experiment figure (e.g. Pass@1 vs steps), embed it here:
 
-**Setup.** Hardware, hyperparameters, models, dataset.
+![Throughput vs nodes, paper Fig. N](../../sources/papers/<slug>/figs/throughput-vs-nodes.png)
 
-### Main result
+Then collapse everything else:
 
-| Config | Metric A | Metric B |
-|--------|---------:|---------:|
-| Baseline | 14.8 % | ... |
-| **Proposed** | **21.2 %** | ... |
-
-> [!important] Headline number framed clearly
-> "Recovers 65.82 % of the 66.67 % BF16 baseline" — note the framing.
-
-### Generality
-
-Other tasks, models, settings.
-
-### Ablations
-
-What does each component contribute? Table form is best.
-
----
+> [!example]- All experimental results (drill-down)
+>
+> **Generality.** [other-task table]
+>
+> **Scalability.** [text + numbers]
+>
+> **Full ablations.** [the big table]
 
 ## Strengths and limitations
 
-Blended prose. Author-acknowledged limits + my own critiques, weaved.
+Blended prose. Author-acknowledged limits + my own critiques, weaved. Keep
+this section *brief* (5-8 short bullets max) — the Summary section already
+carried the impact framing.
 
 > [!warning] A scope limit that matters
-> Pull out anything load-bearing.
-
-> [!bug] OSS bug or doc gap
-> Real bugs (port mismatches, install gotchas) — separate from intellectual limits.
-
----
+> Pull out anything load-bearing — failure modes the paper hides.
 
 ## What this means
 
-1–2 paragraphs of perspective. Be opinionated. What does this paper teach
-about where the field is going? What predictions does it make? What does it
-*not* solve?
-
----
+1-2 paragraphs of opinionated perspective. What does this teach about where
+the field is going? Predictions for 12 months. What does it *not* solve?
 
 ## Source code & reproduction
 
@@ -303,19 +316,22 @@ git clone --recurse-submodules <url>
 # minimal-viable run that reproduces the headline result
 ```
 
-Files worth reading next, with the role of each:
-
 | File path | Role |
 |-----------|------|
 | `path/to/file.py` | One-line description of what's there |
-
----
 
 ## Related reading
 
 - [[neighbor-page-1]] — why it's related (one line each)
 - [[neighbor-page-2]] — ...
 ```
+
+**Notes on the hybrid format:**
+
+- **Summary is self-contained.** A reader who only reads the Summary should walk away with the headline, the mechanism, and the impact framing. Don't put load-bearing details *only* in Depth.
+- **Use `> [!note]-` (collapsed) for supporting machinery**, `> [!example]-` (collapsed) for full experimental results, `> [!success]` (default-open) for the headline number, `> [!warning]` (default-open) for load-bearing limitations. Don't collapse the Shiki Q&A callouts — those stay `> [!question]+` (default-open) at their original inline location.
+- **3-5 components, not 8-10 paper-sections.** The reader thinks in concepts. Merge related paper sections (e.g., "HTTP API" + "Token-in/out wire protocol" → "Component 1: POST /process and the token wire protocol"). Use `###` subsections inside a component for further breakdown.
+- **Figures go inline at the relevant section**, not at the bottom.
 
 ### Style guide — non-negotiable
 
@@ -366,6 +382,53 @@ When the user asks a follow-up question about a specific paper, **record both th
 4. **Cross-link** to the paper's own sections (`[[#Section Name]]`) so the answer extends the page's internal graph.
 5. **Mirror in both EN and CN** with identical structure; keep "Shiki" as the questioner label in both.
 6. **Don't accumulate at the bottom.** The inline location IS the index. Chat reply can be terse; the wiki version is the authoritative complete answer.
+
+### The Shiki-Q&A preservation rule (added 2026-05-20)
+
+When restructuring a page (e.g. migrating to a new template, splitting / merging sections), **Shiki Q&A callouts' content is non-negotiable to preserve — but the callouts themselves are not literal-immutable**. Two important degrees of freedom:
+
+- **Consolidation is allowed.** If two Shiki Q&As cover overlapping territory or one is a follow-up that builds on another, merging them into a single callout is fine. Keep all the substantive answer paragraphs; the question header can be merged or rephrased.
+- **Trivial questions can be omitted.** If a Q&A is a basic-definition lookup ("what does N stand for?") that's already trivially answered by the surrounding prose, dropping it during a major restructure is OK. The bar: would a future reader regret it being gone? If no, drop. If yes, keep.
+
+What's NOT OK: **silently dropping a substantive Shiki Q&A during a restructure** (this was the 2026-05-20 prorl-agent reformat mistake — the token-in/out off-policy explanation got cut and had to be put back). The substantive Q&As capture real conversational insight; they're the user's voice in the wiki, and the wiki gets worse without them.
+
+When in doubt, **keep**. The wiki has no length cap.
+
+### Paper figures — when to use, how to extract, where to store
+
+The default is hand-drawn Mermaid for architecture diagrams (searchable, click-through, lives in source). But some figures are worth using verbatim from the paper:
+
+- **Type 1** — experiment plots (throughput curves, accuracy vs. steps). Tables can't show trends; redrawing is expensive.
+- **Type 2** — paper's own system architecture (e.g. Fig. 1). Use as the *lead* figure under the "How it works" H2, with the more detailed Mermaid kept as supplementary or replaced if the paper figure is clearer.
+- **Type 3** — algorithm / example sketches that are hard to redo in Mermaid (control flow, geometric intuition).
+- **Skip type 4** — table screenshots. Hand-typing the table preserves search, copy-paste, and font hygiene.
+
+**Extraction workflow** (run automatically when writing a new paper page):
+
+```bash
+# 1. Pull the PDF from arXiv
+curl -sL -o /tmp/<slug>.pdf "https://arxiv.org/pdf/<arxiv-id>"
+
+# 2. Extract all images (needs `brew install poppler` for pdfimages on Mac)
+mkdir -p /tmp/<slug>-figs
+pdfimages -all -j /tmp/<slug>.pdf /tmp/<slug>-figs/fig
+
+# 3. Inspect each image (`Read` tool) — pick types 1-3, skip logos / small icons
+# 4. Copy chosen figures to both EN and CN wiki sources:
+mkdir -p "EN/sources/papers/<slug>/figs" "CN/sources/papers/<slug>/figs"
+cp /tmp/<slug>-figs/fig-XYZ.png "EN/sources/papers/<slug>/figs/<descriptive-name>.png"
+cp /tmp/<slug>-figs/fig-XYZ.png "CN/sources/papers/<slug>/figs/<descriptive-name>.png"
+```
+
+**Embedding in the page**: use relative paths from the wiki page:
+
+```markdown
+![System architecture, paper Fig. 1](../../sources/papers/<slug>/figs/system-architecture.png)
+```
+
+**Naming**: `system-architecture.png`, `throughput-vs-nodes.png`, `acceptance-length-curve.png` — descriptive lowercase-hyphen. Don't keep the `fig-002` style from pdfimages.
+
+**Why mirror to both EN/ and CN/**: figures are language-agnostic, but the bilingual wiki uses parallel paths. Mirroring keeps relative image links symmetric across languages.
 
 #### Annotated Q&A template
 
@@ -706,15 +769,26 @@ Step-by-step for the four most common workflows.
      curl -sL https://raw.githubusercontent.com/<org>/<repo>/<branch>/README.md
 4. Mentally walk the 8-axis framework as I read.
 5. Decide placement: which wiki/<category>/ folder.
-6. Write the page using the Part 2 report skeleton + Part 3 format.
+6. Extract paper figures (see "Paper figures" subsection in Part 2):
+     curl -sL -o /tmp/<slug>.pdf "https://arxiv.org/pdf/<arxiv-id>"
+     pdfimages -all -j /tmp/<slug>.pdf /tmp/<slug>-figs/fig
+     Inspect each fig-NNN.png via Read; copy types 1-3 to BOTH
+     EN/sources/papers/<slug>/figs/ and CN/sources/papers/<slug>/figs/
+     with descriptive names. Skip logos and tiny icons.
+7. Write the page using the Part 2 hybrid skeleton (Summary + Depth) + Part 3 format.
+   Embed figures at relevant sections (system arch under "How it works",
+   experiment plots under "Headline evidence").
    Show real code; don't just describe it.
-7. Update both index.md files with a one-line entry.
-8. Append to both log.md files with [INGEST] and the date.
-9. Add a citation.md in sources/papers/<slug>/ (both languages).
-10. Pull on the wiki graph: update neighboring pages with cross-links to the new page.
+8. **Update BOTH index files (this is a process-bug magnet):**
+   - Top-level index: EN/index.md AND CN/index.md
+   - Per-category index: EN/wiki/<category>/index.md AND CN/wiki/<category>/index.md
+   The 2026-05-20 Aurora oversight was missing step 8b. Both layers matter.
+9. Append to both log.md files with [INGEST] / [NEW] and the date.
+10. Add a citation.md in sources/papers/<slug>/ (both languages).
+11. Pull on the wiki graph: update neighboring pages with cross-links to the new page.
     Consider creating a synthesis page if the lineage is coherent.
-11. Mirror everything in EN + CN with parallel structure.
-12. Run the quality checklist (next section) before declaring done.
+12. Mirror everything in EN + CN with parallel structure.
+13. Run the quality checklist (next section) before declaring done.
 ```
 
 ### Workflow 2: answer a Q&A about a paper

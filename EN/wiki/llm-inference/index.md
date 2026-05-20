@@ -74,6 +74,7 @@ Companion paper-review pages:
 
 - [[speculative-decoding]] — speculative decoding overview (EAGLE, Medusa, lookahead)
 - [[das-spec-rl]] — DAS paper review (distribution-aware speculative decoding for RL training)
+- [[aurora]] — Aurora paper review (online speculative-decoding training as async RL on live SGLang traffic; day-0 deployment; Tree Attention)
 
 ## Disaggregated inference
 

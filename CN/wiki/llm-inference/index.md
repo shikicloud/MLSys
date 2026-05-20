@@ -74,6 +74,7 @@ title: LLM 推理与服务
 
 - [[speculative-decoding]] —— 投机解码总览（EAGLE、Medusa、lookahead）
 - [[das-spec-rl]] —— DAS 论文精读（面向 RL 训练的分布感知投机解码）
+- [[aurora]] —— Aurora 论文精读（在线投机解码训练做成 SGLang 实时流量上的异步 RL；Day-0 上线；Tree Attention）
 
 ## 分离式推理
 
