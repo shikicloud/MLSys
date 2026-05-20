@@ -1,25 +1,31 @@
-let isReaderMode = false
-
-const emitReaderModeChangeEvent = (mode: "on" | "off") => {
-  const event: CustomEventMap["readermodechange"] = new CustomEvent("readermodechange", {
-    detail: { mode },
-  })
-  document.dispatchEvent(event)
-}
+let leftHidden = false
+let rightHidden = false
 
 document.addEventListener("nav", () => {
-  const switchReaderMode = () => {
-    isReaderMode = !isReaderMode
-    const newMode = isReaderMode ? "on" : "off"
-    document.documentElement.setAttribute("reader-mode", newMode)
-    emitReaderModeChangeEvent(newMode)
+  const apply = (side: "left" | "right") => {
+    const hidden = side === "left" ? leftHidden : rightHidden
+    document.documentElement.setAttribute(
+      `${side}-sidebar`,
+      hidden ? "hidden" : "shown",
+    )
   }
 
-  for (const readerModeButton of document.getElementsByClassName("readermode")) {
-    readerModeButton.addEventListener("click", switchReaderMode)
-    window.addCleanup(() => readerModeButton.removeEventListener("click", switchReaderMode))
+  const toggle = (side: "left" | "right") => {
+    if (side === "left") {
+      leftHidden = !leftHidden
+    } else {
+      rightHidden = !rightHidden
+    }
+    apply(side)
   }
 
-  // Set initial state
-  document.documentElement.setAttribute("reader-mode", isReaderMode ? "on" : "off")
+  for (const btn of document.getElementsByClassName("readermode")) {
+    const side = ((btn as HTMLElement).dataset.side ?? "left") as "left" | "right"
+    const handler = () => toggle(side)
+    btn.addEventListener("click", handler)
+    window.addCleanup(() => btn.removeEventListener("click", handler))
+  }
+
+  apply("left")
+  apply("right")
 })

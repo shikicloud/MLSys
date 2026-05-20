@@ -21,43 +21,68 @@
   }
 }
 
-:root[reader-mode="on"] {
-  & #quartz-body {
-    grid-template-columns: 1fr minmax(0, 900px) 1fr !important;
-    column-gap: 0 !important;
-    transition:
-      grid-template-columns 0.2s ease,
-      column-gap 0.2s ease;
+/* Whenever either sidebar is hidden, keep the article centered with equal gutters */
+:root[left-sidebar="hidden"] #quartz-body,
+:root[right-sidebar="hidden"] #quartz-body {
+  grid-template-columns: 1fr minmax(0, 900px) 1fr !important;
+  column-gap: 0 !important;
+  transition:
+    grid-template-columns 0.2s ease,
+    column-gap 0.2s ease;
+}
+
+/* Hide the contents of the toggled sidebar */
+:root[left-sidebar="hidden"] .sidebar.left {
+  padding-left: 0;
+  padding-right: 0;
+  pointer-events: none;
+}
+:root[left-sidebar="hidden"] .sidebar.left * {
+  visibility: hidden !important;
+}
+
+:root[right-sidebar="hidden"] .sidebar.right {
+  padding-left: 0;
+  padding-right: 0;
+  pointer-events: none;
+}
+:root[right-sidebar="hidden"] .sidebar.right * {
+  visibility: hidden !important;
+}
+
+/* Keep the toggle button itself visible, lifted to a fixed corner */
+:root[left-sidebar="hidden"] .sidebar.left .readermode-left,
+:root[left-sidebar="hidden"] .sidebar.left .readermode-left * {
+  visibility: visible !important;
+}
+:root[left-sidebar="hidden"] .readermode-left {
+  position: fixed;
+  top: 1rem;
+  left: 1rem;
+  z-index: 1000;
+  opacity: 0.4;
+  pointer-events: auto;
+  transition: opacity 0.2s ease;
+
+  &:hover {
+    opacity: 1;
   }
+}
 
-  & .sidebar.left,
-  & .sidebar.right {
-    padding-left: 0;
-    padding-right: 0;
-    pointer-events: none;
-  }
+:root[right-sidebar="hidden"] .sidebar.right .readermode-right,
+:root[right-sidebar="hidden"] .sidebar.right .readermode-right * {
+  visibility: visible !important;
+}
+:root[right-sidebar="hidden"] .readermode-right {
+  position: fixed;
+  top: 1rem;
+  right: 1rem;
+  z-index: 1000;
+  opacity: 0.4;
+  pointer-events: auto;
+  transition: opacity 0.2s ease;
 
-  & .sidebar.left *,
-  & .sidebar.right * {
-    visibility: hidden !important;
-  }
-
-  & .sidebar.left .readermode,
-  & .sidebar.left .readermode * {
-    visibility: visible !important;
-  }
-
-  & .readermode {
-    position: fixed;
-    top: 1rem;
-    left: 1rem;
-    z-index: 1000;
-    opacity: 0.4;
-    pointer-events: auto;
-    transition: opacity 0.2s ease;
-
-    &:hover {
-      opacity: 1;
-    }
+  &:hover {
+    opacity: 1;
   }
 }
