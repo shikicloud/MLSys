@@ -21,10 +21,13 @@
   }
 }
 
-/* Whenever either sidebar is hidden, keep the article centered with equal gutters */
+/* Whenever either sidebar is hidden, keep the article centered with truly equal gutters.
+   Use minmax(0, 1fr) so the gutter columns can't be inflated by the hidden sidebar's
+   own min-content width — otherwise the gutter would stretch to whatever the (still
+   laid-out, visibility:hidden) sidebar children require, and the article shifts. */
 :root[left-sidebar="hidden"] #quartz-body,
 :root[right-sidebar="hidden"] #quartz-body {
-  grid-template-columns: 1fr minmax(0, 900px) 1fr !important;
+  grid-template-columns: minmax(0, 1fr) minmax(0, 900px) minmax(0, 1fr) !important;
   column-gap: 0 !important;
   transition:
     grid-template-columns 0.2s ease,
