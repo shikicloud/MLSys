@@ -260,7 +260,7 @@ flowchart TB
 
     subgraph APPTAINER["Apptainer path (production, HPC)"]
         direction TB
-        PULL["<b>Apptainer pull</b><br/>docker://swebench/sweb.eval.x86_64.{id}<br/>→ /tmp/cache/<id>.sif"]
+        PULL["<b>Apptainer pull</b><br/>docker://swebench/sweb.eval.x86_64.{id}<br/>→ /tmp/cache/{id}.sif"]
         EXEC["<b>apptainer exec</b><br/>--writable-tmpfs --cleanenv<br/>--pid --home /root<br/>--mount /host/io:/workspace_io"]
         SHELL["<b>Persistent bash shell</b><br/>stdin/stdout piped to host;<br/>end-markers per command;<br/>ulimit -v + timeout per exec"]
         PULL --> EXEC --> SHELL
