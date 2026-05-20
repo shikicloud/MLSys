@@ -408,28 +408,440 @@ Distributes complete expert networks across GPUs. Each GPU holds `E / EP_size` e
 
 ## 9. EDP/DEP — Expert Data Parallelism
 
-Data parallelism for MoE expert layers. Multiple GPUs hold the **same** expert assignment but process **different** token batches.
+### 9.1 The idea
 
-**Key insight**: EP and EDP are orthogonal dimensions forming a 2D grid:
-- EP dimension (AllToAll): within a group, different GPUs hold different experts
-- EDP dimension (AllReduce): across groups, same experts replicated
+EDP (also written DEP) is **data parallelism applied to MoE expert layers**: multiple GPUs hold the **same** expert assignment but process **different** token batches. The key thing to understand is the **orthogonality to EP**:
 
-From Parallel Folding: `N_total = ETP × EP × EDP × PP`. Before MoE Parallel Folding (2025), Megatron-LM required `EP ≤ DP` -- Parallel Folding removed this constraint.
+- **EP dimension** (AllToAll): within an EP group, different GPUs hold different experts.
+- **EDP dimension** (AllReduce): across EP groups, the entire expert assignment is **replicated** to process more data in parallel.
 
-**DP Attention + EP** (inference): Attention layers use data parallelism (partitioned KV cache) while MoE layers use expert parallelism. Avoids KV cache duplication.
+```
+    Example: 8 experts, EP=4, EDP=2 → 4 × 2 = 8 GPUs total
+
+    ┌──────────── EDP replica 0 ─────────────┐  ┌──────────── EDP replica 1 ─────────────┐
+    │                                         │  │                                         │
+    │  GPU 0    GPU 1    GPU 2    GPU 3       │  │  GPU 4    GPU 5    GPU 6    GPU 7       │
+    │  [E0,E1] [E2,E3] [E4,E5] [E6,E7]       │  │  [E0,E1] [E2,E3] [E4,E5] [E6,E7]       │
+    │     │        │        │        │        │  │     │        │        │        │        │
+    │     └────────┴────────┴────────┘        │  │     └────────┴────────┴────────┘        │
+    │           AllToAll (EP routing)         │  │           AllToAll (EP routing)         │
+    │                                         │  │                                         │
+    │           Processes Batch A             │  │           Processes Batch B             │
+    └─────────────────────────────────────────┘  └─────────────────────────────────────────┘
+            │                                            │
+            └──────────── AllReduce ─────────────────────┘
+              expert-gradient sync: GPU0↔GPU4, GPU1↔GPU5, GPU2↔GPU6, GPU3↔GPU7
+
+    ★ EP intra-group: AllToAll (route tokens to the expert that owns them)
+    ★ EDP inter-group: AllReduce (sync gradients of the same expert across replicas)
+```
+
+### 9.2 Communicator topology
+
+The single most important thing about EDP is **how the communicator groups are partitioned**. For 16 GPUs with EP=4, EDP=4:
+
+```
+    GPU ID:  0   1   2   3  |  4   5   6   7  |  8   9  10  11  | 12  13  14  15
+    Expert: E0  E1  E2  E3  | E0  E1  E2  E3  | E0  E1  E2  E3  | E0  E1  E2  E3
+            │                │                 │                 │
+            └── EP Group 0 ──┘                 └── EP Group 2 ──┘
+                              └── EP Group 1 ──┘                 └── EP Group 3 ──┘
+
+    EP groups  (AllToAll): {0,1,2,3}, {4,5,6,7}, {8,9,10,11}, {12,13,14,15}
+    EDP groups (AllReduce): {0,4,8,12}, {1,5,9,13}, {2,6,10,14}, {3,7,11,15}
+                              ↑ four replicas of E0       ↑ four replicas of E3
+```
+
+**Key observation**: EP groups and EDP groups are **orthogonal** — EP groups go row-wise (different experts within a row), EDP groups go column-wise (same expert replicated down a column).
+
+### 9.3 Differences from standard DP
+
+| Property | Standard DP | EDP |
+| -------- | ----------- | --- |
+| What's replicated | Whole model | MoE experts only |
+| What syncs | All parameter gradients | Expert parameter gradients only |
+| Scope | Dense layers (attention + MLP) | MoE layers |
+| Independent of TP? | Yes | Yes (after MoE Parallel Folding) |
+| When comm happens | After backward pass | After backward pass (experts only) |
+| Orthogonal to | TP, PP | EP, ETP, PP |
+
+**Historical constraint**: Before NVIDIA's **MoE Parallel Folding (2025)**, Megatron-LM required `EP ≤ DP` — EP could only be a subset of the DP group. This capped EP heavily — if DP=8, then EP ≤ 8. Parallel Folding removed this constraint, letting dense and MoE layers run completely independent parallel configurations.
+
+### 9.4 The MoE Parallel Folding formula
+
+```
+Dense layers:  N_total = TP × SP × CP × DP × PP   (SP usually = TP)
+MoE   layers:  N_total = ETP × EP × EDP × PP
+
+Constraint: PP must be the same across layer types; everything else independent.
+
+Worked example (128 GPUs):
+  Dense:  TP=2, CP=2, PP=8  →  DP  = 128 / (2 × 2 × 8) = 4
+  MoE:    ETP=1, EP=8, PP=8 →  EDP = 128 /  (1 × 8 × 8) = 2
+
+  → Attention uses TP=2 (head sharding), CP=2 (long-context sharding), DP=4
+  → MoE uses EP=8 (expert distribution) replicated across 2 EDP copies
+  → Same 128 GPUs, completely different sharding on the two layer types
+```
+
+This is the unlock that made very-high-EP training (e.g. DeepSeek-V3's EP=64) feasible without forcing DP to also be 64+.
+
+### 9.5 The "DP Attention + EP" inference pattern
+
+EDP's most-cited *inference-side* application is **DP Attention** (a core vLLM architecture):
+
+```
+    8 GPUs, DeepSeek-R1, DP=8 + EP=8
+
+    Attention layer (DP=8):
+    ┌────────────────────────────────────────────────────────────┐
+    │  GPU 0       GPU 1       GPU 2     ...     GPU 7          │
+    │  Full Attn   Full Attn   Full Attn         Full Attn       │
+    │  KV part 0   KV part 1   KV part 2         KV part 7       │
+    │  Requests    Requests    Requests          Requests        │
+    │  {0,8,16}    {1,9,17}    {2,10,18}         {7,15,23}       │
+    │                                                            │
+    │  ★ Each GPU independently handles different requests       │
+    │  ★ KV cache partitioned by request, NOT replicated         │
+    │    (vs TP mode where KV cache is fully duplicated)         │
+    │  ★ Needs AllGather to assemble KV for attention compute    │
+    └────────────────────────────────────────────────────────────┘
+
+    MoE layer (EP=8):
+    ┌────────────────────────────────────────────────────────────┐
+    │  GPU 0       GPU 1       GPU 2     ...     GPU 7           │
+    │  Experts     Experts     Experts           Experts         │
+    │  {0-31}      {32-63}     {64-95}           {224-255}       │
+    │                                                            │
+    │  ★ AllToAll: route all GPUs' tokens to the expert owners   │
+    │  ★ All GPUs' tokens mix together for routing               │
+    └────────────────────────────────────────────────────────────┘
+
+    Why this beats TP+EP at high concurrency:
+    ├── KV cache not duplicated → more concurrent requests served
+    ├── Attention needs no AllReduce → less communication
+    └── Cost: AllGather to assemble KV — but worth it past ~256 concurrent
+```
+
+See [[#11. DP Attention — Data-Parallel Attention for MoE Inference|§11 DP Attention]] for the full inference analysis.
+
+### 9.6 Communication volume
+
+| Phase | Primitive | Per-GPU volume |
+| ----- | --------- | -------------- |
+| EP intra-group token routing (fwd) | AllToAll | `tokens × top_k × H × dtype × (EP-1)/EP` |
+| EP intra-group result return (fwd) | AllToAll | Same |
+| EDP inter-group gradient sync (train) | AllReduce | `2 × expert_params_per_gpu × dtype` |
+| DP Attention KV assembly (inference) | AllGather | `batch × seq × kv_dim × dtype` |
+
+**EDP's AllReduce is much smaller than full-model DP**: only expert-parameter gradients sync, not the whole model. For DeepSeek-V3, expert params are ~95 % of total (636B / 671B), but each GPU only holds `636B / EP` of them, so the per-GPU AllReduce is correspondingly smaller.
+
+### 9.7 Communicator-group construction (code)
+
+```python
+import torch.distributed as dist
+
+def create_edp_groups(world_size, ep_size, pp_size, etp_size=1):
+    """
+    Build Expert Data Parallelism communicator groups.
+    world_size = ETP × EP × EDP × PP
+    """
+    edp_size = world_size // (etp_size * ep_size * pp_size)
+    ep_groups, edp_groups = [], []
+
+    for pp_rank in range(pp_size):
+        base = pp_rank * (etp_size * ep_size * edp_size)
+
+        # EP groups: within one EDP replica, GPUs holding different experts
+        for edp_rank in range(edp_size):
+            for etp_rank in range(etp_size):
+                ranks = [
+                    base + edp_rank * (ep_size * etp_size)
+                         + ep_rank * etp_size + etp_rank
+                    for ep_rank in range(ep_size)
+                ]
+                ep_groups.append((ranks, dist.new_group(ranks)))
+
+        # EDP groups: GPUs holding the SAME expert (across replicas)
+        for ep_rank in range(ep_size):
+            for etp_rank in range(etp_size):
+                ranks = [
+                    base + edp_rank * (ep_size * etp_size)
+                         + ep_rank * etp_size + etp_rank
+                    for edp_rank in range(edp_size)
+                ]
+                edp_groups.append((ranks, dist.new_group(ranks)))
+
+    return ep_groups, edp_groups
+```
+
+For `world_size=128, ep_size=8, pp_size=8, etp_size=1`: EDP=2, so 16 EP groups (each of 8 GPUs) and 64 EDP groups (each of 2 GPUs).
+
+### 9.8 EDP vs traditional DP — visualized
+
+```
+    Pre-Parallel-Folding (Megatron-LM ≤ 2024):
+    ┌──────────────────────────────────────┐
+    │  DP group (say DP=8)                 │
+    │  ┌─────────────────────────────┐     │
+    │  │ EP sub-group  (EP ≤ DP)     │     │
+    │  │ EP=4, leaving DP/EP=2       │     │
+    │  │ → that's EDP=2               │     │
+    │  └─────────────────────────────┘     │
+    │  ★ EP forced to be a DP subset       │
+    └──────────────────────────────────────┘
+
+    MoE Parallel Folding (2025+):
+    ┌─────────────────┐    ┌─────────────────┐
+    │ Dense layers    │    │ MoE layers      │
+    │ TP × SP × CP ×  │    │ ETP × EP × EDP × │
+    │ DP × PP          │    │ PP                │
+    │ (independent)    │    │ (independent)    │
+    └─────────────────┘    └─────────────────┘
+    ★ EP can be any size, independent of DP
+    ★ E.g. Dense: TP=4, DP=4   MoE: EP=64, EDP=1
+```
+
+### 9.9 Use cases and limitations
+
+**When EDP wins:**
+
+| Scenario | Why |
+| -------- | --- |
+| EP degree < total GPUs | EDP uses the leftover GPUs to scale training throughput |
+| High-concurrency inference (DP Attention) | Each GPU independently holds a KV partition; EDP scales total concurrent requests |
+| Reducing EP communication pressure | Larger EDP → smaller EP groups → narrower AllToAll scope |
+
+**Limitations:**
+
+| Limitation | Detail |
+| ---------- | ------ |
+| Memory redundancy | Each EDP replica holds a full copy of the expert weights |
+| Gradient sync overhead | EDP groups need AllReduce on expert gradients each step |
+| Doesn't reduce per-GPU expert params | To reduce that, raise EP or ETP, not EDP |
 
 ---
 
 ## 10. ETP/TEP — Expert Tensor Parallelism
 
-Tensor parallelism within individual experts. Communication pipeline per MoE layer:
+### 10.1 The idea
+
+ETP (also written TEP) applies **tensor parallelism inside a single expert** — essentially the column-parallel + row-parallel TP recipe from §4, but applied to each expert's FFN weights individually.
+
+**Core distinction**: TP shards attention and dense-MLP weights; **ETP shards the weights inside each MoE expert**.
+
 ```
-Permute → AllToAll(EP) → AllGather(ETP) → Expert Compute → ReduceScatter(ETP) → AllToAll(EP) → Unpermute
+    EP: different GPUs hold different complete experts
+    ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+    │ GPU 0    │  │ GPU 1    │  │ GPU 2    │  │ GPU 3    │
+    │ Expert 0 │  │ Expert 1 │  │ Expert 2 │  │ Expert 3 │
+    │ (whole)  │  │ (whole)  │  │ (whole)  │  │ (whole)  │
+    └──────────┘  └──────────┘  └──────────┘  └──────────┘
+
+    ETP: one expert's weights sharded across multiple GPUs
+    ┌──────────┐  ┌──────────┐  ┌──────────┐  ┌──────────┐
+    │ GPU 0    │  │ GPU 1    │  │ GPU 2    │  │ GPU 3    │
+    │ Expert 0 │  │ Expert 0 │  │ Expert 1 │  │ Expert 1 │
+    │ (left½)  │  │ (right½) │  │ (left½)  │  │ (right½) │
+    └──────────┘  └──────────┘  └──────────┘  └──────────┘
+    ←── ETP=2 ──→              ←── ETP=2 ──→
+    ←──────────── EP=2 ──────────────────────→
 ```
 
-Overhead ratio: `(ETP-1) / (ETP × (EP-1))`. EP=8, ETP=2: ~7%. EP=2, ETP=8: ~87%.
+### 10.2 How weights are sharded inside an expert
 
-**Recommendation: set ETP=1** for fine-grained MoE. Only use ETP>1 when individual experts don't fit on one GPU.
+ETP shards each expert's FFN with the same column-parallel + row-parallel pattern as TP:
+
+```
+    Expert E0's FFN (gate_proj + up_proj + down_proj):
+
+    Without ETP (ETP=1):
+    ┌─────────────────────────────────────────────┐
+    │  GPU 0 holds the whole expert E0:           │
+    │                                              │
+    │  gate_proj: [hidden_dim, ffn_dim]  ← whole  │
+    │  up_proj:   [hidden_dim, ffn_dim]  ← whole  │
+    │  down_proj: [ffn_dim, hidden_dim]  ← whole  │
+    └─────────────────────────────────────────────┘
+
+    With ETP=2:
+    ┌──────────────────────┐  ┌──────────────────────┐
+    │  GPU 0: E0 left half  │  │  GPU 1: E0 right half │
+    │                      │  │                      │
+    │  gate_proj:          │  │  gate_proj:          │
+    │  [hidden, ffn/2]     │  │  [hidden, ffn/2]     │
+    │  (col-parallel, L)   │  │  (col-parallel, R)   │
+    │                      │  │                      │
+    │  up_proj:            │  │  up_proj:            │
+    │  [hidden, ffn/2]     │  │  [hidden, ffn/2]     │
+    │                      │  │                      │
+    │  down_proj:          │  │  down_proj:          │
+    │  [ffn/2, hidden]     │  │  [ffn/2, hidden]     │
+    │  (row-parallel, L)   │  │  (row-parallel, R)   │
+    └──────────────────────┘  └──────────────────────┘
+
+    ★ gate_proj, up_proj column-parallel → SiLU can be applied independently
+    ★ down_proj row-parallel → needs AllReduce / ReduceScatter to sum
+```
+
+### 10.3 The full communication pipeline
+
+ETP communication stacks on top of EP's AllToAll, forming a 6-step pipeline per MoE forward:
+
+```
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │              Full forward of one MoE layer                          │
+    │                                                                     │
+    │  Step 1: Permutation                                                │
+    │  ├── Router picks top-K experts for each token                      │
+    │  └── Sort tokens by target-expert ID                                │
+    │           │                                                         │
+    │  Step 2: AllToAll-V (EP)                                            │
+    │  ├── Send tokens to GPUs holding the target expert                  │
+    │  └── Volume: tokens × top_k × H × (EP-1)/EP                         │
+    │           │                                                         │
+    │  Step 3: AllGather-V (ETP)                      ← ETP-only          │
+    │  ├── Within ETP group, every GPU gathers full token batch           │
+    │  └── Volume: received_tokens × H × (ETP-1)/ETP                      │
+    │           │                                                         │
+    │  Step 4: Expert compute (local)                                     │
+    │  ├── Col-parallel: partial_h = SiLU(x @ gate_shard) * (x @ up_shard)│
+    │  └── Row-parallel: partial_out = partial_h @ down_shard             │
+    │           │                                                         │
+    │  Step 5: ReduceScatter-V (ETP)                  ← ETP-only          │
+    │  ├── Combine row-parallel partial results and re-shard              │
+    │  └── Volume: same as Step 3                                         │
+    │           │                                                         │
+    │  Step 6: AllToAll-V (EP)                                            │
+    │  ├── Send results back to originating GPUs                          │
+    │  └── Volume: same as Step 2                                         │
+    │           │                                                         │
+    │  Step 7: Un-permutation + weighted sum                              │
+    │                                                                     │
+    │  Total comm: 2× AllToAll(EP) + AllGather(ETP) + ReduceScatter(ETP)  │
+    │  Pure EP:    2× AllToAll(EP)                                        │
+    │  ★ ETP adds 2 extra collective communications                       │
+    └─────────────────────────────────────────────────────────────────────┘
+```
+
+### 10.4 Communication-overhead math
+
+With $T$ tokens per micro-batch reaching the MoE layer, hidden $H$, EP degree $E$, ETP degree $P$:
+
+| Operation | Per-GPU volume | Source |
+| --------- | -------------- | ------ |
+| AllToAll dispatch (EP) | $T \cdot \text{top\_k} \cdot H \cdot (E{-}1)/E$ | Token routing |
+| AllToAll combine (EP) | Same | Result return |
+| AllGather (ETP) | $T_{\text{recv}} \cdot H \cdot (P{-}1)/P$ | Gather full inputs |
+| ReduceScatter (ETP) | $T_{\text{recv}} \cdot H \cdot (P{-}1)/P$ | Combine partial outputs |
+
+where $T_{\text{recv}} = T \cdot \text{top\_k} / E$ is the tokens each EP position receives.
+
+**Overhead ratio relative to pure EP**:
+
+$$
+\text{Overhead} = \frac{P-1}{P \cdot (E-1)}
+$$
+
+| $E$ | $P$ | Overhead |
+| --- | --- | -------- |
+| 8 | 2 | $\frac{1}{14} \approx 7$ % |
+| 4 | 4 | $\frac{3}{12} = 25$ % |
+| 2 | 8 | $\frac{7}{8} \approx 87$ % |
+
+**Conclusion**: small $E$ + large $P$ is very expensive. Hence the rule of thumb: **maximize EP, minimize ETP**.
+
+### 10.5 The local kernel (sketch)
+
+```python
+import torch
+import torch.distributed as dist
+
+def expert_tp_forward(
+    dispatched_tokens,   # [T_recv, H] — tokens that landed on this ETP group
+    gate_weight_shard,   # [H, ffn_dim/ETP] column-parallel slice
+    up_weight_shard,     # [H, ffn_dim/ETP] column-parallel slice
+    down_weight_shard,   # [ffn_dim/ETP, H] row-parallel slice
+    etp_group,
+):
+    etp_size = dist.get_world_size(etp_group)
+
+    # Step 1: AllGather (ETP) — every ETP rank gets the full input
+    gathered = [torch.empty_like(dispatched_tokens) for _ in range(etp_size)]
+    dist.all_gather(gathered, dispatched_tokens, group=etp_group)
+    full_input = torch.cat(gathered, dim=0)  # [T_recv * ETP, H]
+
+    # Step 2: column-parallel FFN compute
+    gate_out = torch.nn.functional.linear(full_input, gate_weight_shard.T)
+    up_out   = torch.nn.functional.linear(full_input, up_weight_shard.T)
+    hidden   = torch.nn.functional.silu(gate_out) * up_out
+
+    # Step 3: row-parallel down_proj (produces partial sums)
+    partial_output = torch.nn.functional.linear(hidden, down_weight_shard.T)
+
+    # Step 4: ReduceScatter (ETP) — combine partial sums and re-shard
+    chunks = list(partial_output.chunk(etp_size, dim=0))
+    output = torch.empty_like(dispatched_tokens)
+    dist.reduce_scatter(output, chunks, group=etp_group)
+
+    return output
+```
+
+### 10.6 Configuration and measured MFU
+
+```bash
+# Megatron-LM training
+python pretrain_gpt.py \
+    --num-experts 8 \
+    --expert-model-parallel-size 4   \   # EP=4
+    --expert-tensor-parallel-size 2  \   # ETP=2
+    --tensor-model-parallel-size 4   \   # TP=4 (attention)
+    --pipeline-model-parallel-size 2 \   # PP=2
+    --sequence-parallel                  # required with TP+EP
+
+# TensorRT-LLM inference
+python convert_checkpoint.py \
+    --tp_size 4  \
+    --moe_tp_size 2  \   # ETP=2
+    --moe_ep_size 2      # EP=2
+```
+
+**Measured MFU on Megatron-LM** (illustrative):
+
+| Model | GPUs | Config | MFU |
+| ----- | ---- | ------ | --- |
+| Mixtral 8×7B | 64 | EP=8, ETP=1, TP=2, PP=4 | **49.3 %** |
+| Mixtral 8×7B | 64 | EP=4, ETP=2, TP=2, PP=4 | 45.1 % |
+| Qwen2-57B-A14B | 64 | EP=4, ETP=1, TP=2, PP=4 | **39.0 %** |
+| Qwen2-57B-A14B | 64 | EP=2, ETP=2, TP=2, PP=4 | 35.7 % |
+
+ETP > 1 always loses MFU; only worth it when individual experts don't fit.
+
+### 10.7 Rule of thumb — set ETP=1 unless forced otherwise
+
+```
+    ★ Core principle: maximize EP, minimize ETP
+
+    Fine-grained MoE (256 experts, small FFN dim, e.g. DeepSeek-V3):
+    └── ETP = 1, push EP as high as possible
+        └── Why: each expert is small; TP-sharding it doesn't have enough
+            compute to amortize the AllGather + ReduceScatter overhead
+
+    Coarse-grained MoE (8 experts, large FFN dim, e.g. Mixtral 8×7B):
+    └── Try ETP = 1 first
+        └── If OOM → ETP = 2
+            └── Still OOM → ETP = 4 (last resort)
+
+    Inference scenarios:
+    └── Almost always ETP = 1
+        └── No grads / optimizer state, so single GPU fits experts
+            └── If still doesn't fit → quantize, don't reach for ETP
+
+    If ETP > 1 is unavoidable:
+    ├── Keep ETP group inside the NVLink domain (AG / RS need high BW)
+    ├── EP × ETP ≤ 8 (one node)
+    └── num_experts % (EP × ETP) == 0
+```
 
 ---
 
