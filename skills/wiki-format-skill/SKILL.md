@@ -70,16 +70,16 @@ When the user asks to read, review, summarize, or 精读 a paper, walk through t
 
 ### The 8 axes — what each one asks
 
-| #   | Axis                       | The question                                                                                 | What a strong answer looks like                                                                                                                                                                                                             |
-| --- | -------------------------- | -------------------------------------------------------------------------------------------- | ------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------------- |
-| 1   | **Position**               | What was the field doing? Why is the status quo unsatisfactory?                              | A comparison table against named prior work (e.g. ProRL Agent's table vs. SkyRL-Agent / VeRL-Tool / Agent Lightning / rLLM / GEM).                                                                                                          |
-| 2   | **Motivation** (立意)        | What *general principle* do the authors think the field is missing?                          | One sentence. E.g. ProRL Agent: *"rollout and training have fundamentally different resource shapes; coupling them is an architectural mistake."* SAW-INT4: *"plain per-token INT4 is fine if you do one thing right at the kernel level."* |
-| 3   | **Core idea (the delta)**  | What is the smallest defensible new thing?                                                   | The named *thing*. E.g. "Rollout-as-a-Service", "Block-Diagonal Hadamard Rotation". Test: if I removed this one component, would the result still hold?                                                                                     |
-| 4   | **The how**                | What is the concrete mechanism?                                                              | For systems: architecture, kernel, API. For ML: algorithm, loss function. For theory: theorem + proof structure. For empirical: methodology.                                                                                                |
-| 5   | **Implementation reality** | What does the code / appendix / supplement actually show?                                    | Concrete bugs handled, hyperparameters used, kernel optimizations. *Always* fetch source/appendix; never rely on the abstract alone. This axis frequently reveals constraints the paper hides.                                              |
-| 6   | **Evidence (experiments)** | Does the empirical evidence support the claimed delta? Critically, **what is NOT measured?** | Specific missing baselines, missing ablations, missing benchmarks. E.g. "GPQA-only is thin; MMLU/MATH/HumanEval/RULER not run."                                                                                                             |
-| 7   | **Limitations**            | Both author-acknowledged AND what I notice they don't.                                       | Specific. *"Only validates on DAPO; PPO/GRPO/RLOO untested"* beats *"limited evaluation."*                                                                                                                                                  |
-| 8   | **Generalization**         | What broader pattern does this expose? Predict the next 12 months.                           | Opinionated take. E.g. *"Block-diagonal Hadamard will spread to vLLM and TensorRT-LLM; the system-aware framing is the more durable contribution."*                                                                                         |
+| # | Axis | The question | What a strong answer looks like |
+|---|------|--------------|--------------------------------|
+| 1 | **Position** | What was the field doing? Why is the status quo unsatisfactory? | A comparison table against named prior work (e.g. ProRL Agent's table vs. SkyRL-Agent / VeRL-Tool / Agent Lightning / rLLM / GEM). |
+| 2 | **Motivation** (立意) | What *general principle* do the authors think the field is missing? | One sentence. E.g. ProRL Agent: *"rollout and training have fundamentally different resource shapes; coupling them is an architectural mistake."* SAW-INT4: *"plain per-token INT4 is fine if you do one thing right at the kernel level."* |
+| 3 | **Core idea (the delta)** | What is the smallest defensible new thing? | The named *thing*. E.g. "Rollout-as-a-Service", "Block-Diagonal Hadamard Rotation". Test: if I removed this one component, would the result still hold? |
+| 4 | **The how** | What is the concrete mechanism? | For systems: architecture, kernel, API. For ML: algorithm, loss function. For theory: theorem + proof structure. For empirical: methodology. |
+| 5 | **Implementation reality** | What does the code / appendix / supplement actually show? | Concrete bugs handled, hyperparameters used, kernel optimizations. *Always* fetch source/appendix; never rely on the abstract alone. This axis frequently reveals constraints the paper hides. |
+| 6 | **Evidence (experiments)** | Does the empirical evidence support the claimed delta? Critically, **what is NOT measured?** | Specific missing baselines, missing ablations, missing benchmarks. E.g. "GPQA-only is thin; MMLU/MATH/HumanEval/RULER not run." |
+| 7 | **Limitations** | Both author-acknowledged AND what I notice they don't. | Specific. *"Only validates on DAPO; PPO/GRPO/RLOO untested"* beats *"limited evaluation."* |
+| 8 | **Generalization** | What broader pattern does this expose? Predict the next 12 months. | Opinionated take. E.g. *"Block-diagonal Hadamard will spread to vLLM and TensorRT-LLM; the system-aware framing is the more durable contribution."* |
 
 ### Worked example — applying the 8 axes to ProRL Agent
 
@@ -890,6 +890,41 @@ These come up repeatedly and are worth naming so they don't sneak back in.
 - The previous `feedback_paper_reading_framework.md` memory is reduced to a one-page redirect pointing here.
 - `reference_knowledge_wiki.md` and `user_learner_llm_inference.md` remain as separate reference / user memories.
 - If conventions evolve, update **this skill first**; only then update the redirect memory and any references in the wiki itself.
+
+---
+
+## Site layout convention (Quartz reader-mode)
+
+The published site at https://shikicloud.github.io/MLSys uses Quartz v4.5.2 with a customized reader-mode that splits the original single toggle into **two independent sidebar toggles**. This is canonical — do not "simplify" back to one toggle without checking with Shiki.
+
+### Behaviour matrix
+
+| State | Grid template (override applied in `readermode.scss`) | Article column | Buffer |
+| ----- | ----------------------------------------------------- | -------------- | ------ |
+| Both sidebars shown (default) | `320px auto 320px` (Quartz default; no override) | ~860px | natural sidebars provide visual buffer |
+| **Left only hidden** | `0 1fr 320px` | ~1180px column | **`padding-left: 6rem`** on `.center > article` and `.page-header` |
+| **Right only hidden** | `320px 1fr 0` | ~1180px column | **`padding-right: 6rem`** on `.center > article` and `.page-header` |
+| Both hidden (full reader mode) | `minmax(0, 1fr) minmax(0, 900px) minmax(0, 1fr)` | 900px centered | symmetric `1fr` gutters absorb the rest |
+
+Use `minmax(0, 1fr)` (not bare `1fr`) for the both-hidden gutters — bare `1fr` is `minmax(auto, 1fr)` and grows beyond 1fr to fit child min-content, breaking centering when the (visibility-hidden) sidebar contents have wide natural width (e.g. Explorer with long folder names).
+
+### How the toggle is wired
+
+- **Component**: `site/quartz/components/ReaderMode.tsx` accepts a `{ side: "left" | "right" }` option and renders a button with class `readermode-{side}` plus `data-side="{side}"`.
+- **Layout**: `site/quartz.layout.ts` instantiates two copies — `Component.ReaderMode({ side: "left" })` inside the left sidebar's Flex toolbar, `Component.ReaderMode({ side: "right" })` at the top of the right sidebar.
+- **Script**: `site/quartz/components/scripts/readermode.inline.ts` keeps two independent state flags (`leftHidden`, `rightHidden`) and sets two attributes on `<html>` — `left-sidebar="hidden"|"shown"` and `right-sidebar="hidden"|"shown"`.
+- **Styles**: `site/quartz/components/styles/readermode.scss` keys all rules off those two attributes. Floating-button rules use `position: fixed; top: 1rem; left/right: 1rem` so the toggle stays clickable even when its host sidebar is collapsed.
+
+### Hiding sidebar contents without breaking the toggle
+
+When a sidebar is hidden, ALL its descendants need `visibility: hidden !important` (with `!important` to override Explorer's own `.folder-outer.open { visibility: visible }` rule). Then white-list the `.readermode-{side}` button back to `visibility: visible !important` plus pull it out to `position: fixed`.
+
+**Do not use `opacity: 0` on the sidebar** — opacity is multiplicatively inherited, so any child you then set `opacity: 0.4` on still computes to 0. Use `visibility` (independently overridable per descendant) instead.
+
+### When editing these files
+
+- The active SCSS is compiled into `index.css` at build time. To verify a change actually deployed, `curl -s https://shikicloud.github.io/MLSys/index.css | grep -oE '(left|right)-sidebar=hidden[^}]*\}'`.
+- The browser caches CSS aggressively — after pushing changes, hard-refresh (Cmd+Shift+R) before judging the result.
 
 ---
 

@@ -21,6 +21,7 @@ updated: 2026-05-13
 - [[saw-int4]] — SAW-INT4：基于块对角 Hadamard 旋转的系统感知 4 位 KV 缓存量化（Together AI, arXiv 2604.19157）— 论文精读
 - [[rotation-based-quantization]] — 基于旋转的量化家族综览（QuIP / QuaRot / SpinQuant / BDR）
 - [[das-spec-rl]] — DAS：面向 RL 训练的分布感知投机解码（suffix tree drafter + 长度感知预算；arXiv 2511.13841）— 论文精读
+- [[aurora]] — Aurora：在 SGLang 实时流量上把投机解码 draft 训练做成异步 RL，Day-0 上线，Tree Attention kernel（Together AI，ICML 2026，arXiv 2602.06932）— 论文精读
 - [[ring-attention]] — Ring Attention：Q 不动 + KV 旋转 + FlashAttention streaming softmax；4M token 训练上下文（Liu/Zaharia/Abbeel, ICLR 2024）— 论文精读
 - [[deepspeed-ulysses]] — DeepSpeed Ulysses：基于 AllToAll 的序列并行，通信 $O(N/P)$；Ring Attention 的替代方案（Microsoft, arXiv 2309.14509）— 论文精读
 

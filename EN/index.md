@@ -21,6 +21,7 @@ updated: 2026-05-13
 - [[saw-int4]] — SAW-INT4: System-Aware 4-bit KV-cache quantization with block-diagonal Hadamard rotation (Together AI, arXiv 2604.19157) — paper review
 - [[rotation-based-quantization]] — Rotation-based quantization family overview (QuIP / QuaRot / SpinQuant / BDR)
 - [[das-spec-rl]] — DAS: Distribution-Aware Speculative Decoding for RL Training (suffix-tree drafter + length-aware budget; arXiv 2511.13841) — paper review
+- [[aurora]] — Aurora: online speculative-decoding training as async RL on live SGLang traffic, day-0 deployment, Tree Attention kernel (Together AI, ICML 2026, arXiv 2602.06932) — paper review
 - [[ring-attention]] — Ring Attention: persistent Q + rotating KV with FlashAttention streaming softmax; 4M-token training context (Liu/Zaharia/Abbeel, ICLR 2024) — paper review
 - [[deepspeed-ulysses]] — DeepSpeed Ulysses: AllToAll-based sequence parallelism with O(N/P) communication; the Ring Attention alternative (Microsoft, arXiv 2309.14509) — paper review
 
