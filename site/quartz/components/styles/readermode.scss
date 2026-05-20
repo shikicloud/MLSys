@@ -36,12 +36,27 @@
     column-gap 0.2s ease;
 }
 
+/* When the left sidebar is hidden, the article fills from the page edge.
+   Add left padding to the article and page-header so text doesn't touch the
+   viewport edge — matches the visual buffer the (visible) right sidebar's
+   own padding provides on the other side. */
+:root[left-sidebar="hidden"]:not([right-sidebar="hidden"]) .center > article,
+:root[left-sidebar="hidden"]:not([right-sidebar="hidden"]) .page-header {
+  padding-left: 2rem;
+}
+
 :root[right-sidebar="hidden"]:not([left-sidebar="hidden"]) #quartz-body {
   grid-template-columns: 320px 1fr 0 !important;
   column-gap: 0 !important;
   transition:
     grid-template-columns 0.2s ease,
     column-gap 0.2s ease;
+}
+
+/* Mirror padding on the right side when the right sidebar is hidden. */
+:root[right-sidebar="hidden"]:not([left-sidebar="hidden"]) .center > article,
+:root[right-sidebar="hidden"]:not([left-sidebar="hidden"]) .page-header {
+  padding-right: 2rem;
 }
 
 :root[left-sidebar="hidden"][right-sidebar="hidden"] #quartz-body {
