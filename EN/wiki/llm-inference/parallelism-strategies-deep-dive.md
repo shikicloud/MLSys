@@ -1319,7 +1319,7 @@ Concrete implementations of this hybrid pattern:
 >
 > - **vLLM**: ships *Decode Context Parallel* (DCP, `--decode-context-parallel-size N`), but this is a narrow **KV-cache deduplication trick** for MLA-style models where `tp_size > num_kv_heads` leaves KV duplicated across TP ranks. It's not generic long-sequence parallelization. Full prefill CP RFCs ([#22693](https://github.com/vllm-project/vllm/issues/22693), [#26133](https://github.com/vllm-project/vllm/issues/26133)) were closed as "not planned"; only [#30055](https://github.com/vllm-project/vllm/issues/30055) (DeepSeek DSA) is live. DCP-for-GQA PR [#24864](https://github.com/vllm-project/vllm/pull/24864) merged 2025-10-14.
 > - **SGLang**: explicitly chose **pipeline parallelism** over CP for million-token serving. [LMSYS blog (2026-01-15)](https://www.lmsys.org/blog/2026-01-15-chunked-pipeline/) gives reasons: CP "requires specific, often intrusive modifications to the attention mechanism" per model variant; PP has lower comm volume. Result: 1M TTFT 420 s on Qwen3-235B / H20. CP feature request [#12196](https://github.com/sgl-project/sglang/issues/12196) opened Oct 2025, inactive.
-> - **TensorRT-LLM**: exposes `context_parallel_size` + `cp_config` as a first-class API ([docs](https://nvidia.github.io/TensorRT-LLM/features/parallel-strategy.html)). Public documentation is thin on kernel and decode behavior; the API surface is documented, the internals are not.
+> - **TensorRT-LLM**: exposes `context_parallel_size` + `cp_config` as a first-class API ([docs](https://nvidia.github.io/TensorRT-LLM/features/parallel-strategy.html)). Public docs are thin, but the source (`tensorrt_llm/mapping.py:25-34`) ships **four** `CpType` variants: `ULYSSES` (default), `STAR` (Star Attention), `HELIX` (Helix Parallelism), `RING` (enum-reserved, no code path yet). See the dedicated Q&A below for the per-variant breakdown.
 >
 > **Why CP was historically training-only — four technical mismatches:**
 >
@@ -1353,7 +1353,7 @@ Concrete implementations of this hybrid pattern:
 >
 > DCP is **not a separate parallel axis** — it lives inside the TP communicator group, costs no extra GPUs, and doesn't shard the attention compute (attention is still TP). The condition for it to help is `tp_size > num_kv_heads` (MLA, MQA). For a standard GQA model with 8 KV heads + TP=8, DCP is useless. A more accurate name would be "MLA KV-cache sharding"; "Decode Context Parallel" is marketing terminology.
 >
-> **3. TensorRT-LLM's `context_parallel_size`** — this **is** true CP (the Meta-paper sense), exposed as a first-class API alongside TP / PP / DP / EP. Public docs are one-sentence: *"Context parallelism distributes the processing of long sequences across multiple GPUs. Best for: Long context scenarios."* Whether it uses Ring / Ulysses / hybrid internally isn't disclosed. NVIDIA ships it because customers like Meta need it for 1M-token prefill on Llama 3 405B (the Meta paper itself ran on 128 H100s).
+> **3. TensorRT-LLM's `context_parallel_size`** — this **is** true CP (the Meta-paper sense), exposed as a first-class API alongside TP / PP / DP / EP. Public docs are one-sentence: *"Context parallelism distributes the processing of long sequences across multiple GPUs. Best for: Long context scenarios."* The source (`tensorrt_llm/mapping.py:25-34`) actually ships **four named variants** behind the same knob — `ULYSSES` (default, DeepSpeed-Ulysses-style head all-to-all), `STAR` (Star Attention, sparse / anchor-block), `HELIX` (Helix Parallelism, MNNVL-aware decode), and `RING` (enum entry only, no code path). The next Q&A unpacks each. NVIDIA ships this because customers like Meta need it for 1M-token prefill on Llama 3 405B (the Meta paper itself ran on 128 H100s), and because Helix gives them a story for decode-time CP on GB200/NVL72.
 >
 > **Your TP-dominates-inference intuition is correct:**
 >
@@ -1364,6 +1364,35 @@ Concrete implementations of this hybrid pattern:
 > | Decode | TP (+ DP attention for MoE) | Almost never — per-step CP costs more than it saves; Meta paper Table 6 confirms |
 >
 > So when you see "CP" in inference contexts: check whether they mean (1) Meta-paper CP for long-context prefill, (2) vLLM's DCP which is really KV dedup, or (3) TRT-LLM's API knob which is variant 1 exposed as a config. All three coexist under the same two letters.
+
+> [!question]+ Shiki — TensorRT-LLM CP variants — what does it actually implement? (2026-05-20)
+>
+> Investigated the local TRT-LLM repo (`tensorrt_llm/mapping.py:25-34`). Source ships **four** `CpType` values, all selected via `cp_config={"cp_type": ...}`. Default is `ULYSSES`. Three are real; one is an enum stub.
+>
+> | `cp_type` | Status | Algorithm | Where in code |
+> | --------- | ------ | --------- | ------------- |
+> | `ULYSSES` | ✅ default | DeepSpeed-Ulysses style: CP ranks are *folded into* TP at the attention layer (`attn_tp_size = tp_size × cp_size`, `attn_cp_size = 1` — `mapping.py:94-97`). Heads-sharded all-to-all is implicit via the resulting TP communicator. | `_torch/distributed/communicator.py:150,700` (`has_cp_ulysses`, `broadcast_cp`). Hard constraint: can't mix Ulysses-CP with TP simultaneously (`communicator.py:688`). |
+> | `STAR` | ✅ real | Star Attention (Shao et al., NVIDIA, 2024 — arXiv:2411.17116): partition context into blocks, replicate an **anchor block** (block 0) to every CP rank; each rank does prefill on `[anchor ‖ own_block]`; query is gathered for the global softmax at the end. Sparse, approximate, but cheap. | `_torch/pyexecutor/request_utils.py:160 partition_context_for_star_attention`, `:339 merge_star_attention_requests`; `_torch/pyexecutor/model_engine.py:3187 _prepare_star_attention_inputs`. Requires `attn_backend="FLASHINFER_STAR_ATTENTION"`. Public example: `examples/llm-api/star_attention.py`. |
+> | `HELIX` | ✅ real | Helix Parallelism (NVIDIA): KV cache **sharded by token** across CP ranks for decode, with **MNNVL** (multi-node NVLink) hardware-accelerated `all_to_all`. Non-attention layers repurpose CP ranks **back to TP** (`mapping.py:533 repurpose_helix_cp_to_tp`). | `_mnnvl_utils.py:359 HelixCpMnnvlMemory`, `_torch/distributed/ops.py:366 HelixAllToAllNative`, custom ops `trtllm::alltoall_helix`, `trtllm::helix_post_process`. `_torch/modules/attention.py:437-439` asserts `cp_type == HELIX` whenever `cp_size > 1` reaches the new PyTorch attention module — not because Helix is "the only real CP", but because Ulysses collapses its CP group into TP earlier (`mapping.py:94-97`) and Star is handled at the request-scheduling layer, so by the time control reaches `Attention.forward` only Helix still has `attn_cp_size > 1` to honor. |
+> | `RING` | 🟡 enum-only | Reserved name. `CpType.RING = "RING"` exists in `mapping.py:30-31`, but `grep -rn 'CpType.RING'` returns **zero usages** across the repo. No dispatch, no kernel. | — |
+>
+> **How to read the four:**
+>
+> **All three implemented variants are genuinely CP** — they just live at different abstraction layers:
+> - **Ulysses** does CP in the **TP communicator** (head all-to-all reuses the TP group).
+> - **Star** does CP at the **request-scheduling layer** (context partitioned and dispatched to cp_size ranks, each rank runs a standard local attention).
+> - **Helix** does CP **inside the attention kernel itself** (token-sharded KV + MNNVL alltoall).
+>
+> So "real CP" isn't a Helix-exclusive label — Ulysses and Star are real CP too, just relabeled or moved up the stack.
+>
+> Per-variant detail:
+>
+> - **Ulysses (default)** is what the prior Q&A discussed: head-dimension all-to-all, but TRT-LLM implements it by *fusing* the CP group into TP rather than as a separate parallel axis. Use case: long-context prefill on single-node multi-GPU. Constraint baked in: `attn_cp_size != 1 && cp_type == ULYSSES` is a hard error (`mapping.py:109-112`).
+> - **Star Attention** is the *sparse* CP path — not a generic long-sequence solver. Each rank only sees its own block + the anchor block. Designed for needle-in-a-haystack-style retrieval over very long contexts (the example script targets NIAH up to 512K). Different value proposition than Ring/Ulysses: trades accuracy for compute.
+> - **Helix** is the *decode-time* CP path — exactly the thing the Meta paper said decode shouldn't do, but Helix bypasses the per-step cost by (a) using MNNVL `all_to_all` (NVL72-class fabric) instead of NCCL ring rotation, and (b) repurposing CP ranks to TP for FFN so the CP communication is only paid where it has to be. NVIDIA's answer to "make CP work at decode now that GB200/NVL72 exists."
+> - **Ring** is reserved but unimplemented — probably a placeholder for a future pass-KV / pass-Q kernel, or for symmetry with the training-side Ring Attention vocabulary. Today, "ring semantics" in TRT-LLM are achieved via Ulysses-style head-sharding instead.
+>
+> **So the public docs' "Context parallelism distributes the processing of long sequences across multiple GPUs" hides three completely different algorithms behind one knob** — Ulysses for vanilla long-prefill, Star for sparse long-context retrieval, Helix for MNNVL-decode. Not one CP; three.
 
 ### 7.7 Limitations
 
