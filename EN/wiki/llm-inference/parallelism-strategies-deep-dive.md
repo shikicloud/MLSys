@@ -1334,6 +1334,37 @@ Concrete implementations of this hybrid pattern:
 >
 > **2026 consensus for 1M+ inference**: hybrid, not single-winner. 128K → TP + KV quantization. 512K–1M prefill → CP (Meta path) or PP (SGLang path). 1M+ decode → TP + DCP (dedup) + PD disaggregation + KV compression (MLA / quantization / eviction / hierarchical offload).
 
+> [!question]+ Shiki — Isn't CP supposed to be for prefill? Then what is vLLM's "decode CP"? And why does TRT-LLM ship CP if inference is mostly TP? (2026-05-20)
+>
+> **Yes — your intuition is right.** "CP" is overloaded in the inference world and gets used for **three different things**, only one of which is the Meta-paper sense:
+>
+> **1. "True" CP (Meta-paper sense)** — shards the sequence dimension during attention compute, same algorithm as training-time Ring Attention. Used in inference for **long-context prefill** (128K+ tokens). At decode, the paper itself (Table 6) shows per-step CP **hurts**: TTIT grows monotonically with CP degree because every decode step pays a full ring-rotation cost on a tiny per-step attention. Paper recommendation: *"CP best suited for improving prefill performance"* and *"switch parallelism scheme for decode"*.
+>
+> **2. vLLM's "Decode Context Parallel" (DCP)** — **NOT real CP**. It's a **KV-cache deduplication trick** named confusingly. The setup: MLA models (DeepSeek-V3/V4) have only 1 KV head. To run TP=8 for weight sharding, you have to fall back to *replicating* the full KV cache across all 8 TP ranks (1 KV head ÷ 8 = nothing to split). That's an 8× memory waste. **DCP shards the KV cache by token across those 8 already-existing TP ranks** so each rank holds 1/8 of the KV cache, with AllGather on demand during attention. Mechanics:
+>
+> ```
+>   Without DCP (TP=8, MLA):             With DCP (-dcp 8):
+>   GPU 0: [KV: tokens 0..N]              GPU 0: [KV: tokens 0..N/8]
+>   GPU 1: [KV: tokens 0..N]   ← dupe    GPU 1: [KV: tokens N/8..2N/8]   ← sharded
+>   GPU 2: [KV: tokens 0..N]   ← dupe    GPU 2: [KV: tokens 2N/8..3N/8]
+>   ...                                   ...
+>   GPU 7: [KV: tokens 0..N]   ← dupe    GPU 7: [KV: tokens 7N/8..N]
+> ```
+>
+> DCP is **not a separate parallel axis** — it lives inside the TP communicator group, costs no extra GPUs, and doesn't shard the attention compute (attention is still TP). The condition for it to help is `tp_size > num_kv_heads` (MLA, MQA). For a standard GQA model with 8 KV heads + TP=8, DCP is useless. A more accurate name would be "MLA KV-cache sharding"; "Decode Context Parallel" is marketing terminology.
+>
+> **3. TensorRT-LLM's `context_parallel_size`** — this **is** true CP (the Meta-paper sense), exposed as a first-class API alongside TP / PP / DP / EP. Public docs are one-sentence: *"Context parallelism distributes the processing of long sequences across multiple GPUs. Best for: Long context scenarios."* Whether it uses Ring / Ulysses / hybrid internally isn't disclosed. NVIDIA ships it because customers like Meta need it for 1M-token prefill on Llama 3 405B (the Meta paper itself ran on 128 H100s).
+>
+> **Your TP-dominates-inference intuition is correct:**
+>
+> | Stage | Primary parallelism | CP's role |
+> | ----- | ------------------ | --------- |
+> | Prefill, normal length (≤ 128K) | TP | Not used |
+> | Prefill, long context (128K–1M) | TP × CP | **True CP** (Ring / Ulysses) pays off |
+> | Decode | TP (+ DP attention for MoE) | Almost never — per-step CP costs more than it saves; Meta paper Table 6 confirms |
+>
+> So when you see "CP" in inference contexts: check whether they mean (1) Meta-paper CP for long-context prefill, (2) vLLM's DCP which is really KV dedup, or (3) TRT-LLM's API knob which is variant 1 exposed as a config. All three coexist under the same two letters.
+
 ### 7.7 Limitations
 
 | Limitation | Detail |
