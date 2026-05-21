@@ -41,18 +41,21 @@
     --callout-icon: var(--callout-icon-note);
   }
 
+  /* Colors aligned with Obsidian's default callout palette
+     (see https://help.obsidian.md/Editing+and+formatting/Callouts). */
+
   &[data-callout="abstract"] {
-    --color: #00b0ff;
-    --border: #00b0ff44;
-    --bg: #00b0ff10;
+    --color: #007aff;
+    --border: #007aff44;
+    --bg: #007aff10;
     --callout-icon: var(--callout-icon-abstract);
   }
 
   &[data-callout="info"],
   &[data-callout="todo"] {
-    --color: #00b8d4;
-    --border: #00b8d444;
-    --bg: #00b8d410;
+    --color: #007aff;
+    --border: #007aff44;
+    --bg: #007aff10;
     --callout-icon: var(--callout-icon-info);
   }
 
@@ -61,39 +64,39 @@
   }
 
   &[data-callout="tip"] {
-    --color: #00bfa5;
-    --border: #00bfa544;
-    --bg: #00bfa510;
+    --color: #00bfbc;
+    --border: #00bfbc44;
+    --bg: #00bfbc10;
     --callout-icon: var(--callout-icon-tip);
   }
 
   &[data-callout="success"] {
-    --color: #09ad7a;
-    --border: #09ad7144;
-    --bg: #09ad7110;
+    --color: #08b94e;
+    --border: #08b94e44;
+    --bg: #08b94e10;
     --callout-icon: var(--callout-icon-success);
   }
 
   &[data-callout="question"] {
-    --color: #dba642;
-    --border: #dba64244;
-    --bg: #dba64210;
+    --color: #d9730d;
+    --border: #d9730d44;
+    --bg: #d9730d10;
     --callout-icon: var(--callout-icon-question);
   }
 
   &[data-callout="warning"] {
-    --color: #db8942;
-    --border: #db894244;
-    --bg: #db894210;
+    --color: #ec7500;
+    --border: #ec750044;
+    --bg: #ec750010;
     --callout-icon: var(--callout-icon-warning);
   }
 
   &[data-callout="failure"],
   &[data-callout="danger"],
   &[data-callout="bug"] {
-    --color: #db4242;
-    --border: #db424244;
-    --bg: #db424210;
+    --color: #e93147;
+    --border: #e9314744;
+    --bg: #e9314710;
     --callout-icon: var(--callout-icon-failure);
   }
 
@@ -106,9 +109,9 @@
   }
 
   &[data-callout="example"] {
-    --color: #7a43b5;
-    --border: #7a43b544;
-    --bg: #7a43b510;
+    --color: #7852ee;
+    --border: #7852ee44;
+    --bg: #7852ee10;
     --callout-icon: var(--callout-icon-example);
   }
 
