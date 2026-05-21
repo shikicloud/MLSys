@@ -93,7 +93,7 @@ The "rootless sandbox" column is the deployment-realism contribution that lets t
 
 The trainer's API contract is `① POST /add_llm_server → ② POST /start → ③ POST /process { instance, sampling_params }` (blocks) `→ ④ ← (token_ids, logprobs, reward, timing)`.
 
-![ProRL-Agent-Server process placement (paper Fig.)](wiki/agentic-rl/prorl-agent-figs/system-architecture.png)
+![ProRL-Agent-Server process placement (paper Fig.)](EN/wiki/agentic-rl/prorl-agent-figs/system-architecture.png)
 
 The paper figure above shows the two-cluster placement (GPU-node trainer cluster on the left, CPU/GPU server cluster on the right). The Mermaid below adds the in-process detail — three queues, FastAPI parent + multiprocessing child, sandbox / vLLM externals.
 
@@ -336,14 +336,14 @@ Not novel research — just the right engineering. The ablation later shows acti
 
 **Scalability** (paper Fig.):
 
-![Throughput vs. number of nodes (paper Fig.)](wiki/agentic-rl/prorl-agent-figs/throughput-vs-nodes.png)
+![Throughput vs. number of nodes (paper Fig.)](EN/wiki/agentic-rl/prorl-agent-figs/throughput-vs-nodes.png)
 
 Near-linear with rollout-node count for SWE tasks; 4B scales best (smaller per-rollout footprint), 14B saturates earliest (per-node compute cap).
 
 > [!example]- All experimental results (drill-down)
 > **Generality.** Three additional agents trained on the same infrastructure:
 >
-> ![Training curves across STEM / Math / Code agents (paper Fig. 4)](wiki/agentic-rl/prorl-agent-figs/training-curves.png)
+> ![Training curves across STEM / Math / Code agents (paper Fig. 4)](EN/wiki/agentic-rl/prorl-agent-figs/training-curves.png)
 >
 > | Agent                                   | Train data         | Benchmark    | Reward / Pass@1                |
 > | --------------------------------------- | ------------------ | ------------ | ------------------------------ |
