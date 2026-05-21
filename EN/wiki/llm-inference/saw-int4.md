@@ -3,7 +3,7 @@ title: "SAW-INT4: System-Aware 4-Bit KV-Cache Quantization (Block-Diagonal Rotat
 category: llm-inference
 tags: [saw-int4, kv-cache, quantization, int4, hadamard-rotation, bdr, sglang, paper-review]
 created: 2026-05-06
-updated: 2026-05-07
+updated: 2026-05-21
 status: mature
 paper: arXiv:2604.19157
 code: https://github.com/togethercomputer/saw-int4
@@ -17,10 +17,43 @@ code: https://github.com/togethercomputer/saw-int4
 > - **SGLang fork**: [jindajia/sglang-fork @ colm_rotation_fast](https://github.com/jindajia/sglang-fork) (commit `0fcc241`)
 > - **Authors**: Jinda Jia, Jisen Li, Zhongzhu Zhou, Jung Hwan Heo, Jue Wang, Tri Dao, Shuaiwen Leon Song, Ben Athiwaratkun, Chenfeng Xu, Tianyi Zhang, Xiaoxia Wu
 
-> [!abstract]+ TL;DR
-> INT4 [[kv-cache-optimization|KV-cache]] quantization quadruples capacity vs. BF16 but breaks reasoning models — Qwen3-4B-Thinking-2507 collapses from **66.67 % → 0 %** on GPQA under naive INT4. SAW-INT4 fixes it by applying a **block-diagonal Hadamard rotation (BDR)** to K (and optionally V) along the head dimension before per-token INT4 quantization, fused into one Triton kernel that writes the paged KV layout. Q is rotated by the same matrix inside the decode kernel so attention math is unchanged. Result on the same model: **65.82 % GPQA**, with **end-to-end throughput indistinguishable from plain INT4** across concurrencies 32–256 on H100.
+---
+
+## Summary (read this if you have 2 minutes)
+
+**What it is.** SAW-INT4 (Together AI, 2026) is a *system-aware* 4-bit [[kv-cache-optimization|KV-cache]] quantization stack for production LLM serving. It bolts a **block-diagonal Hadamard rotation (BDR)** in front of plain per-token INT4 quantization, fuses the whole thing — rotation, normalization, quant, paged write — into one Triton kernel, and applies the same rotation to Q inside the GQA decode kernel so attention math is unchanged.
+
+**The one idea.** Plain INT4 KV breaks reasoning models because **outlier channels** in K/V eat almost all the quantization resolution. Rotate before you quantize, in fixed-size head-dim blocks the paged layout can swallow, and the outlier energy spreads uniformly. Three pieces hold it up:
+
+1. **Block-diagonal Hadamard rotation** along `head_dim` (orders 16 / 32 / 64 / 128 for Qwen3) — small enough to live in registers, paged-KV compatible, $O(d \log H)$ via FWHT.
+2. **Fused Triton kernel** (`_fused_hadamard_int4_set_kv_kernel`) — one memory pass does rotate + $\div\sqrt{H}$ + per-token min/max/scale/zero + INT4 pack + paged write.
+3. **In-kernel Q rotation at decode** — `decode_attention_fwd_quantized` applies the same FWHT to Q inside the GQA dot-product, so $QK^\top$ is preserved without an extra global memory pass.
+
+Remove the rotation and reasoning collapses; remove the fusion and you eat a 5–10 % overhead; remove the Q correction and the math is wrong.
+
+**Headline result.** Qwen3-4B-Thinking-2507 GPQA, the cliff-edge case:
+
+| KV dtype                          | GPQA score   |
+| --------------------------------- | ------------ |
+| BF16 (baseline)                   | 66.67 %      |
+| Plain INT4                        | **0.00 %**   |
+| **INT4 + BDR (K-only, order=128)**| **65.82 %**  |
+
+> [!important] Plain INT4 doesn't degrade reasoning models — it disables them.
+> 66.67 % → 0 % is a cliff, not a slide. BDR recovers 65.82 % at essentially zero runtime cost — end-to-end throughput on Qwen3-8B at concurrency 32–256 is **indistinguishable from plain INT4**, and at high concurrency BDR even edges ahead on TTFT because the rotation amortizes into a memory pass that INT4 already needed.
+
+**Why it matters.**
+
+- **Memory:** 3.55× smaller KV cache vs. BF16 end-to-end (not quite 4× because of the per-token `(scale, zero)` sidecar). Same context, same hardware, ~4× the concurrency before KV pressure.
+- **Minimally invasive:** 4 env vars + 1 forked kernel. No retraining, no calibration. Drop into [[sglang|SGLang]] today.
+- **System-aware framing earns its title:** the contribution is kernel work, not algorithmic novelty. The math (FWHT) has been textbook material since the 1970s; what's new is *fusing* it correctly inside a paged KV write.
+- **12-month prediction:** block-diagonal Hadamard spreads to [[vllm|vLLM]] and TensorRT-LLM; the same trick gets tried on FP8 KV and on activation quant. The "marginal gains under real serving constraints" framing keeps biting algorithmic-novelty papers in this space.
 
 ---
+
+# Depth (drill-down starts here)
+
+The summary above is the executive layer. Everything below is for the careful reader who wants the kernel walk-through and the full code paths.
 
 ## Background: why INT4 KV breaks reasoning models
 
@@ -31,17 +64,6 @@ A KV cache stores key/value tensors per token, per layer, per head. For long con
 3. **Channel-specialized heads.** Trained attention heads develop preferred channels — features used for retrieval, induction, or copying — that are systematically wider in distribution.
 
 Per-token scale-and-zero INT4 quantization computes one `(scale, zero)` pair per token vector and divides the 16 INT4 levels evenly across $[\min, \max]$. When two or three channels carry 90 % of the magnitude, those channels get most of the resolution and the bulk of the head dimension is quantized to zero or near-zero. On surface tasks the rounding survives — the model still produces fluent text. On multi-step reasoning the per-attention error compounds across hundreds of attention rounds, the model loses the ability to track distinctions, and accuracy collapses.
-
-The paper's GPQA numbers on `Qwen/Qwen3-4B-Thinking-2507` make this concrete:
-
-| KV dtype                          | GPQA score   |
-| --------------------------------- | ------------ |
-| BF16 (baseline)                   | **66.67 %**  |
-| Plain INT4                        | **0.00 %**   |
-| INT4 + BDR (K-only, order=128)    | **65.82 %**  |
-
-> [!important] Plain INT4 doesn't degrade the model — it disables it.
-> The drop is from 66.67 % to 0 %, not a graceful slide. That cliff is the problem SAW-INT4 attacks.
 
 > [!question]+ Shiki — What is an outlier channel and why does plain INT4 KV collapse? (2026-05-07)
 >
@@ -78,6 +100,10 @@ For the broader family overview — QuIP / QuIP# / QuaRot / SpinQuant / BDR — 
 > [!quote] The contribution in one sentence
 > Apply a Hadamard rotation to the KV tensors *along the head dimension*, in fixed-size blocks (e.g. 16 or 128), before per-token INT4 quantization. The rotation redistributes outlier energy across the block. Q is rotated by the same matrix at decode time so the attention math is unchanged.
 
+![BDR module: token-with-outliers × block-diagonal Hadamard → smoothed token → INT4 pack (paper Fig. 1, BDR sub-component)](EN/wiki/llm-inference/saw-int4-figs/bdr-module-rotation.png)
+
+The paper's BDR-module sketch above is the clearest one-figure explanation: a head-dim row with outlier energy on the left (the warm/cold-coloured stripe), multiplied by a block-diagonal Hadamard (the magenta blocks down the diagonal), produces a smoothed row whose energy is uniform — and *that* row is what gets the per-token `(scale, zero)` pair and the 4-bit pack.
+
 The "block-diagonal" qualifier is doing real work. A full Hadamard over the entire head dimension would be $O(d^2)$ memory traffic to apply (or $O(d \log d)$ with FWHT but with worse cache behaviour on small head dims) and incompatible with paged KV layouts that group by head. Splitting `head_dim` into blocks of size $H$ (where $H \mid \text{head\_dim}$) and rotating each block independently has three properties:
 
 1. **Cost.** Rotation is $O(d \log H)$ instead of $O(d \log d)$ — for $d = 128$, $H = 16$ this is 4 butterfly stages instead of 7.
@@ -109,7 +135,11 @@ $H_d$ is orthogonal: $H_d^\top H_d = I$. The $1/\sqrt{d}$ normalization is what 
 
 ## How it works
 
-### Where BDR sits in the inference pipeline
+The end-to-end picture is two paths through a paged KV buffer — one with BDR, one without. The paper's overview figure shows both, with the BDR module sitting in front of every K (and optionally V) write, and the same rotation applied to Q inside the Triton decode kernel:
+
+![SAW-INT4 system overview: BDR in prefill + decode KV writes and fused Q rotation inside the Triton attention kernel (paper Fig. 1)](EN/wiki/llm-inference/saw-int4-figs/system-architecture.png)
+
+The same picture in ASCII for the page-flow:
 
 ```
                       ┌─ standard SGLang INT4 path ─────────────────────┐
@@ -135,7 +165,7 @@ prefill / decode ────►│ compute K,V (BF16)                          
                       └────────────────────────────────────────────────┘
 ```
 
-### Configuration interface — 4 env vars + 1 CLI flag
+### Component 1 — Configuration interface (4 env vars + 1 CLI flag)
 
 The whole switchable behaviour is exposed as environment variables read once at server start (`memory_pool.py`). The simplicity is intentional — no model surgery, no calibration step for the primary mode.
 
@@ -161,7 +191,7 @@ The full mode matrix (from `docs/bdr_env_vars.md`):
 > [!note] Constraints on `HADAMARD_ORDER`
 > Must be a power of two **and** divide `head_dim`. For Qwen3 (`head_dim = 128`), 16 / 32 / 64 / 128 all qualify. The fused kernel additionally caps the order at `MAX_HADAMARD_ORDER = 4096` to keep `tl.arange(0, order)` from blowing up Triton's compile time.
 
-### The dispatch site (`set_kv_buffer`)
+### Component 2 — The dispatch site (`set_kv_buffer`)
 
 Three paths are available in `set_kv_buffer` of the INT4 KV pool. The fast path is the default; the slow path exists for debugging:
 
@@ -188,7 +218,6 @@ if self.dtype == "int4":
             return
 
         # SLOW PATH: split rotate → quantize via fast_hadamard_transform.
-        # Reshape last dim into (n_blocks, block).
         orig_shape = cache_k.shape                               # (..., head_dim)
         cache_k = cache_k.view(*orig_shape[:-1],
                                orig_shape[-1] // hadamard_order,
@@ -216,7 +245,7 @@ Three things to pull out:
 - **The $1/\sqrt{H}$ normalization** keeps the Hadamard transform an *isometry* (preserves the $L_2$ norm). Without it, BF16 magnitudes would shift and the per-token scale calibration would be off. The slow path is explicit about this; the fused kernel has it baked into `PRE_SCALE`.
 - **`scales_zeros` is a separate buffer.** The paged KV layout stores the INT4-packed bytes in `k_buffer` / `v_buffer` and the `(scale, zero)` pair *per (token, head)* in `k_scales_zeros` / `v_scales_zeros`. The kernel writes both buffers atomically — there's no stale-pair race.
 
-### Inside the fused Triton kernel
+### Component 3 — Inside the fused Triton kernel
 
 The fused kernel is in `python/sglang/QuantKernel/fused_hadamard_int4_kv.py`. Three logical pieces matter: the FWHT butterfly, the per-token min/max + INT4 pack, and the launch grid that processes multiple heads per program.
 
@@ -323,61 +352,9 @@ A few details worth highlighting:
 
 #### The launcher
 
-```python
-def quantized_set_kv_int4_hadamard_fused_triton(
-    cache_k, cache_v, loc,
-    k_cache_buffer, v_cache_buffer,
-    k_scales_zeros_buffer, v_scales_zeros_buffer,
-    hadamard_order: int,
-    work_k=None, work_v=None,                  # legacy; ignored
-    rotate_v: bool = True,
-    heads_per_program: Optional[int] = None,
-) -> None:
-    num_tokens, num_heads, head_dim = cache_k.shape
-    assert cache_v.shape == cache_k.shape
-    assert head_dim % 2 == 0
-    _validate_hadamard_order_impl(hadamard_order, head_dim)
+When `rotate_v=False`, V is *not* skipped — it's quantized into the same paged buffer using the existing `_quantized_set_kv_int4_kernel`, with the same `HEADS_PER_PROGRAM` tiling so the V launch perfectly matches the K launch's grid. The two launches share `loc` and the per-token scale-zero layout, so KV remain consistent. See the full launcher in `fused_hadamard_int4_kv.py`.
 
-    hpp = (heads_per_program
-           if heads_per_program is not None
-           else _fused_default_heads_per_program(head_dim, num_heads))
-    hpp = min(max(1, hpp), num_heads)
-
-    kernel, cfg = _get_kernel(head_dim, hadamard_order)   # JIT cache keyed on (head_dim, order, rev)
-    fused_grid = (num_tokens, triton.cdiv(num_heads, hpp))
-
-    def _launch(inp, cache_buf, sz_buf):
-        kernel[fused_grid](
-            inp, loc, cache_buf, sz_buf,
-            num_tokens, num_heads,
-            cfg["head_dim_"], cfg["head_dim_pad_"],
-            inp.stride(0),       inp.stride(1),       inp.stride(2),
-            cache_buf.stride(0), cache_buf.stride(1), cache_buf.stride(2),
-            sz_buf.stride(0),    sz_buf.stride(1),    sz_buf.stride(2),
-            LOG=cfg["LOG"], PRE_SCALE=cfg["PRE_SCALE"],
-            BLOCK_HALF=cfg["BLOCK_HALF"], HEADS_PER_PROGRAM=hpp,
-        )
-
-    _launch(cache_k, k_cache_buffer, k_scales_zeros_buffer)
-
-    if rotate_v:
-        _launch(cache_v, v_cache_buffer, v_scales_zeros_buffer)
-    else:
-        # ROTATE_V=0: V goes through the plain INT4 kernel — same tiling, no rotation.
-        _quantized_set_kv_int4_kernel[(num_tokens, triton.cdiv(num_heads, hpp))](
-            cache_v, loc, v_cache_buffer, v_scales_zeros_buffer,
-            num_tokens, num_heads, head_dim,
-            cache_v.stride(0), cache_v.stride(1), cache_v.stride(2),
-            v_cache_buffer.stride(0), v_cache_buffer.stride(1), v_cache_buffer.stride(2),
-            v_scales_zeros_buffer.stride(0), v_scales_zeros_buffer.stride(1), v_scales_zeros_buffer.stride(2),
-            BLOCK_SIZE_DIM=triton.next_power_of_2(head_dim // 2),
-            HEADS_PER_PROGRAM=hpp, num_warps=1, num_stages=1,
-        )
-```
-
-The clever bit: when `rotate_v=False`, V is *not* skipped — it's quantized into the same paged buffer using the existing `_quantized_set_kv_int4_kernel`, with the same `HEADS_PER_PROGRAM` tiling so the V launch perfectly matches the K launch's grid. The two launches share `loc` and the per-token scale-zero layout, so KV remain consistent.
-
-### Q-correction at decode
+### Component 4 — Q-correction at decode
 
 A Hadamard rotation on K only preserves the attention dot product $Q \cdot K^\top$ if Q is rotated by the same matrix. The fork applies this in the GQA decode kernel itself, gated by the same `SGLANG_FUSE_HADAMARD_INT4_KV` env (`triton_backend.py:1042-1058`):
 
@@ -450,99 +427,62 @@ Storage per `(token, head)`:
 > [!example] Memory math for Qwen3
 > With `head_dim = 128` and 4 KV heads (GQA), one token costs $4 \times (64 + 8) = 288$ bytes for KV cache after BDR + INT4 — vs. $4 \times 128 \times 2 = 1024$ bytes for BF16, a **3.55× reduction** end-to-end. Not quite 4× because of the scales/zeros sidecar.
 
-### Running it
+### Supporting machinery (skim or skip)
 
-The user-facing surface is a single env-var flip on top of an SGLang launch:
+> [!note]- Running it — env-var matrix → launch commands
+> The user-facing surface is a single env-var flip on top of an SGLang launch:
+>
+> ```bash
+> # BF16 baseline
+> python -m sglang.launch_server \
+>   --prefill-attention-backend fa3 --decode-attention-backend triton \
+>   --model-path "Qwen/Qwen3-4B-Thinking-2507" --port 30000 \
+>   --kv-cache-dtype auto
+>
+> # Plain INT4 KV (the model collapses on reasoning tasks)
+> python -m sglang.launch_server ... --kv-cache-dtype int4
+>
+> # INT4 + BDR (K-only, block size 128) — the recommended primary mode
+> HADAMARD=1 HADAMARD_ORDER=128 \
+> python -m sglang.launch_server ... --kv-cache-dtype int4
+>
+> # INT4 + BDR (K + V, block size 16)
+> HADAMARD=1 ROTATE_V=1 HADAMARD_ORDER=16 \
+> python -m sglang.launch_server ... --kv-cache-dtype int4
+>
+> # Slow reference path (fast-hadamard-transform CUDA + plain INT4 kernel) — for debugging
+> HADAMARD=1 HADAMARD_ORDER=128 SGLANG_FUSE_HADAMARD_INT4_KV=0 \
+> python -m sglang.launch_server ... --kv-cache-dtype int4
+> ```
+>
+> A short OpenAI-client smoke test (`scripts/bdr_smoke_test.py`) sends a GPQA question to verify the install. A coherent answer to the chemistry problem confirms BDR is wired through.
 
-```bash
-# BF16 baseline
-python -m sglang.launch_server \
-  --prefill-attention-backend fa3 --decode-attention-backend triton \
-  --model-path "Qwen/Qwen3-4B-Thinking-2507" --port 30000 \
-  --kv-cache-dtype auto
+> [!note]- K-means ablation pipeline — open if you're comparing against centroid quantizers
+> A separate sub-repo (`third_party/sglang-kmeans`, branch `jinda_kmeans_rotation_dump` of the same fork) implements an alternative quantizer: instead of scale-and-zero, cluster KV vectors into $N$ centroids per layer and store cluster indices. Calibration is offline:
+>
+> ```bash
+> # 1. Dump KV activations from a BF16 server.
+> DUMP_KVCACHE=true DUMP_KVCACHE_TOKENS=512 DUMP_KVCACHE_DIR=/path/to/dumps \
+> python -m sglang.launch_server ... --kv-cache-dtype auto
+>
+> # 2. Fit per-layer centroids (tools/fit_kv_centroids.py).
+> python tools/fit_kv_centroids.py \
+>   --dump-dir /path/to/dumps \
+>   --out-dir  /path/to/centroids \
+>   --n-clusters 16 --seed 0
+>
+> # 3. Serve INT4 + k-means.
+> N_CLUSTERS=16 SGLANG_KV_CENTROIDS_PATH=/path/to/centroids \
+> python -m sglang.launch_server ... --kv-cache-dtype int4
+> ```
+>
+> `fit_kv_centroids.py` is ~100 lines. Optional rotation stacks on top via the same `HADAMARD` / `ROTATE_V` env vars. The README's k-means ablation accuracy table is empty (placeholder rows), which is honest but means the published comparison rests on the GPQA-only primary result.
 
-# Plain INT4 KV (the model collapses on reasoning tasks)
-python -m sglang.launch_server ... --kv-cache-dtype int4
+## Headline evidence
 
-# INT4 + BDR (K-only, block size 128) — the recommended primary mode
-HADAMARD=1 HADAMARD_ORDER=128 \
-python -m sglang.launch_server ... --kv-cache-dtype int4
+**Hardware.** 1× H100 80 GB, TP = 1 for the accuracy run; Qwen3-8B/32B and GLM-4.7 throughput sweeps on a small H100 cluster.
 
-# INT4 + BDR (K + V, block size 16)
-HADAMARD=1 ROTATE_V=1 HADAMARD_ORDER=16 \
-python -m sglang.launch_server ... --kv-cache-dtype int4
-
-# Slow reference path (fast-hadamard-transform CUDA + plain INT4 kernel) — for debugging
-HADAMARD=1 HADAMARD_ORDER=128 SGLANG_FUSE_HADAMARD_INT4_KV=0 \
-python -m sglang.launch_server ... --kv-cache-dtype int4
-```
-
-A short OpenAI-client smoke test (`scripts/bdr_smoke_test.py`) sends a GPQA question to verify the install:
-
-```python
-from openai import OpenAI
-client = OpenAI(api_key="EMPTY", base_url=f"http://0.0.0.0:{port}/v1")
-response = client.chat.completions.create(
-    model="Qwen/Qwen3-4B-Thinking-2507",
-    messages=[{"role": "user", "content": GPQA_SAMPLE}],
-    temperature=0.6, top_p=0.95, max_tokens=32768, stream=True,
-)
-```
-
-A coherent answer to the GPQA chemistry problem (about TLC polarities) confirms BDR is wired through.
-
-### K-means ablation pipeline
-
-A separate sub-repo (`third_party/sglang-kmeans`, branch `jinda_kmeans_rotation_dump` of the same fork) implements an alternative quantizer: instead of scale-and-zero, cluster KV vectors into $N$ centroids per layer and store cluster indices. Calibration is offline:
-
-```bash
-# 1. Dump KV activations from a BF16 server.
-DUMP_KVCACHE=true DUMP_KVCACHE_TOKENS=512 DUMP_KVCACHE_DIR=/path/to/dumps \
-python -m sglang.launch_server ... --kv-cache-dtype auto
-
-# 2. Fit per-layer centroids (tools/fit_kv_centroids.py).
-python tools/fit_kv_centroids.py \
-  --dump-dir /path/to/dumps \
-  --out-dir  /path/to/centroids \
-  --n-clusters 16 --seed 0
-
-# 3. Serve INT4 + k-means.
-N_CLUSTERS=16 SGLANG_KV_CENTROIDS_PATH=/path/to/centroids \
-python -m sglang.launch_server ... --kv-cache-dtype int4
-```
-
-`fit_kv_centroids.py` is small and concrete:
-
-```python
-# Per layer:
-blob = torch.load(f"kv_calibration_layer_{L}.pt")  # {'k': [T,H,D], 'v': [T,H,D]}
-xk = blob["k"].reshape(T, H * D).float().numpy()    # flatten heads × dims
-xv = blob["v"].reshape(T, H * D).float().numpy()
-km_k = KMeans(n_clusters=16, n_init=10, max_iter=300).fit(xk)
-km_v = KMeans(n_clusters=16, n_init=10, max_iter=300).fit(xv)
-torch.save(km_k.cluster_centers_, f"k_layer_{L}_clusters_16_centers.pt")
-torch.save(km_v.cluster_centers_, f"v_layer_{L}_clusters_16_centers.pt")
-```
-
-Whole script ≈100 lines. Optional rotation can stack on top of k-means via the same `HADAMARD` / `ROTATE_V` env vars — the README documents this matrix:
-
-| Method            | `HADAMARD` | `ROTATE_V`     | `--kv-cache-dtype` | `SGLANG_KV_CENTROIDS_PATH` |
-| ----------------- | ---------- | -------------- | ------------------ | -------------------------- |
-| K-means + INT4    | `0`        | `0`            | `int4`             | required                   |
-| K-means + BDR     | `1`        | `0` or `1`     | `int4`             | required                   |
-
-> [!warning] Empty ablation table
-> The README's ablation accuracy table for these methods is empty (placeholder rows), which is honest but means the published comparison rests on the GPQA-only primary result.
-
----
-
-## Experiments
-
-**Hardware.** 1× H100 80 GB, TP = 1.
-
-### Accuracy
-
-Qwen3-4B-Thinking-2507, GPQA, `temp=0.6`, `top_p=0.95`, 3 repeats, 32 K context:
+**Accuracy — the cliff and the recovery.** Qwen3-4B-Thinking-2507, GPQA, `temp=0.6`, `top_p=0.95`, 3 repeats, 32 K context:
 
 | Config                              | GPQA       |
 | ----------------------------------- | ---------- |
@@ -550,30 +490,42 @@ Qwen3-4B-Thinking-2507, GPQA, `temp=0.6`, `top_p=0.95`, 3 repeats, 32 K context:
 | INT4 KV                             | 0 %        |
 | **INT4 + BDR (K-only, ord=128)**    | **65.82 %** |
 
-### Throughput
+> [!success] BDR recovers the model
+> Plain INT4 disables Qwen3-Thinking. BDR brings it back to within 1 pp of BF16. That is the entire paper in one row.
 
-Qwen3-8B, GenAI-Bench, traffic `D(256, 1024)` short and `D(16384, 1024)` long.
+**Throughput — BDR is free, plain INT4 is broken, BF16 falls off a cliff at scale.** The paper's headline throughput plot (Qwen3-8B, GenAI-Bench) compares against Hugging Face static/dynamic FP16, HF KIVI INT4, Kitty-Pro, SGLang BF16, and **SGLang INT4 + BDR**:
 
-**Short context** (256 input / 1024 output), concurrency sweep — job-level `output_tps` (tokens/s aggregated across requests) and TTFT in ms:
+![Per-GPU throughput vs batch size (Qwen3-8B): SGLang INT4 + BDR is the top curve at every batch size (paper Fig. 2/3)](EN/wiki/llm-inference/saw-int4-figs/throughput-vs-batchsize.png)
 
-| Concurrency | BF16            | INT4            | INT4 + BDR              |
-| ----------: | --------------: | --------------: | ----------------------: |
-|  32         | 3,795 / 196     | 3,687 / 225     | 3,689 / 226             |
-|  64         | 5,950 / 369     | 6,371 / 370     | 6,235 / 377             |
-| 128         | 8,410 / 657     | 9,544 / 665     | 9,350 / 655             |
-| 256         | 11,195 / 1,224  | 11,624 / 1,237  | **11,732 / 1,148**      |
+Two readings of this plot worth highlighting: (1) at every batch size INT4 + BDR meets or exceeds SGLang BF16; (2) the rotation cost is invisible — BDR's curve sits directly on top of SGLang INT4 once both have left the small-batch regime. Continuous batching plus paging are what let INT4 + BDR realize its memory savings as throughput.
 
-**Long context** (16,384 input / 1,024 output), concurrency sweep:
+**Latency–throughput Pareto across four models.** The same trade-off shown as TPS-per-request (latency) against per-GPU TPS (throughput), at concurrencies 1 / 8 / 16 / 32 / 256:
 
-| Concurrency | BF16             | INT4             | INT4 + BDR        |
-| ----------: | ---------------: | ---------------: | ----------------: |
-|   8         |   414 / 2,636    |   458 / 2,631    |   457 / 2,523     |
-|  16         |   481 / 5,104    |   571 / 4,956    |   568 / 4,875     |
-|  32         |   570 / 18,047   |   618 / 9,568    |   616 / 9,350     |
-|  64         |   471 / 44,798   |   666 / 19,398   |   663 / **18,371** |
-| 128         |   559 / 113,583  |   701 / 57,654   |   701 / **57,054** |
+![TPS_req vs per-GPU TPS_sys on Qwen3-4B/8B/32B and GLM-4.7 (paper Fig. 4)](EN/wiki/llm-inference/saw-int4-figs/throughput-latency-curves.png)
 
-The pattern: BDR's throughput numbers are within noise of plain INT4, and at concurrency ≥ 256 / long context they actually edge ahead on `output_tps` and TTFT. At high concurrency BF16 falls behind dramatically (113 s TTFT at conc-128 long context vs. ~57 s for INT4 / BDR) because its 4× larger KV cache pushes the system into memory pressure.
+The pattern is consistent across all four models: BDR's Pareto curve sits at or above plain INT4, and BF16 falls off the right edge of every plot at high concurrency because its 4× larger KV cache pushes the system into memory pressure.
+
+> [!example]- Tabular throughput data (drill-down)
+> **Short context** (256 input / 1024 output), Qwen3-8B — job-level `output_tps` (tokens/s aggregated across requests) and TTFT in ms:
+>
+> | Concurrency | BF16            | INT4            | INT4 + BDR              |
+> | ----------: | --------------: | --------------: | ----------------------: |
+> |  32         | 3,795 / 196     | 3,687 / 225     | 3,689 / 226             |
+> |  64         | 5,950 / 369     | 6,371 / 370     | 6,235 / 377             |
+> | 128         | 8,410 / 657     | 9,544 / 665     | 9,350 / 655             |
+> | 256         | 11,195 / 1,224  | 11,624 / 1,237  | **11,732 / 1,148**      |
+>
+> **Long context** (16,384 input / 1,024 output):
+>
+> | Concurrency | BF16             | INT4             | INT4 + BDR        |
+> | ----------: | ---------------: | ---------------: | ----------------: |
+> |   8         |   414 / 2,636    |   458 / 2,631    |   457 / 2,523     |
+> |  16         |   481 / 5,104    |   571 / 4,956    |   568 / 4,875     |
+> |  32         |   570 / 18,047   |   618 / 9,568    |   616 / 9,350     |
+> |  64         |   471 / 44,798   |   666 / 19,398   |   663 / **18,371** |
+> | 128         |   559 / 113,583  |   701 / 57,654   |   701 / **57,054** |
+>
+> At concurrency ≥ 256 / long context BDR even edges ahead of plain INT4 on `output_tps` and TTFT. BF16's TTFT at conc-128 long context (113 s) vs. INT4 / BDR (~57 s) shows what happens when a 4× larger KV cache meets memory pressure.
 
 > [!note] Why BDR sometimes *beats* plain INT4 on TTFT
 > The BDR kernel touches `cache_k` and writes the scales/zeros buffer in the same memory pass that plain INT4 would have done, so the *added* rotation cost is amortized into work that already had to happen. Kernel fusion turns a potential 5–10 % overhead into a free lunch — exactly the framing the paper wants.
@@ -584,34 +536,33 @@ The accuracy story is the headline: BDR is the difference between a usable reaso
 
 ## Strengths and limitations
 
-The two strongest points: (1) the technique is **minimally invasive** — four env vars and a forked kernel, no model retraining or calibration; (2) the **fused kernel** turns what could have been a 5–10 % overhead into measurement noise, because rotation, normalization, and quantization share the same memory pass that INT4 already needed. The system-aware framing in the title is earned.
+The two strongest points: (1) the technique is **minimally invasive** — four env vars and a forked kernel, no model retraining or calibration; (2) the **fused kernel** turns what could have been a 5–10 % overhead into measurement noise, because rotation, normalization, and quantization share the same memory pass that INT4 already needed.
 
 Where the work is honest about its scope but the limits matter:
 
-- **MHA only.** The README explicitly disallows MLA. DeepSeek-V3-style architectures (where MLA cuts KV cache by another huge factor by storing a low-rank projection of K) can't use BDR as written — the rotation would have to interact with the up-projection from the compressed representation. Whether the same idea translates is an open question the paper does not take on.
-- **Backend constraints.** Decode uses Triton GQA; prefill uses FA3. Switching attention backends elsewhere in SGLang or porting to vLLM is non-trivial — the Q-correction has to land inside whichever decode kernel you use. The slow path (`SGLANG_FUSE_HADAMARD_INT4_KV=0`) gives portability at a cost.
-- **One head_dim block size, one model family.** Primary numbers are Qwen3-4B-Thinking-2507 (accuracy) and Qwen3-8B (throughput). The repo notes `HADAMARD_ORDER=128` as the primary BDR result but the env-var docs example uses `16`. The paper does not appear to systematically sweep block size against accuracy across multiple model families.
-- **Single benchmark for accuracy.** GPQA is the *only* accuracy result in the README. GPQA stresses long-form scientific reasoning, which is where INT4 fails hardest, so it's a fair stress test — but a single benchmark for a quantization paper is thin. MMLU, MATH, HumanEval, and longer-context retrieval suites (e.g., RULER) are all reasonable next steps.
-- **Ablation table is empty.** The k-means ablation matrix in the README has placeholder cells. Whether BDR strictly dominates k-means or only matches it isn't shown — the paper claims more sophisticated methods give "marginal gains" but the table to back this up isn't published in the repo.
-- **No comparison to alternatives in published systems.** [[quantization|KIVI]], NVFP4, FP8 KV, ShadowKV, KVTC — all live in the same problem space (see [[kv-cache-optimization]]). Comparing throughput and accuracy across these is the obvious follow-up; the paper restricts itself to BF16 vs. plain INT4 vs. BDR.
-- **Random Hadamard, not learned.** SpinQuant showed that learned rotations beat random Hadamard for weight + activation quantization. The paper doesn't try a learned per-layer rotation matrix, which would be an obvious accuracy lever at the cost of an offline calibration step.
-- **Python-level Hadamard fallback exists for debugging.** When `SGLANG_FUSE_HADAMARD_INT4_KV=0`, BDR uses `Dao-AILab/fast-hadamard-transform` then writes; this path is slower because it adds a global memory round-trip. The default is fast, but anyone porting the idea to a serving stack without a Triton-friendly attention backend will hit this overhead.
+- **MHA only.** The README explicitly disallows MLA — DeepSeek-V3-style architectures can't use BDR as written. Whether the same idea translates is an open question the paper does not take on.
+- **Backend constraints.** Decode uses Triton GQA; prefill uses FA3. Porting to vLLM is non-trivial — the Q-correction has to land inside whichever decode kernel you use.
+- **One block size, primarily one model family for accuracy.** Qwen3-4B-Thinking-2507 is the lone accuracy result; throughput is sweeped on Qwen3-8B/32B and GLM-4.7 but no accuracy is shown for those. The README's `HADAMARD_ORDER=128` vs. env-var-docs `16` is unexplained.
+- **Single benchmark for accuracy.** GPQA is the only number. MMLU, MATH, HumanEval, RULER are all reasonable next steps for a quantization paper.
+- **Empty k-means ablation table.** Whether BDR strictly dominates k-means or only matches it isn't shown; the paper claims "marginal gains" from more sophisticated methods but the supporting table is placeholder.
+- **No comparison to alternatives in published systems.** [[quantization|KIVI]], NVFP4, FP8 KV, ShadowKV, KVTC — all live in the same problem space; SAW-INT4 restricts itself to BF16 vs. plain INT4 vs. BDR.
+- **Random Hadamard, not learned.** SpinQuant showed learned rotations beat random Hadamard for weight + activation quantization. Not tried here.
+- **Python-level Hadamard fallback is slower.** `SGLANG_FUSE_HADAMARD_INT4_KV=0` adds a global memory round-trip; anyone porting to a stack without a Triton-friendly attention backend hits this overhead.
+
+> [!warning] The empty k-means ablation is load-bearing
+> The README ablation matrix has placeholder cells. The "more sophisticated methods give marginal gains" claim is what justifies the paper choosing the simpler BDR + per-token INT4 design — without the supporting table, the architectural choice is asserted, not shown.
 
 > [!bug] Documentation port mismatch
 > `scripts/bdr_smoke_test.py` defaults to `--port 30000` (matching the launch examples), but the README's smoke-test snippet shows `--port 30001` for no apparent reason. Trivial to fix, but a sign the OSS release was rushed.
 
----
-
 ## What this means
 
-The bigger lesson here is the same as in [[paged-attention|PagedAttention]] or [[sglang|RadixAttention]]: **the right granularity for inference optimization is the kernel, not the model.** SAW-INT4 doesn't propose a new quantization scheme so much as it proves that *plain* per-token INT4 is fine if you do one thing right at the kernel level — rotate before you quantize, in blocks the paged layout can swallow. That has two implications I'd watch:
+The bigger lesson here is the same as in [[paged-attention|PagedAttention]] or [[sglang|RadixAttention]]: **the right granularity for inference optimization is the kernel, not the model.** SAW-INT4 doesn't propose a new quantization scheme so much as it proves that *plain* per-token INT4 is fine if you do one thing right at the kernel level — rotate before you quantize, in blocks the paged layout can swallow. Two implications I'd watch:
 
-1. **Block-diagonal Hadamard is going to spread.** It's small enough to be a free addition to any INT4 KV path, the math is well-known (FWHT has been textbook material since the 1970s), and the kernel work is mostly done in the SGLang fork. Expect [[vllm|vLLM]] and [[tensorrt-llm|TensorRT-LLM]] to pick this up; expect the same trick to be tried on weight quantization (where QuaRot already shows it helps) and activation quantization for FP8.
+1. **Block-diagonal Hadamard is going to spread.** It's small enough to be a free addition to any INT4 KV path, the math is well-known (FWHT has been textbook material since the 1970s), and the kernel work is mostly done in the SGLang fork. Expect [[vllm|vLLM]] and TensorRT-LLM to pick this up; expect the same trick to be tried on weight quantization (where QuaRot already shows it helps) and activation quantization for FP8.
 2. **The "system-aware" framing is the more durable contribution.** The paper's recurring point — that vector quantization and Hessian-aware methods give "marginal gains under real serving constraints" — is really an argument that algorithmic sophistication has run into a wall, and the remaining gains live in the kernels and memory layout. That argument is going to keep being right; expect more 2026 papers to be about *fusing* known techniques into the right kernel rather than inventing new techniques.
 
 What this is *not*: a solution for [[long-context-serving|long-context serving]] of MLA-style models, an answer for non-NVIDIA hardware, or evidence that INT4 is "solved." It's a clean, narrow result on a real problem.
-
----
 
 ## Source code & reproduction
 
@@ -653,8 +604,6 @@ Files worth reading next, with the role of each:
 | `scripts/bdr_smoke_test.py`                                                                | minimal OpenAI-client GPQA verification.                                                                                                                         |
 | `scripts/run_genai_bench_example.sh`                                                       | throughput sweep helper.                                                                                                                                         |
 | `scripts/run_primary_eval_matrix.sh`                                                       | primary accuracy/speed sweep helper.                                                                                                                             |
-
----
 
 ## Related reading
 

@@ -3,7 +3,7 @@ title: "DAS: Distribution-Aware Speculative Decoding for RL Training"
 category: llm-inference
 tags: [speculative-decoding, rl-training, rollout, suffix-tree, ukkonen, long-tail, paper-review]
 created: 2026-05-13
-updated: 2026-05-13
+updated: 2026-05-21
 status: mature
 paper: arXiv:2511.13841
 ---
@@ -15,10 +15,40 @@ paper: arXiv:2511.13841
 > - **Code**: not yet released
 > - **Authors**: Zelei Shao, Vikranth Srivatsa, Sanjana Srivastava, Qingyang Wu, Alpay Ariyak, Xiaoxia Wu, Ameen Patel, Jue Wang, Percy Liang, Tri Dao, Ce Zhang, Yiying Zhang, Ben Athiwaratkun, Chenfeng Xu, Junxiong Wang
 
-> [!abstract]+ TL;DR
-> RL post-training spends most of its wall time *generating rollouts*, not computing gradients — and the rollout distribution is **long-tailed**, so the longest few samples set the batch's makespan. DAS attacks this with two ideas that compound. **(1) A suffix-tree drafter built online from recent rollouts**, refreshed every iteration via Ukkonen's algorithm in $O(m)$ per insert, with per-problem trees + a prefix trie router — no pre-trained drafter, no extra GPU, draft proposals match the policy as it drifts during training. **(2) A length-aware speculation policy** that solves an explicit makespan-minimization problem ($t_{\text{total}} = c_{\text{base}} N_{\text{fwd}} + c_{\text{tok}} N_{\text{toks}} + C$) and concludes that *longer-expected rollouts should get more aggressive draft budgets and short ones should turn speculation off entirely*, packaged as a three-class Long/Medium/Short heuristic. Results: **>50 % rollout-time reduction** on math RL (DeepSeek-R1-Distill-Qwen-7B on DSR-sub, 1× 8×H100, batch 128, 30 steps) and **~25 %** on code RL (Qwen3-8B on DeepCoder, 2× 8×H100), reward curves identical to vanilla.
+---
+
+## Summary (read this if you have 2 minutes)
+
+**What it is.** DAS is a speculative-decoding system designed for the *rollout* phase of RL post-training. It plugs into vLLM / SGLang-style engines and accelerates the inference path that dominates 70 %+ of training wall-time, without changing the trainer or the reward signal.
+
+**The one idea.** Two halves stitched into one system, each addressing a structural problem with generic spec-decoding under a non-stationary policy and long-tailed rollouts:
+
+1. **A self-evolving suffix-tree drafter.** Built online from the policy's *own recent rollouts* via Ukkonen's $O(m)$ insert; partitioned per-problem with a prefix-trie router. No pre-trained drafter, no extra GPU, no calibration data, no drift as the policy moves.
+2. **A length-aware budget policy** derived from an explicit batch-makespan model. The closed-form optimum says *long-expected rollouts get aggressive draft budgets and short ones turn speculation off entirely*. Packaged as a Long/Medium/Short three-class heuristic over recent length statistics.
+
+Remove the first and you re-pay the drafter-drift tax that breaks EAGLE/Medusa under RL; remove the second and you burn ~15 % of the speedup paying overhead on short-tail samples.
+
+**Headline result.**
+
+| Workload                              | Hardware       | Rollout-time reduction | Reward curve         |
+| ------------------------------------- | -------------- | ---------------------: | -------------------- |
+| Math RL — DeepSeek-R1-Distill-Qwen-7B on DSR-sub | 1× 8×H100      | **> 50 %**             | identical to VeRL    |
+| Code RL — Qwen3-8B on DeepCoder       | 2× 8×H100      | **~25 %**              | identical to VeRL    |
+
+The headline >50 % is averaged across an entire 30-step run, not a cherry-picked step — the harder claim is that the drafter keeps up *as the policy drifts*. The critical ablation: removing the distribution-aware budget (uniform unlimited speculation) loses up to **15 %** of the speedup. The architectural choice — *turn speculation off for short requests* — is what makes the math work.
+
+**Why it matters.**
+
+- **Drafter is free.** No GPU memory, no second model, no retraining loop. It's a CPU-side suffix tree fed by the rollouts you have to materialize anyway.
+- **Drop-in for the inference path.** Doesn't touch trainer code; lossless rejection sampling preserves the target distribution.
+- **Reframes the problem.** RL rollouts aren't a per-request-latency problem; they're a *batch makespan* problem. The right cost model gives a closed-form budget that no $\gamma$-sweep would find.
+- **12-month prediction.** Speculative decoding for *training* (not just serving) will spawn a wave of follow-ups; expect the drafter and the policy to keep merging toward "the policy is the drafter."
 
 ---
+
+# Depth (drill-down starts here)
+
+The summary above is the executive layer. Everything below is for the careful reader who wants the cost model, the suffix-tree mechanics, and the code-level integration story.
 
 ## Background: why generic speculative decoding doesn't work in RL rollouts
 
@@ -26,8 +56,12 @@ The headline cost of RLHF / RLVR training is no longer the gradient step — it'
 
 Two structural facts make rollouts painful — and they're exactly what DAS exploits:
 
-1. **The length distribution is long-tailed.** Most samples finish well before the cap, but a few hit the 16 K limit or come close. Batch wall time is set by the **last** sample, not the average. Cutting the median rollout time in half does nothing for the step's makespan.
-2. **The policy is non-stationary.** The model is being updated every iteration. Any drafter you train ahead of time (EAGLE, Medusa, a small distilled model) decays as the policy drifts — and re-training the drafter every step is its own training loop.
+1. **The length distribution is long-tailed.** Most samples finish well before the cap, but a few hit the 16 K limit or come close. Batch wall time is set by the **last** sample, not the average.
+2. **The policy is non-stationary.** Any drafter you train ahead of time (EAGLE, Medusa, a small distilled model) decays as the policy drifts — and re-training the drafter every step is its own training loop.
+
+The paper's Fig. 1 is a direct picture of long-tail collapse: as decoding progresses, short sequences finish first and the *effective* batch size shrinks, leaving a few stragglers to determine the step makespan.
+
+![Effective batch-size collapse during rollout, paper Fig. 1](EN/wiki/llm-inference/das-spec-rl-figs/batch-size-collapse.png)
 
 [[speculative-decoding|Generic speculative decoding]] solves the per-request latency problem in serving (lossless 2–6× speedup using a draft model that proposes tokens for the target to verify in parallel). Naively applied to RL rollouts it breaks on both points:
 
@@ -60,23 +94,19 @@ DAS arrives in a wave of RL-specific speculative-decoding papers in late 2025 / 
 >
 > **Why per-problem?** A single global tree would mix together samples from chemistry questions, Lean proofs, and Python competitive-programming problems. The substrings that follow "lemma " in a Lean proof have *nothing* to do with the substrings that follow "lemma " in a chemistry essay. Mixing them lowers acceptance rate and inflates the tree. DAS keeps one suffix tree per prompt (or per cluster of related prompts) and uses a small prefix trie as a router so "which tree should I query" is itself $O(m)$. The window of "recent rollouts" controls a bias–stability tradeoff: too narrow and you miss patterns the policy is settling into; too wide and you carry stale samples from an older policy.
 
----
-
-## The key idea, in two halves
+## The two-half architecture
 
 > [!quote] The contribution in one sentence
 > Build the drafter from the **policy's own recent rollouts** (online, per-problem suffix tree via Ukkonen) and pick the **per-request draft budget** to minimize the *batch* makespan (longer expected rollouts get bigger budgets, short ones get speculation turned off).
 
-The two halves are independent contributions stitched into one system:
+The paper's Fig. 3 puts the two halves on one canvas: a length-aware budget allocator on the left feeds per-problem draft budgets into a self-evolving suffix-tree speculator on the right, with rewards from the environment closing the loop back into the next iteration's policy and the next iteration's sliding window of rollouts.
+
+![DAS system overview, paper Fig. 3](EN/wiki/llm-inference/das-spec-rl-figs/system-overview.png)
+
+Two structurally independent contributions stitched into one system:
 
 - **A drafter that follows the policy for free.** No GPU memory, no extra training loop, no calibration data. The tree is built from the rollouts you already have to materialize, and Ukkonen's online algorithm means each new sample is incorporated in linear time. Acceptance rate stays high through training because the drafter *is* the policy's recent behaviour.
 - **A budget policy derived from the actual cost model.** DAS doesn't pick $\gamma$ by sweep; it writes down the cost equation, models acceptance as a function of budget, and solves for the budget that minimizes total batch time given the expected per-request rollout length. The result is a clean closed-form expression and a practical three-bucket heuristic.
-
-The rest of the page makes each half concrete.
-
----
-
-## How it works
 
 ### Where DAS sits in the rollout loop
 
@@ -117,12 +147,12 @@ flowchart TB
     COST --> BUDGET
 ```
 
-Two things to call out from the picture:
+Two things to call out:
 
 - **DAS is a drop-in for the inference path.** It does not change the trainer side at all — gradients, advantages, KL terms, reward shaping all stay where they were. The only new components are inside the rollout engine: the router, the trees, the budget policy, and a thin draft-and-verify wrapper.
 - **The drafter feeds itself.** Every accepted token gets inserted back into its problem's suffix tree (Ukkonen's online extension is amortized $O(1)$ per character), so the drafter improves *within* a single training step as more rollouts complete. This is the structural reason DAS doesn't pay a warm-up cost.
 
-### The suffix tree drafter
+### Half 1 — The suffix-tree drafter
 
 A **suffix tree** for a string $s$ of length $n$ is a compressed trie over all $n$ suffixes of $s$. It answers two questions in $O(m)$ for a query of length $m$:
 
@@ -155,30 +185,25 @@ def das_draft(context, prompt_id, budget_p):
 def rollout_one_step(prompt, policy, max_len=16384):
     context = prompt
     while not done(context) and len(context) < max_len:
-        # 1. Decide budget from length-aware policy (next subsection).
         p = budget_policy(prompt, len(context), recent_length_stats)
-
-        # 2. Build draft from suffix tree.
         draft = das_draft(context, prompt.id, budget_p=p)
-
-        # 3. Parallel verify via the target LLM.
         accepted, resampled = policy.verify(context, draft)
-
-        # 4. Commit accepted tokens, optionally add the resample.
         context += accepted + [resampled]
-
-        # 5. Update the per-prompt suffix tree online (Ukkonen extend).
-        trees[prompt.id].extend(accepted + [resampled])
+        trees[prompt.id].extend(accepted + [resampled])   # Ukkonen extend
     return context
 ```
 
 Three structural choices in this design are worth surfacing because they're not what a textbook spec-decoding write-up would say:
 
-- **The drafter is the *output*, not a separate model.** There's no second forward pass at draft time — just a tree walk. Cost is microseconds even for million-character trees because Ukkonen-style suffix trees are pointer-heavy but very cache-friendly for top-down walks. The verifier is the only thing on the GPU.
-- **Per-problem partitioning is what saves acceptance rate.** A *global* suffix tree (cf. SuffixDecoding) sees every rollout in the system and produces blander drafts because the most-common continuation of any short context is mixed across problem types. DAS partitions by prompt — same chemistry question shares a tree across its 16 samples but not with the Lean proof prompt three slots away — and the prefix trie router resolves "which tree" in $O(m)$ so the partition is essentially free.
-- **The sliding window controls a bias–stability tradeoff.** Too few past rollouts and the tree hasn't seen enough patterns; too many and it carries stale drafts from a policy that has since moved. The paper sweeps this; the practical answer is "the last few iterations of rollouts for this problem," which lines up with what the policy is currently doing.
+- **The drafter is the *output*, not a separate model.** There's no second forward pass at draft time — just a tree walk. Cost is microseconds even for million-character trees because Ukkonen-style suffix trees are pointer-heavy but very cache-friendly for top-down walks.
+- **Per-problem partitioning is what saves acceptance rate.** A *global* suffix tree (cf. SuffixDecoding) sees every rollout in the system and produces blander drafts; DAS partitions by prompt and the prefix trie router resolves "which tree" in $O(m)$ so the partition is essentially free.
+- **The sliding window controls a bias–stability tradeoff.** Too few past rollouts and the tree hasn't seen enough patterns; too many and it carries stale drafts.
 
-### The length-aware speculation policy
+The paper validates the per-problem choice empirically (Fig. 6): problem-scoped histories deliver more accepted tokens *and* lower per-token latency than a single global index. Global trees pay both an index-maintenance tax and an acceptance-rate tax.
+
+![Global vs per-problem suffix trees, paper Fig. 6](EN/wiki/llm-inference/das-spec-rl-figs/global-vs-per-problem.png)
+
+### Half 2 — The length-aware speculation policy
 
 This is the half of the paper that turns a heuristic into a derivation. DAS writes down an explicit makespan model and solves for the optimal draft budget per request.
 
@@ -190,51 +215,35 @@ $$
 
 Without speculation, $N_{\text{fwd}} = N_{\text{toks}} = l_i$, so $t_{\text{total}} \approx (c_{\text{base}} + c_{\text{tok}}) l_i$ — the $c_{\text{base}}$ term dominates because each forward only produces one token. The whole *point* of speculation is to **shrink $N_{\text{fwd}}$ at the cost of inflating $N_{\text{toks}}$** (you verify more tokens per forward, including the rejected ones).
 
-**Acceptance model.** For request $i$ with proposed-token budget $p_i$ across the whole rollout, the expected number of accepted tokens follows a saturating exponential:
+> [!note]- Acceptance model and the closed-form optimal budget (open for the derivation)
+>
+> **Acceptance model.** For request $i$ with proposed-token budget $p_i$ across the whole rollout, the expected number of accepted tokens follows a saturating exponential:
+>
+> $$
+> A_i(p_i) = k_i\, l_i\, \bigl(1 - e^{-\alpha_i p_i / l_i}\bigr)
+> $$
+>
+> where $\alpha_i$ is a per-request *acceptance efficiency* (how good the drafter is for this request) and $k_i \in (0, 1]$ is the *maximum achievable acceptance fraction*. This functional form falls out of an empirical observation, mirrored in EAGLE-style work, that per-position acceptance decays roughly exponentially with position in the draft chain:
+>
+> $$
+> a_{i,k} = a_{i,0}\, e^{-\beta_i (k-1)}
+> $$
+>
+> i.e. the $k$-th draft token after a match-point is exponentially less likely to be accepted than the first. Summing this geometric series and integrating over the rollout length gives the saturating form above.
+>
+> **Optimal budget.** With those pieces, $N_{\text{fwd}}(p_i) = l_i - A_i(p_i) + p_i$ and minimizing $t_i$ in $p_i$ (paper's Eq. 7) gives the closed form:
+>
+> $$
+> \boxed{\,p_i^{\,*} = -\frac{l_i}{\alpha_i}\, \ln\!\Bigl(1 - k_i\bigl(1 - \tfrac{N_{\text{fwd}}}{l_i}\bigr)\Bigr) \quad \text{if } N_{\text{fwd}} < l_i,\quad \text{else } p_i^{\,*} = 0\,}
+> $$
+>
+> Three readings:
+>
+> 1. **$p_i^* \propto l_i$.** Longer expected rollouts deserve proportionally larger draft budgets.
+> 2. **$p_i^* \propto 1/\alpha_i$.** Worse drafters need *more* proposed tokens to extract the same speedup — to a point. Once the drafter is too weak ($N_{\text{fwd}} \geq l_i$), the formula correctly returns $p_i^* = 0$.
+> 3. **The $-\ln(\cdot)$ is the saturation barrier.** $k_i$ is well below 1 (typically 0.6–0.85), which caps the optimal budget at a finite sane number.
 
-$$
-A_i(p_i) = k_i\, l_i\, \bigl(1 - e^{-\alpha_i p_i / l_i}\bigr)
-$$
-
-where $\alpha_i$ is a per-request *acceptance efficiency* (how good the drafter is for this request — high $\alpha_i$ means more accepted tokens per proposed token) and $k_i \in (0, 1]$ is the *maximum achievable acceptance fraction* (you can't accept more tokens than the rollout has, and even with infinite draft tokens some fraction will always reject). This functional form falls out of an empirical observation, mirrored in EAGLE-style work, that per-position acceptance decays roughly exponentially with position in the draft chain:
-
-$$
-a_{i,k} = a_{i,0}\, e^{-\beta_i (k-1)}
-$$
-
-i.e. the $k$-th draft token after a match-point is exponentially less likely to be accepted than the first. Summing this geometric series and integrating over the rollout length gives the saturating form above; $\alpha_i$ is a function of $a_{i,0}$ and $\beta_i$.
-
-**Optimal budget.** With those pieces, $N_{\text{fwd}}$ becomes (forwards needed to consume $l_i$ tokens given that $A_i(p_i)$ tokens come from drafts):
-
-$$
-N_{\text{fwd}}(p_i) = l_i - A_i(p_i) + \frac{p_i}{l_i}\cdot l_i \;\;\Rightarrow\;\; t_i(p_i) = c_{\text{base}}\, N_{\text{fwd}}(p_i) + c_{\text{tok}}\,(l_i + p_i) + C
-$$
-
-Minimizing $t_i$ in $p_i$ and solving (paper's Eq. 7) gives the closed form:
-
-$$
-\boxed{\,p_i^{\,*} = -\frac{l_i}{\alpha_i}\, \ln\!\Bigl(1 - k_i\bigl(1 - \tfrac{N_{\text{fwd}}}{l_i}\bigr)\Bigr) \quad \text{if } N_{\text{fwd}} < l_i,\quad \text{else } p_i^{\,*} = 0\,}
-$$
-
-Three readings of this formula are useful intuition:
-
-1. **$p_i^* \propto l_i$.** Longer expected rollouts deserve proportionally larger draft budgets. The makespan win from speculation scales with how many forwards you can collapse.
-2. **$p_i^* \propto 1/\alpha_i$.** Worse drafters (lower acceptance efficiency) need *more* proposed tokens to extract the same speedup — to a point. Once the drafter is too weak ($N_{\text{fwd}} \geq l_i$), the formula correctly returns $p_i^* = 0$ (don't speculate at all).
-3. **The $-\ln(\cdot)$ is the saturation barrier.** As $p_i \to \infty$ the argument of the log approaches zero from above, and $p_i^*$ explodes — but bounded above by $k_i$. In practice $k_i$ is well below 1 (typically 0.6–0.85 from acceptance-rate measurements), which caps the optimal budget at a finite sane number.
-
-**The three-class hierarchical heuristic.** Solving the optimal-budget formula per request requires estimating $l_i, \alpha_i, k_i$ per request, which is expensive. DAS approximates with a **discrete three-bucket policy** keyed on the *predicted* class of each request:
-
-$$
-\text{Init}_r = \arg\max_{c \in \{\text{Long}, \text{Med}, \text{Short}\}} \#\{r' \sim r : r' \in c\}
-$$
-
-i.e. classify request $r$ by majority class of recent rollouts on similar (same) prompts. Then update at runtime:
-
-$$
-\text{Class}_r \mid l, \text{Init}_r = \arg\max_c P(c \mid l, \text{Init}_r)
-$$
-
-i.e. update the class as the rollout grows and reveals its actual length. The class maps to a draft budget:
+**The three-class hierarchical heuristic.** Solving the optimal-budget formula per request requires estimating $l_i, \alpha_i, k_i$ per request, which is expensive. DAS approximates with a **discrete three-bucket policy** keyed on the *predicted* class of each request (majority class among recent rollouts on similar prompts), updated as the rollout grows and reveals its actual length:
 
 | Class    | Heuristic threshold (approx.)      | Draft budget         | Why                                          |
 | -------- | ---------------------------------- | -------------------- | -------------------------------------------- |
@@ -245,73 +254,67 @@ i.e. update the class as the rollout grows and reveals its actual length. The cl
 > [!important] The most actionable single finding
 > Turning **speculation off** for the short-tail of rollouts is what makes the math work. Naive per-request speculation pays the draft-tree-walk + verify-overhead tax on samples that would have finished in a few tokens anyway; the makespan model says the right answer is *don't speculate at all* on those. The "Long" bucket then gets a much higher budget than uniform-$\gamma$ would have allowed.
 
-The thresholds for Long/Medium/Short aren't published as fixed numbers in the paper — they're set per-workload from the recent rollout-length empirical distribution and re-estimated each iteration. The structure is what generalizes: three buckets, the largest gets the biggest budget, the smallest gets zero.
+The thresholds for Long/Medium/Short aren't published as fixed numbers — they're set per-workload from the recent rollout-length empirical distribution and re-estimated each iteration. The structure is what generalizes: three buckets, the largest gets the biggest budget, the smallest gets zero.
 
----
+## Headline evidence
 
-## Experiments
+**Setup.** Two end-to-end runs on different workloads, both using the standard VeRL trainer as baseline and DAS as the rollout-side modification. Math RL: DeepSeek-R1-Distill-Qwen-7B on the DSR-sub subset of DeepScaleR (1,209 examples), 1× 8×H100, training batch 128, 16 samples per question, max sequence length 16 K, 30 training steps, GRPO with DAPO-style clipping. Code RL: Qwen3-8B on DeepCoder, 2× 8×H100 nodes, per-GPU batch 32, 8 samples per question, max sequence length 16 K, GRPO with code-execution reward.
 
-### Math RL — DeepSeek-R1-Distill-Qwen-7B on DSR-sub
+**The main result.** Math RL: **>50 % reduction in total rollout time**, reward curve identical to VeRL — DAS is lossless (rejection sampling preserves the target distribution exactly; see [[speculative-decoding]]).
 
-**Setup.** 1,209 examples from DeepScaleR (filtered subset called DSR-sub), 1× 8×H100 node, training batch size 128, 16 samples per question, max sequence length 16 K, 30 training steps. The trainer is GRPO-family (DAPO-style clipping).
+![Math RL training curves on DeepSeek-R1-Distill-Qwen-7B, paper Fig. 10](EN/wiki/llm-inference/das-spec-rl-figs/math-rl-training-curves.png)
 
-**Headline.** **> 50 % reduction in total rollout time** vs. the vanilla vLLM/SGLang rollout path. Reward curves are identical: DAS is *lossless* (rejection sampling preserves the target distribution exactly — see [[speculative-decoding]]), so trained-model evaluation matches the no-spec-decoding run within noise.
+Code RL: **~25 % reduction**, again at parity with VeRL on reward.
 
-The >50 % is averaged across the whole 30-step run, not a cherry-picked step. Important because the drafter quality changes as the policy drifts: a flat 50 %+ across the entire training trajectory is the harder claim, and it's the one DAS makes.
+![Code RL training curves on Qwen3-8B, paper Fig. 11](EN/wiki/llm-inference/das-spec-rl-figs/code-rl-training-curves.png)
 
-### Code RL — Qwen3-8B on DeepCoder
+> [!success] The headline number
+> >50 % on math RL is *averaged over the entire 30-step run*, not a cherry-picked step. The drafter quality changes as the policy drifts, so a flat 50 %+ across the whole training trajectory is the harder claim — and the one DAS makes.
 
-**Setup.** 2× 8×H100 nodes, per-GPU batch size 32, 8 samples per question, max sequence length 16 K. Trainer is GRPO with code-execution reward signal (DeepCoder pipeline).
+**The critical ablation: distribution-aware vs. unlimited budget.** Giving every request an unlimited speculative budget *underperforms* the distribution-aware budget by up to **15 %** in rollout time. The heuristic that *turns speculation off* for short requests is worth ~15 % by itself.
 
-**Headline.** **~25 % reduction in rollout time**. Smaller than math RL, but still meaningful — code rollouts have more variety per question than math rollouts (multiple valid solutions, branching control flow), so suffix-tree drafting acceptance rates run lower. The fact that DAS still extracts 25 % when the drafter is *worse* validates the framing: the budget policy correctly under-invests in low-acceptance regimes, capturing whatever speedup is available without paying overhead.
+![Distribution-aware vs unlimited budget ablation, paper Fig. 12](EN/wiki/llm-inference/das-spec-rl-figs/budget-policy-ablation.png)
 
-### Ablations
-
-The paper includes two ablation cuts (Fig. 12, Fig. 13 in the manuscript):
-
-- **Distribution-aware vs. unlimited budget.** Giving every request an unlimited draft budget *underperforms* the distribution-aware budget by **up to 15 %** in rollout time. This is the cost of paying speculative overhead on the short tail — the heuristic that *turns speculation off* for short requests is worth ~15 % in itself.
-- **Robustness vs. sequence length.** At 8 K maximum sequence length, DAS still delivers **> 30 % speedup**. Speedup grows monotonically with max sequence length (longer cap → more tail → more makespan to attack), which is consistent with the makespan model: the optimal budget formula has $p_i^* \propto l_i$.
-
-### A quick wall-clock sanity check
-
-Per the makespan model with $c_{\text{base}} \gg c_{\text{tok}}$ (memory-bandwidth-bound decode), a vanilla rollout of length $l$ costs roughly $l \cdot c_{\text{base}}$. With DAS the same rollout costs roughly $(l - A) c_{\text{base}} + (l + p) c_{\text{tok}}$ where $A$ is the accepted draft count. If $A \approx 0.6 l$ (a realistic acceptance fraction at modest $p$) and $c_{\text{tok}} \ll c_{\text{base}}$, the rollout cost drops to $\approx 0.4 l \cdot c_{\text{base}}$ — a 60 % reduction. That matches the >50 % observed on math RL where suffix-tree acceptance is high; on code RL the drafter is weaker, $A$ is lower, the reduction shrinks to ~25 %. The model and the experiments line up.
-
----
+> [!example]- All experimental results (drill-down)
+>
+> **Robustness vs. sequence length.** At 8 K maximum sequence length, DAS still delivers **>30 % speedup**. Speedup grows monotonically with max sequence length (longer cap → more tail → more makespan to attack), consistent with the makespan model's $p_i^* \propto l_i$.
+>
+> **A wall-clock sanity check.** Per the makespan model with $c_{\text{base}} \gg c_{\text{tok}}$ (memory-bandwidth-bound decode), a vanilla rollout of length $l$ costs roughly $l \cdot c_{\text{base}}$. With DAS the same rollout costs roughly $(l - A) c_{\text{base}} + (l + p) c_{\text{tok}}$ where $A$ is the accepted draft count. If $A \approx 0.6 l$ and $c_{\text{tok}} \ll c_{\text{base}}$, the rollout cost drops to $\approx 0.4 l \cdot c_{\text{base}}$ — a 60 % reduction. That matches the >50 % observed on math RL; on code RL the drafter is weaker, $A$ is lower, the reduction shrinks to ~25 %.
+>
+> **Why code RL gives less.** Code rollouts have more variety per question than math rollouts (multiple valid solutions, branching control flow), so suffix-tree drafting acceptance rates run lower. The fact that DAS still extracts 25 % when the drafter is *worse* validates the framing: the budget policy correctly under-invests in low-acceptance regimes, capturing whatever speedup is available without paying overhead.
 
 ## Strengths and limitations
 
 What's strong about the work:
 
-- **The drafter has no GPU footprint.** No second model loaded, no extra parameters in the optimizer state. A pure CPU-side data structure that absorbs accepted tokens via Ukkonen. For an 8×H100 node already running a 7–8 B-parameter policy plus its optimizer states, "no extra GPU memory" is a real constraint and DAS respects it.
-- **The drafter is automatically up-to-date with the policy.** No retraining loop, no calibration, no scheduling decision. The structure that delivers this — *the policy's own recent output is the drafter* — is the elegant move.
-- **The budget policy is principled.** Most spec-decoding papers pick $\gamma$ by sweep; DAS writes the cost equation and solves it. The closed-form optimal-budget result is the kind of equation that should outlive any specific implementation.
-- **Lossless.** Same rejection sampling as standard speculative decoding, so reward curves and final eval numbers match the no-spec baseline exactly. There's no quality-vs-speed tradeoff to manage.
+- **The drafter has no GPU footprint.** No second model loaded, no extra parameters in the optimizer state. A pure CPU-side data structure that absorbs accepted tokens via Ukkonen.
+- **The drafter is automatically up-to-date with the policy.** No retraining loop, no calibration, no scheduling decision — *the policy's own recent output is the drafter*.
+- **The budget policy is principled.** Closed-form optimal-budget from a cost equation, not a $\gamma$-sweep. The kind of object that should outlive any specific implementation.
+- **Lossless.** Same rejection sampling as standard speculative decoding; reward curves and final eval numbers match the no-spec baseline exactly.
 
 Where the work is honest about scope but the limits matter:
 
-- **No public code yet.** As of submission the paper is an anonymous MLSys submission with no associated GitHub. Reproducing requires reimplementing Ukkonen + per-problem partitioning + makespan-aware budgeting on top of vLLM or SGLang. Concrete kernel hooks (where the drafter call lives in the engine, how the prefix-cache interacts) are not exposed.
-- **Only math and code reasoning are evaluated.** General chat-style RL (RLHF on open-ended preference data) is a different distribution shape — long-tail still applies, but the suffix-tree drafter assumes a lot of substring repetition that holds for math/code (Lean tactics, Python idioms) and may hold less for free-form prose. The paper doesn't test this.
-- **Two model sizes (7 B, 8 B).** Both are in the dense small-model regime. Whether the speedup translates to 70 B / 405 B models or to MoE policies is open. The makespan model says the speedup should *grow* with model size (bigger $c_{\text{base}}$, same $c_{\text{tok}}/c_{\text{base}}$ ratio is unfavourable, so collapsing forwards pays more), but that prediction isn't tested.
-- **No interaction analysis with prefix caching.** Modern serving engines ([[vllm|vLLM]] V1, [[sglang|SGLang]] RadixAttention) reuse KV cache across rollouts of the same prompt. Speculative decoding interacts non-trivially with prefix caches because the prefix is shared but the speculated continuations diverge. The paper doesn't analyse whether DAS *adds* to prefix-cache speedup or *competes* with it.
-- **The three-class heuristic is workload-specific.** Long/Med/Short thresholds are estimated from recent rollouts. The procedure is automatic, but it does mean a workload with a different length distribution (e.g. RL on a fixed-length agentic loop) might want a different bucket count or a continuous policy instead.
-- **No comparison to EAGLE-2 / EAGLE-3 on the RL-rollout setting.** EAGLE-class drafters are the strongest open generic speculative-decoding methods; DAS argues they drift under policy update but doesn't measure how much speedup they retain when retrained periodically vs. DAS's online suffix-tree alternative.
-- **Concurrent and overlapping with SuffixDecoding / SPEC-RL / FastGRPO / RhymeRL.** The contributions distinguish themselves cleanly *on paper* — per-problem trees, length-aware policy — but a head-to-head on the same hardware is not yet published.
+- **No public code yet.** As of submission the paper is an anonymous MLSys submission with no associated GitHub. Concrete kernel hooks (where the drafter call lives in the engine, how the prefix-cache interacts) are not exposed.
+- **Only math and code reasoning are evaluated.** General chat-style RL (RLHF on open-ended preference data) is a different distribution shape — the suffix-tree drafter assumes substring repetition that may hold less for free-form prose. Not tested.
+- **Two model sizes (7 B, 8 B).** Both dense small models. Whether speedup translates to 70 B / 405 B or MoE policies is open. The makespan model predicts the speedup should *grow* with model size, but that prediction isn't tested.
+- **No interaction analysis with prefix caching.** Modern engines ([[vllm|vLLM]] V1, [[sglang|SGLang]] RadixAttention) reuse KV cache across rollouts of the same prompt; whether DAS *adds* to that speedup or *competes* with it is unanalyzed.
+- **No head-to-head vs EAGLE-2 / EAGLE-3 in the RL setting.** DAS argues EAGLE drifts under policy update but doesn't measure how much speedup EAGLE retains under periodic retraining vs. the online suffix-tree alternative.
+- **Concurrent and overlapping with SuffixDecoding / SPEC-RL / FastGRPO / RhymeRL.** Differentiated cleanly on paper (per-problem trees + length-aware policy), but a head-to-head on the same hardware isn't published.
+
+> [!warning] The three-class heuristic is workload-specific
+> Long/Med/Short thresholds are estimated from recent rollouts. The procedure is automatic, but a workload with a different length distribution (e.g. RL on a fixed-length agentic loop) might want a different bucket count or a continuous policy instead.
 
 > [!note] What's the single most transferable lesson?
 > The **makespan-aware budget policy** is the contribution that's hardest to invent and easiest to lift. Even with an EAGLE / Medusa / RhymeRL drafter, the observation that long-tail rollout workloads need *per-request* budgets (and *zero* budget for short requests) is worth ~15 % by itself and applies to any speculative decoder under any RL framework.
-
----
 
 ## What this means
 
 Two slow-burn implications worth tracking:
 
 1. **The drafter and the policy will keep merging.** DAS is one step in a trend that started with EAGLE (feature-level draft from the target's own hidden states) and continues through SuffixDecoding (no model at all, just past outputs). The natural endpoint is "the policy *is* the drafter, and there is no second model" — which DAS approaches by using the policy's recent rollouts as the drafter. Expect 2026 to keep narrowing the gap.
-2. **Speculative decoding for training, not just for serving.** The serving community has spent five years on per-request latency; the RL-training community is now picking up the same tools and finding that the assumptions are different — non-stationary policy, batch makespan, long tail. The interesting research surface is *re-deriving speculative decoding under a workload model* rather than reusing the serving-style $\gamma$-sweep. DAS's makespan equations are the kind of object that will spawn follow-ups.
+2. **Speculative decoding for training, not just for serving.** The serving community has spent five years on per-request latency; the RL-training community is now picking up the same tools and finding that the assumptions are different — non-stationary policy, batch makespan, long tail. The interesting research surface is *re-deriving speculative decoding under a workload model* rather than reusing the serving-style $\gamma$-sweep.
 
 What this is *not*: an answer for general LLM serving (the suffix-tree drafter exploits within-batch substring repetition that doesn't exist in open-internet traffic), nor a replacement for [[prorl-agent|RaaS-style infrastructure]] (orthogonal: DAS speeds up the inside of a rollout server, ProRL Agent speeds up the orchestration around it). The two stack.
-
----
 
 ## Source code & reproduction
 
@@ -326,8 +329,6 @@ No public code release at submission. Reproduction would need:
 | Draft + verify wrapper                   | Hooks into vLLM / SGLang's speculative-decoding pipeline (`SpecConfig`, draft model interface). |
 
 The cleanest engineering path: extend an existing [[speculative-decoding|spec-decoding-enabled]] engine ([[vllm|vLLM]] V1's spec-decoding stack or SGLang's `SpecForward`) with a suffix-tree drafter that implements the engine's drafter interface, plus a request-level `max_draft_tokens` parameter that the trainer sets according to the makespan formula.
-
----
 
 ## Related reading
 

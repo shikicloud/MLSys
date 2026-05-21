@@ -3,7 +3,7 @@ title: "MOPD：多 Domain On-Policy 蒸馏作为 Cascade-RL 的稳定器"
 category: rl-infra
 tags: [mopd, on-policy-distillation, nemotron-cascade-2, cascade-rl, multi-teacher, post-training, moe, paper-review]
 created: 2026-05-19
-updated: 2026-05-19
+updated: 2026-05-21
 status: mature
 paper: arXiv:2603.19220
 ---
@@ -14,15 +14,34 @@ paper: arXiv:2603.19220
 > - **Paper**：[arXiv:2603.19220](https://arxiv.org/abs/2603.19220) —— *Nemotron-Cascade 2: Post-Training LLMs with Cascade RL and Multi-Domain On-Policy Distillation*（Yang et al., NVIDIA；v1 2026-03-19，v2 2026-03-22；通讯作者 Wei Ping）
 > - **项目页**：[research.nvidia.com/labs/nemotron/nemotron-cascade-2](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/)
 > - **模型**：[Nemotron-Cascade-2-30B-A3B](https://huggingface.co/nvidia/Nemotron-Cascade-2-30B-A3B)（30B 总 / 3B 激活 MoE，1M 上下文，NVIDIA Open Model License）
-> - **SFT 数据**：[nvidia/Nemotron-Cascade-2-SFT-Data](https://huggingface.co/datasets/nvidia/Nemotron-Cascade-2-SFT-Data)
-> - **RL 数据**：[nvidia/Nemotron-Cascade-2-RL-data](https://huggingface.co/datasets/nvidia/Nemotron-Cascade-2-RL-data)
-> - **参考框架**：[NVIDIA-NeMo/RL](https://github.com/NVIDIA-NeMo/RL)（`nemo_rl/algorithms/distillation.py`）；MOPD 的多教师路由到 2026-05 还 **不是 NeMo-RL 一等公民**
-> - **前置工作**：[[on-policy-distillation|GKD (Agarwal 2024)]]、[Thinking Machines OPD 博客 (2025-10)](https://thinkingmachines.ai/blog/on-policy-distillation/)、Xiaomi MiMo-V2-Flash MOPD（[arXiv:2601.02780](https://arxiv.org/abs/2601.02780)；见 [撞名小节](#与-xiaomi-mimo-v2-flash-的撞名)）
-
-> [!abstract]+ TL;DR
-> **MOPD** 是 NVIDIA 7-stage Cascade RL 管线里的一个独立稳定阶段，用 [[on-policy-distillation|on-policy 蒸馏]] 从 **三个同家族 teacher** *恢复* 早期专项 RL 阶段引入的能力回归。Per-prompt 路由从三个 teacher（math SFT checkpoint / RLHF 侧分支 / multi-domain RL best checkpoint）选一个，计算 **采样 token 反向 KL "advantage"** $a_t = \log\pi_T(y_t) - \log\pi_\theta(y_t)$ 作为 REINFORCE 式更新的 token 权重，配 truncated importance weighting 处理 train-vs-inference policy gap。**三个 teacher 全部是 cascade 副产物** —— 不要额外训练、不要外部模型、不要 logit 缓存。报告战绩：AIME 2025 92.4（金牌级）、IMO 2025 35/42（金）、IOI 2025 439.28/600（金）、ICPC WF 2025 10/12（金）—— 而且 **MOPD 用 52 步达到 ArenaHard v2 85.5，RLHF 用 160 步只到 80.7**，约 3× 每步效率优势是这篇论文的主要实证论据。**MOPD 作为技术不算新** —— 是 GKD-反向-KL-OPD 加 per-prompt 教师路由，两个月前 Xiaomi MiMo-V2-Flash 在相同缩写下发布过（NVIDIA 把 "Multi-Teacher" 重新框成 "Multi-Domain"）。贡献是 **recipe**：选哪些 teacher、放在哪个阶段、什么 LR schedule，在 30B-A3B MoE 学生上由 IMO/IOI/ICPC 金牌验证。
+> - **数据**：[SFT-Data](https://huggingface.co/datasets/nvidia/Nemotron-Cascade-2-SFT-Data) · [RL-data](https://huggingface.co/datasets/nvidia/Nemotron-Cascade-2-RL-data)
+> - **参考框架**：[NVIDIA-NeMo/RL](https://github.com/NVIDIA-NeMo/RL)（`nemo_rl/algorithms/distillation.py`）—— MOPD 的多教师路由到 2026-05 还不是 NeMo-RL 一等公民
+> - **前置工作**：[[on-policy-distillation|GKD (Agarwal 2024)]] · [Thinking Machines OPD 博客 (2025-10)](https://thinkingmachines.ai/blog/on-policy-distillation/) · Xiaomi MiMo-V2-Flash MOPD（[arXiv:2601.02780](https://arxiv.org/abs/2601.02780)；见 [撞名小节](#与-xiaomi-mimo-v2-flash-的撞名)）
 
 ---
+
+## 摘要（2 分钟读完这一节就够）
+
+**它是什么**。MOPD 是 NVIDIA 7-stage Cascade-RL 管线（在 Multi-domain RL 与 RLHF 之间）的一个独立稳定阶段，用 [[on-policy-distillation|on-policy 蒸馏]] 从三个同家族 teacher **恢复** 早期专项 RL 阶段引入的能力回归。学生 —— Nemotron-Cascade-2-30B-A3B（3B 激活 MoE） —— 最终在 IMO 2025（35/42）、IOI 2025（439.28/600）、ICPC WF 2025（10/12）拿金牌级；继 DeepSeek-V3.2-Speciale 之后第二个在 IMO 与 IOI 上都拿金牌的开放权重 LLM，激活参数是 DeepSeek 的 1/12。
+
+**核心思想**。把 on-policy 蒸馏做成 cascade *稳定器*，**per-prompt teacher 路由** 每个训练样本选三个 **cascade 内部** teacher 之一（math SFT checkpoint / RLHF 侧分支 / multi-domain RL best checkpoint），用 **采样 token 反向 KL "advantage"** $a_t = \log\pi_T(y_t) - \log\pi_\theta(y_t)$ 作为 REINFORCE 式 token 权重。三个支柱：(1) cascade 内部 teacher 是 *相同训练管线的免费副产物* —— 不要外部模型、不要 logit 缓存；(2) 每 prompt 一个 teacher 避免 logit 冲突；(3) 截断重要性权重 $r_t \in [0.5, 2.0]$ 处理 train-vs-inference policy 偏差。去掉任一个，MOPD 就退化成外部 teacher OPD、单 teacher 风格塌缩、或异步 on-policy 发散。
+
+**头条结果**。MOPD 在 **52 步内达到 ArenaHard v2 85.5**，RLHF 用 **160 步只到 80.7** —— 跨 domain 稳定的 per-step 效率约 3 倍。同一阶段在 AIME 25 上把模型从 91.0（Multi-domain RL 之后）抬到 92.4。最终 Nemotron-Cascade-2 拿 IMO/IOI/ICPC 金牌。关键缺失对比：**没有跨整个 cascade 的 leave-MOPD-out 消融**，所以 MOPD 在每个 benchmark 上的贡献只能被 ArenaHard / AIME 这对绑定 —— 金牌是头条包装，不是隔离的 MOPD 证据。
+
+![Nemotron-Cascade-2-30B-A3B 对比同激活参数基线（论文 Fig. 1：LiveCodeBench v6、LiveCodeBench Pro、HMMT、IMO ProofBench、SWE Verified、Humanity's Last Exam、IFBench、ArenaHard v2）](CN/wiki/rl-infra/mopd-figs/headline-benchmarks.png)
+
+**为什么这重要**。
+
+- **Cascade-RL 漂移现在有便宜的解药**。52 步针对已有 checkpoint 的蒸馏替换 160 步 RLHF；cascade builder 会采纳。
+- **"免费内部 teacher" 打赢 DeepSeek-V4 风格的 specialist 农场**。不要 FP4 QAT、不要隐藏状态缓存、不要跨 vocab logit 投影 —— 同 tokenizer、同 base，per-batch 切 rollout checkpoint。
+- **缩写有争议**。Xiaomi MiMo-V2-Flash（2026-01）两个月前用 MOPD = *Multi-Teacher* On-Policy Distillation；NVIDIA 改框成 *Multi-Domain*。算法相同，框架不同。
+- **2027 年预测**。OPD 作为 cascade 稳定器变成任何"多专项 RL 后训练"栈的标准阶段。
+
+---
+
+# 深度部分（往下展开细节）
+
+上面摘要是 executive 层。下面是给愿意细读 loss 数学、recipe 细节、实现 gap 的人准备的。
 
 ## 背景：为什么需要发明 MOPD
 
@@ -49,44 +68,13 @@ MOPD 重新框架：别重训。用一个 *已经有* 该能力的 teacher **蒸
 
 关键差异：MOPD 的 teacher 免费。不要额外训练、不要外部模型、不要 FP4 QAT 或隐藏状态缓存基础设施。同 tokenizer、同 vocab、同 base 模型 —— 所以蒸馏可以用现有 NeMo-RL OPD 原语加一个 per-batch teacher 切换搞定。
 
----
-
-## 核心思想：把 prompt 路由到对应 domain 的 teacher，用 OPD 当稳定器
-
-> [!quote] 一句话总结贡献
-> 在 Multi-domain RL 和 RLHF 之间插入一个短的 on-policy 蒸馏阶段，按 prompt 路由到三个 cascade 内部 teacher 之一（math SFT / RLHF 侧分支 / multi-domain best checkpoint），来恢复早期专项 RL 漂掉的能力 —— 免费，~50 步。
-
-三个支撑次级声明：
-
-- **Cascade 内部 teacher 够用**。你不需要更大的外部模型。Math SFT checkpoint 在专项 RL 动它之前数学已经强；RLHF 侧分支已经有好的 human-preference 对齐；multi-domain RL best checkpoint 有指令遵循的收益。每一个都是 *上一阶段在自己 domain 上的最佳*，正好是你要恢复的。
-- **每 prompt 一个 teacher 够了**。跟 [[deepseek-v4-opd|DeepSeek-V4]] 加权和不同，MOPD 每个训练样本按 domain tag 选一个 teacher。信号更便宜、没有 teacher 冲突、dispatcher 更简单。
-- **采样 token 反向 KL + 重要性裁剪够用**。30B-A3B 规模上不需要全词表 KL（V4 风格）；per-token 采样信号配 $r_t \in [0.5, 2.0]$ 截断稳定地处理 train/inference policy 偏差。
-
-去掉任何一个：失去内部 teacher MOPD 就退化成"又一个外部 teacher OPD"；失去 per-prompt 路由单一 teacher 把所有 domain 拉向自己的风格；失去重要性裁剪异步 on-policy 训练会发散。
-
----
-
 ## 实现细节
 
 ### MOPD 在 cascade 里的位置
 
-7 阶段 Nemotron-Cascade 2 管线（论文 Figure 2）：
+![Nemotron-Cascade-2 7-stage 训练管线（论文 Fig. 2）：SFT → IF-RL → Multi-domain RL → MOPD → RLHF → Long-context RL → Code RL → SWE RL](CN/wiki/rl-infra/mopd-figs/cascade-pipeline.png)
 
-```
-   ┌──────────────────────────────────────────────────────────────────────┐
-   │                                                                       │
-   │  SFT → IF-RL → Multi-domain RL → MOPD → RLHF → Long-context RL       │
-   │                                                                       │
-   │       → Code RL → SWE RL → Nemotron-Cascade 2                         │
-   │                                                                       │
-   └──────────────────────────────────────────────────────────────────────┘
-
-   MOPD 是 Multi-domain RL 和 RLHF 之间的 **单一稳定阶段**。
-   它 **不是** 与每个 RL 阶段交错的 per-round 循环。
-   Cascade 后续阶段不会再回到 MOPD。
-```
-
-放置位置是关键 recipe 选择。MOPD 跑的时候：
+放置位置是关键 recipe 选择。MOPD 是 **Multi-domain RL 和 RLHF 之间的单一稳定阶段** —— 不是与每个 RL 阶段交错的 per-round 循环，cascade 后续阶段也不会再回到 MOPD。MOPD 跑的时候：
 
 - **SFT** 已经产出强数学推理者（变成 math teacher）。
 - **IF-RL** 已经建立指令遵循能力但可能伤害 human alignment。
@@ -155,93 +143,91 @@ Prompt 按其 domain 来源打 `teacher_id`：
 
 **没有跨 teacher 的 logit 混合**。Rollout 里每个 token 都由恰好一个 teacher 的 log-prob 监督。这是相对 DeepSeek-V4 $\sum_i w_i D_{\text{KL}}(\pi_\theta \| \pi_{E_i})$ 加权和的架构选择。
 
-### 超参
+### 辅助机制（可跳读）
 
-**散文**（p.13）跟 **附录 Table 8** 有个值得知道的不一致：
+> [!note]- 超参与"散文 vs Table 8"的不一致 —— 做复现的展开
+> **散文**（p.13）跟 **附录 Table 8** 有个值得知道的不一致：
+>
+> | 设置 | 散文 §4.4 | Table 8（附录 B） |
+> | ---- | --------- | ----------------- |
+> | 学习率 | 2×10⁻⁶，前 30 步从 2×10⁻⁷ 线性 warmup | 3×10⁻⁶ |
+> | 步数 | "Typically converges within 40–50 steps" | 52 |
+> | 每 prompt rollout 数 | 4 | 4 |
+> | 每次更新 prompt 数（batch） | 128 | 128 |
+> | 有效 batch（response 数） | 512 | — |
+> | 最大 response 长度 | — | 98K |
+> | 重要性边界 | $\epsilon_{\text{low}} = 0.5$、$\epsilon_{\text{high}} = 2.0$ | — |
+> | Temperature / top-p | — | 1.0 / 1.0 |
+> | Overlong filtering | — | False |
+> | KL 形式 | 反向 KL，采样 token（非全词表） | — |
+>
+> 复现时以散文为主；LR 不一致要标记给做复现的人。论文没说哪个是 canonical。
 
-| 设置 | 散文 §4.4 | Table 8（附录 B） |
-| ---- | --------- | ----------------- |
-| 学习率 | 2×10⁻⁶，前 30 步从 2×10⁻⁷ 线性 warmup | 3×10⁻⁶ |
-| 步数 | "Typically converges within 40–50 steps" | 52 |
-| 每 prompt rollout 数 | 4 | 4 |
-| 每次更新 prompt 数（batch） | 128 | 128 |
-| 有效 batch（response 数） | 512 | — |
-| 最大 response 长度 | — | 98K |
-| 重要性边界 | $\epsilon_{\text{low}} = 0.5$、$\epsilon_{\text{high}} = 2.0$ | — |
-| Temperature / top-p | — | 1.0 / 1.0 |
-| Overlong filtering | — | False |
-| KL 形式 | 反向 KL，采样 token（非全词表） | — |
+> [!note]- 为什么这相对 RLHF 便宜
+> 三个 MOPD 相对 RLHF 或重跑专项 RL 便宜的结构性原因：
+>
+> - **Teacher 免费**。Math teacher = SFT checkpoint（不要额外训练）。Multi-domain teacher = 你 Multi-domain RL 期间无论如何都会保的 best checkpoint。RLHF teacher = 25 步侧分支 RLHF（比主 RLHF 阶段小）。
+> - **稠密 per-token 信号**。不像 RLHF 的 per-trajectory 标量 reward，MOPD 给每个 token 打分。~52 步稠密信号能恢复 160 步 RLHF 稀疏 reward 才能恢复的东西。
+> - **基础设施零变更**。同 tokenizer、同 vocab、同 base。NeMo-RL OPD 原语只要 per-batch teacher 切换就变成 MOPD —— 不要 DeepSeek-V4 风格的隐藏状态缓存、FP4 QAT、TileLang kernel。
 
-复现时以散文为主；LR 不一致要标记给做复现的人。论文没说哪个是 canonical。
+## 头条证据
 
-### 为什么这在适度成本下有效
+**配置**。学生：Nemotron-Cascade-2-30B-A3B（30B 总 / 3B 激活 MoE），8× H100 节点通过 NeMo-RL（fork 加多 teacher dispatch）训练。MOPD 阶段在 Multi-domain RL 之后跑，128 prompt × 4 rollout 每 update，LR 2×10⁻⁶ 配 30 步线性 warmup，总共 ~52 步。三个 benchmark 主导 MOPD 特定故事：ArenaHard v2、AIME 25，间接还有 medal benchmark。
 
-三个 MOPD 相对 RLHF 或重跑专项 RL 便宜的结构性原因：
-
-- **Teacher 免费**。Math teacher = SFT checkpoint（不要额外训练）。Multi-domain teacher = 你 Multi-domain RL 期间无论如何都会保的 best checkpoint。RLHF teacher = 25 步侧分支 RLHF（比主 RLHF 阶段小）。
-- **稠密 per-token 信号**。不像 RLHF 的 per-trajectory 标量 reward，MOPD 给每个 token 打分。~52 步稠密信号能恢复 160 步 RLHF 稀疏 reward 才能恢复的东西。
-- **基础设施零变更**。同 tokenizer、同 vocab、同 base。NeMo-RL OPD 原语只要 per-batch teacher 切换就变成 MOPD —— 不要 DeepSeek-V4 风格的隐藏状态缓存、FP4 QAT、TileLang kernel。
-
----
-
-## 实验
-
-### 标志数字（Table 1–2）
-
-Nemotron-Cascade-2-30B-A3B vs 同激活参数基线：
-
-| Benchmark | Nemotron-Cascade-2-30B-A3B | Qwen3.5-35B-A3B (2026-02) | Nemotron-3-Super-120B-A12B (2026-03) |
-| --------- | -------------------------- | -------------------------- | ------------------------------------ |
-| **IMO 2025** | **35/42（金）** | — | — |
-| IMO AnswerBench | **79.3** | 74.8 | 77.2 |
-| IMO ProofBench | **72.9** | — | — |
-| **AIME 2025** | **92.4**（98.6 TIR） | 91.9 | 90.2 |
-| AIME 2026 | 90.9（95.0 TIR） | **91.1** | 89.8 |
-| HMMT Feb25 | **94.6** | 89.0 | 93.7 |
-| **IOI 2025** | **439.28/600（金）** | 348.6 | — |
-| **ICPC WF 2025** | **10/12（金）** | — | — |
-| LiveCodeBench v6 | **87.2**（88.4 TIR） | 74.6 | 78.7 |
-| LCB Pro 25Q2 Med | **27.6**（36.8 TIR） | 17.8 | 23.2 |
-| MMLU-Pro | 79.8 | **85.3** | 83.7 |
-| GPQA-Diamond | 76.1 | **84.2** | 79.2 |
-| ArenaHard v2 (Avg) | **83.5** | 65.4 | — |
-| IFBench (prompt) | **82.9** | 70.2 | 72.6 |
-| SWE Verified (OpenHands) | 50.2 | **69.2** | 60.5 |
-| Terminal Bench 2.0 | 21.1 | **40.5** | 31.0 |
-| 𝜏²-Bench | 58.9 | **81.2** | 61.2 |
-
-论文 Footnote 1（p.4）：Nemotron-Cascade 2 是 *"the second open-weight LLM, after DeepSeek-V3.2-Speciale-671B-A37B, to achieve gold-medal performance in both the IMO and IOI"* —— 在 **3B 激活参数** 上，对比 DeepSeek 的 37B 激活。
-
-### MOPD 特定结果：相对 RLHF 的步效率
-
-MOPD 在论文里的主要论据（Table 3、散文 p.13）：
+**MOPD 主结果**（Table 3、散文 p.13）：
 
 | Cascade 阶段 | 步数 | ArenaHard v2（hard / overall） | AIME 25 |
-| ------------ | ---- | ------------------------------ | ------- |
+| ------------ | ---: | ------------------------------ | ------: |
 | Multi-domain RL 输出 | — | — | 91.0 |
-| **MOPD**（52 步） | **52** | **85.5 / 71.0** | **92.0** |
+| **MOPD**（52 步） | **52** | **85.5 / 71.0** | **92.4** |
 | RLHF（160 步） | 160 | 80.7 / 71.2 | — |
 
-MOPD 用 ~3× 更少的步数达到比 RLHF 更高的 ArenaHard 分数。AIME 25 上 +1.0 绝对提升（91.0 → 92.0）适中，但 30 步达到，GRPO 用 25 步达到 91.0 —— 数学上 MOPD 跟 GRPO 大致 compute-matched，但 human-preference benchmark 上 MOPD 在步效率上大幅超 RLHF。
+> [!success] MOPD 步效率数字
+> MOPD 用 ~3× 更少步数达到比 RLHF 更高的 ArenaHard 分。AIME 25 上 +1.4 绝对提升（91.0 → 92.4）适中，但 30 步达到，GRPO 用 25 步达到 91.0 —— 数学上 compute-matched，但 human-preference benchmark 每步效率大幅偏向 MOPD。
+
+**训练动力学**（Figure 3）：反向 KL 单调下降，梯度范数平滑衰减，MOPD 在 30 步内超过 GRPO 并在 60 步内保持在 teacher 线之上。
+
+![MOPD 训练动力学（论文 Fig. 3）：反向 KL ↓、grad_norm ↓、AIME25 avg@64 —— MOPD 超过 GRPO 并达到 teacher 线](CN/wiki/rl-infra/mopd-figs/mopd-training-dynamics.png)
 
 > [!important] 论文 *没有* 报告的
 > 没有 MOPD 特定的 GPU-hour 或 wall-clock 对比。没有 leave-MOPD-out 消融在整个 cascade 上隔离 MOPD 每个 benchmark 上的贡献。没有 teacher 数消融（1 或 2 个够吗？4–6 个更好？）。步效率声明是 **per-step 不是 per-second** —— 这重要，因为每个 MOPD 步还要 teacher forward pass。
 
-### MOPD 帮不到的地方
-
-Nemotron-Cascade 2 输的 benchmark 说明问题：
-
-| Benchmark | Cascade 2 | Qwen3.5-35B-A3B | Δ |
-| --------- | --------- | --------------- | -- |
-| MMLU-Pro | 79.8 | 85.3 | **−5.5** |
-| GPQA-Diamond | 76.1 | 84.2 | **−8.1** |
-| SWE Verified (OpenHands) | 50.2 | 69.2 | **−19.0** |
-| Terminal Bench 2.0 | 21.1 | 40.5 | **−19.4** |
-| 𝜏²-Bench | 58.9 | 81.2 | **−22.3** |
-
-论文承认（p.5）Cascade 2 *"underperforms Qwen3.5-35B-A3B primarily on knowledge-intensive and agentic tasks."* 结构性原因回到 MOPD：**teacher 池里没有 GPQA teacher、没有 agentic-tool-use teacher**。MOPD 只能恢复 cascade 内部 *存在* teacher 的能力。知识 gap 和 agentic 任务 gap 需要外部 teacher 或者更长的 RL —— 两者都不在 recipe 里。
-
----
+> [!example]- 完整 benchmark 扫描（展开）
+> Nemotron-Cascade-2-30B-A3B vs 同激活参数基线：
+>
+> | Benchmark | Nemotron-Cascade-2-30B-A3B | Qwen3.5-35B-A3B (2026-02) | Nemotron-3-Super-120B-A12B (2026-03) |
+> | --------- | -------------------------- | -------------------------- | ------------------------------------ |
+> | **IMO 2025** | **35/42（金）** | — | — |
+> | IMO AnswerBench | **79.3** | 74.8 | 77.2 |
+> | IMO ProofBench | **72.9** | — | — |
+> | **AIME 2025** | **92.4**（98.6 TIR） | 91.9 | 90.2 |
+> | AIME 2026 | 90.9（95.0 TIR） | **91.1** | 89.8 |
+> | HMMT Feb25 | **94.6** | 89.0 | 93.7 |
+> | **IOI 2025** | **439.28/600（金）** | 348.6 | — |
+> | **ICPC WF 2025** | **10/12（金）** | — | — |
+> | LiveCodeBench v6 | **87.2**（88.4 TIR） | 74.6 | 78.7 |
+> | LCB Pro 25Q2 Med | **27.6**（36.8 TIR） | 17.8 | 23.2 |
+> | MMLU-Pro | 79.8 | **85.3** | 83.7 |
+> | GPQA-Diamond | 76.1 | **84.2** | 79.2 |
+> | ArenaHard v2 (Avg) | **83.5** | 65.4 | — |
+> | IFBench (prompt) | **82.9** | 70.2 | 72.6 |
+> | SWE Verified (OpenHands) | 50.2 | **69.2** | 60.5 |
+> | Terminal Bench 2.0 | 21.1 | **40.5** | 31.0 |
+> | 𝜏²-Bench | 58.9 | **81.2** | 61.2 |
+>
+> 论文 Footnote 1（p.4）：Nemotron-Cascade 2 是 *"the second open-weight LLM, after DeepSeek-V3.2-Speciale-671B-A37B, to achieve gold-medal performance in both the IMO and IOI"* —— 在 **3B 激活参数** 上，对比 DeepSeek 的 37B 激活。
+>
+> **MOPD 帮不到的地方**。Nemotron-Cascade 2 输的 benchmark 说明问题：
+>
+> | Benchmark | Cascade 2 | Qwen3.5-35B-A3B | Δ |
+> | --------- | --------- | --------------- | -- |
+> | MMLU-Pro | 79.8 | 85.3 | **−5.5** |
+> | GPQA-Diamond | 76.1 | 84.2 | **−8.1** |
+> | SWE Verified (OpenHands) | 50.2 | 69.2 | **−19.0** |
+> | Terminal Bench 2.0 | 21.1 | 40.5 | **−19.4** |
+> | 𝜏²-Bench | 58.9 | 81.2 | **−22.3** |
+>
+> 论文承认（p.5）Cascade 2 *"underperforms Qwen3.5-35B-A3B primarily on knowledge-intensive and agentic tasks."* 结构性原因回到 MOPD：**teacher 池里没有 GPQA teacher、没有 agentic-tool-use teacher**。MOPD 只能恢复 cascade 内部 *存在* teacher 的能力。知识 gap 和 agentic 任务 gap 需要外部 teacher 或者更长的 RL —— 两者都不在 recipe 里。
 
 ## 优势与限制
 
@@ -249,7 +235,7 @@ Nemotron-Cascade 2 输的 benchmark 说明问题：
 
 诚实承认的限制：
 
-- **不是算法层面新**。Loss 是 GKD 反向 KL OPD（[[on-policy-distillation|Agarwal 2024]]）加截断重要性权重（异步 on-policy RL 里标准做法 —— DAPO、PPO-clip）。Per-prompt teacher 路由两个月前 Xiaomi MiMo-V2-Flash 在相同缩写下发表过（见 [撞名小节](#与-xiaomi-mimo-v2-flash-的撞名)）。
+- **不是算法层面新**。Loss 是 GKD 反向 KL OPD（[[on-policy-distillation|Agarwal 2024]]）加截断重要性权重（异步 on-policy RL 里标准做法 —— DAPO、PPO-clip）。Per-prompt teacher 路由两个月前 Xiaomi MiMo-V2-Flash 在相同缩写下发表过。
 - **没有 teacher 数消融**。1 或 2 个 teacher 行吗？加 GPQA teacher 能修知识任务 gap 吗？论文没说。
 - **没有跨整个 cascade 的 leave-MOPD-out 消融**。Table 3 / Figure 3 只比 MOPD vs GRPO 在 AIME25 和 ArenaHard v2 上。无法隔离 MOPD 对 IMO/IOI/ICPC 金牌的贡献。
 - **超参不一致**。散文说 LR 2e-6 + warmup；Table 8 说 3e-6。说明 schedule 被调过多于报告的程度。
@@ -261,9 +247,7 @@ Nemotron-Cascade 2 输的 benchmark 说明问题：
 > [!warning] 与 Xiaomi MiMo-V2-Flash 的撞名
 > 缩写 **MOPD 小米先用过**：MiMo-V2-Flash（[arXiv:2601.02780](https://arxiv.org/abs/2601.02780), 2026-01-06）里它代表 **Multi-Teacher On-Policy Distillation**。Xiaomi MiMo 推特：*"Beyond arch innovation, MiMo-V2-Flash is cooked via a NEW post-training paradigm Multi-Teacher On-Policy Distillation (MOPD)"*（[来源](https://x.com/XiaomiMiMo/status/2000930865757741342)）。NVIDIA Nemotron-Cascade 2（2026-03）把缩写重新框成 **Multi-Domain On-Policy Distillation**，算法本质一样（按 prompt 路由的 token 级反向 KL 蒸馏）。Nemotron-Cascade 2 paper 引了 Xiao et al. 2026 当前置工作但没承认缩写重叠。读 2026 年任何 MOPD 引用时 **要看是 Xiaomi 的"Multi-Teacher"还是 NVIDIA 的"Multi-Domain"** —— 同想法、同字母、不同框架。
 
----
-
-## 这意味着什么
+## 启示
 
 两条值得跟踪的预测：
 
@@ -271,8 +255,6 @@ Nemotron-Cascade 2 输的 benchmark 说明问题：
 2. **"免费内部 teacher"洞察会扩散**。DeepSeek-V4 风格 —— 训 10+ specialist 配全词表 KL 加权合并 —— 贵且基础设施重。NVIDIA 的 "teacher 就是你管线里早些时候的 checkpoint" 洞察显著更便宜。对多数没有 DeepSeek-V4 基础设施的从业者，MOPD recipe 是现实采纳路径。
 
 这 *不是*：cascade-RL 漂移的万能解药。MOPD 只能恢复 cascade 内部 *存在* teacher 的能力。能力 *扩展* 仍然需要 RL with verifiable reward 或外部 teacher。
-
----
 
 ## 源码与复现
 
@@ -342,7 +324,7 @@ distillation:
 #    - 给 prompt 打 tag：math 从 AceReason-Math → math_teacher；
 #                       multi-domain 从 RL 池 → multi_domain_teacher；
 #                       helpfulness 从 HelpSteer3 → rlhf_teacher
-#    - Loss：采样 token 反向 KL advantage，a_t 和 r_t 上 stop-gradient，
+#    - Loss：采样 token 反向 KL advantage，a_t 和 r_t 上 stop-gradient,
 #            重要性裁剪 [0.5, 2.0]
 #    - LR 2e-6 配 30 步从 2e-7 线性 warmup；约 52 步总
 #    - Batch 128 prompts × 4 rollouts
@@ -358,8 +340,6 @@ distillation:
 | [veRL `algo/opd`](https://verl.readthedocs.io/en/latest/algo/opd.html) | 多教师路由 via `data_source` | **最接近的现成方案** |
 | [NVIDIA NeMo-RL OPD](https://github.com/NVIDIA-NeMo/RL) | 单 teacher 配 top-k KL | 精神上最接近；需要多 teacher 扩展 |
 | [Tinker cookbook](https://github.com/thinking-machines-lab/tinker-cookbook) | 单 + 多教师 recipe | 多 teacher 但 token 级 KL，无 per-prompt 路由 |
-
----
 
 ## 相关阅读
 

@@ -423,11 +423,17 @@ cp /tmp/<slug>-figs/fig-XYZ.png "CN/wiki/<category>/<slug>-figs/<descriptive-nam
 
 **Why `wiki/<category>/<slug>-figs/` and not `sources/papers/<slug>/figs/`** (the 2026-05-20 lesson): Quartz's `quartz.config.ts` has `**/sources/**` in `ignorePatterns`, so anything under `sources/` gets dropped from the build output — the page renders but image requests 404. The fix is to colocate figures next to their wiki page in the same `wiki/<category>/` directory. The original `sources/papers/<slug>/` directory is still where the citation.md and the raw PDF live; just don't put images there.
 
-**Embedding in the page**: same-directory relative path (the markdown file is `wiki/<category>/<slug>.md`, the figure is in `wiki/<category>/<slug>-figs/...`):
+**Embedding in the page** — the path must include the language prefix (`EN/` or `CN/`):
 
 ```markdown
-![System architecture, paper Fig. 1](<slug>-figs/system-architecture.png)
+<!-- in EN/wiki/<category>/<slug>.md -->
+![System architecture, paper Fig. 1](EN/wiki/<category>/<slug>-figs/system-architecture.png)
+
+<!-- in CN/wiki/<category>/<slug>.md -->
+![系统架构（论文 Fig. 1）](CN/wiki/<category>/<slug>-figs/system-architecture.png)
 ```
+
+**Why the language prefix is mandatory** (2026-05-21 lesson — burned 4 commits before figuring this out): Quartz emits pages as flat `<slug>.html` (not `<slug>/index.html`). From a flat-URL page like `/MLSys/CN/wiki/agentic-rl/prorl-agent`, the browser's base for relative URLs is `/MLSys/CN/wiki/agentic-rl/`, so `pathToRoot = ../../..` lands at `/MLSys/` — **not** at `/MLSys/CN/`. To make the path resolve back into the CN subtree, the canonical slug has to include the language prefix. Quartz already does this for wikilinks (`../../../CN/wiki/llm-inference/das-spec-rl`), but for image paths *you* have to write the prefix in the markdown. Paths without it (`wiki/<category>/<slug>-figs/...`) silently 404.
 
 **Naming**: `system-architecture.png`, `throughput-vs-nodes.png`, `acceptance-length-curve.png` — descriptive lowercase-hyphen. Don't keep the `fig-002` style from pdfimages.
 

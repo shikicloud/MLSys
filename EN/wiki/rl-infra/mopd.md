@@ -3,7 +3,7 @@ title: "MOPD: Multi-Domain On-Policy Distillation as a Cascade-RL Stabilizer"
 category: rl-infra
 tags: [mopd, on-policy-distillation, nemotron-cascade-2, cascade-rl, multi-teacher, post-training, moe, paper-review]
 created: 2026-05-19
-updated: 2026-05-19
+updated: 2026-05-21
 status: mature
 paper: arXiv:2603.19220
 ---
@@ -14,15 +14,34 @@ paper: arXiv:2603.19220
 > - **Paper**: [arXiv:2603.19220](https://arxiv.org/abs/2603.19220) — *Nemotron-Cascade 2: Post-Training LLMs with Cascade RL and Multi-Domain On-Policy Distillation* (Yang et al., NVIDIA; v1 2026-03-19, v2 2026-03-22; corresponding author Wei Ping)
 > - **Project page**: [research.nvidia.com/labs/nemotron/nemotron-cascade-2](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/)
 > - **Model**: [Nemotron-Cascade-2-30B-A3B](https://huggingface.co/nvidia/Nemotron-Cascade-2-30B-A3B) (30B total / 3B active MoE, 1M context, NVIDIA Open Model License)
-> - **SFT data**: [nvidia/Nemotron-Cascade-2-SFT-Data](https://huggingface.co/datasets/nvidia/Nemotron-Cascade-2-SFT-Data)
-> - **RL data**: [nvidia/Nemotron-Cascade-2-RL-data](https://huggingface.co/datasets/nvidia/Nemotron-Cascade-2-RL-data)
-> - **Reference framework**: [NVIDIA-NeMo/RL](https://github.com/NVIDIA-NeMo/RL) (`nemo_rl/algorithms/distillation.py`); multi-teacher routing for MOPD is **not yet primitive** in NeMo-RL as of May 2026
-> - **Prior work**: [[on-policy-distillation|GKD (Agarwal 2024)]], [Thinking Machines OPD blog (2025-10)](https://thinkingmachines.ai/blog/on-policy-distillation/), Xiaomi MiMo-V2-Flash MOPD ([arXiv:2601.02780](https://arxiv.org/abs/2601.02780); see [naming collision](#naming-collision-with-xiaomi-mimo-v2-flash))
-
-> [!abstract]+ TL;DR
-> **MOPD** is a single dedicated stage inside NVIDIA's 7-stage Cascade RL pipeline that uses [[on-policy-distillation|on-policy distillation]] from **three same-family teachers** to *recover capability regressions* introduced by earlier specialized RL stages. Per-prompt routing picks one of the three teachers (math SFT checkpoint / RLHF side-branch / multi-domain RL best checkpoint) and computes a **sampled-token reverse-KL "advantage"** $a_t = \log\pi_T(y_t) - \log\pi_\theta(y_t)$ as a token-weight on a REINFORCE-style update, with truncated importance weighting for the train-vs-inference policy gap. **All three teachers are free by-products of the same cascade** — no extra training runs, no external models, no logit caches. Reported wins: AIME 2025 92.4 (gold-medal class), IMO 2025 35/42 (gold), IOI 2025 439.28/600 (gold), ICPC WF 2025 10/12 (gold) — and crucially **MOPD reaches ArenaHard v2 85.5 in 52 steps vs RLHF's 80.7 in 160 steps**, a ~3× per-step efficiency win that's the paper's main empirical argument. **MOPD is not novel as a technique** — it's GKD-reverse-KL-OPD plus per-prompt teacher routing, which Xiaomi MiMo-V2-Flash published two months earlier under the same acronym (re-purposed by NVIDIA from "Multi-Teacher" to "Multi-Domain"). The contribution is the **recipe**: which teachers, which stage, what LR schedule, on a 30B-A3B MoE student validated by IMO/IOI/ICPC gold medals.
+> - **Data**: [SFT-Data](https://huggingface.co/datasets/nvidia/Nemotron-Cascade-2-SFT-Data) · [RL-data](https://huggingface.co/datasets/nvidia/Nemotron-Cascade-2-RL-data)
+> - **Reference framework**: [NVIDIA-NeMo/RL](https://github.com/NVIDIA-NeMo/RL) (`nemo_rl/algorithms/distillation.py`) — multi-teacher routing for MOPD is **not yet primitive** as of May 2026
+> - **Prior work**: [[on-policy-distillation|GKD (Agarwal 2024)]] · [Thinking Machines OPD blog (2025-10)](https://thinkingmachines.ai/blog/on-policy-distillation/) · Xiaomi MiMo-V2-Flash MOPD ([arXiv:2601.02780](https://arxiv.org/abs/2601.02780); see [naming collision](#naming-collision-with-xiaomi-mimo-v2-flash))
 
 ---
+
+## Summary (read this if you have 2 minutes)
+
+**What it is.** MOPD is a single dedicated stage inside NVIDIA's 7-stage Cascade-RL pipeline (between Multi-domain RL and RLHF) that uses [[on-policy-distillation|on-policy distillation]] from three same-family teachers to **recover capability regressions** introduced by earlier specialized RL stages. The student model — Nemotron-Cascade-2-30B-A3B (3B active MoE) — ends up gold-medal class on IMO 2025 (35/42), IOI 2025 (439.28/600), and ICPC WF 2025 (10/12), and the only open-weight LLM after DeepSeek-V3.2-Speciale to medal on both IMO and IOI, at one-twelfth the active parameters.
+
+**The one idea.** Make on-policy distillation a cascade *stabilizer*, with **per-prompt teacher routing** picking one of three **cascade-internal** teachers (math SFT checkpoint / RLHF side-branch / multi-domain RL best checkpoint) per training example, and a **sampled-token reverse-KL "advantage"** $a_t = \log\pi_T(y_t) - \log\pi_\theta(y_t)$ as the REINFORCE-shaped token weight. Three pieces hold it up: (1) cascade-internal teachers are *free by-products of the same training pipeline* — no external models, no logit caches; (2) one teacher per prompt avoids logit conflict; (3) truncated importance weighting $r_t \in [0.5, 2.0]$ handles the train-vs-inference policy gap. Remove any one and MOPD degenerates into either external-teacher OPD, single-teacher style collapse, or diverging async on-policy training.
+
+**Headline result.** MOPD reaches **ArenaHard v2 85.5 in 52 steps** vs RLHF's **80.7 in 160 steps** — roughly 3× per-step efficiency for cross-domain stabilization. On AIME 25 the same stage lifts the model from 91.0 (post-multi-domain-RL) to 92.4. The final Nemotron-Cascade-2 wins gold at IMO/IOI/ICPC. The critical missing comparison: **no leave-MOPD-out ablation across the full cascade**, so MOPD's per-benchmark contribution is bounded by the ArenaHard / AIME pair — the medals are headline framing, not isolated MOPD evidence.
+
+![Nemotron-Cascade-2-30B-A3B vs same-active-parameter baselines (paper Fig. 1: LiveCodeBench v6, LiveCodeBench Pro, HMMT, IMO ProofBench, SWE Verified, Humanity's Last Exam, IFBench, ArenaHard v2)](EN/wiki/rl-infra/mopd-figs/headline-benchmarks.png)
+
+**Why it matters.**
+
+- **Cascade-RL drift now has a cheap fix.** 52 steps of distillation against checkpoints you already saved replace 160 RLHF steps; cascade builders will adopt this.
+- **"Free internal teacher" beats the DeepSeek-V4-style specialist farm.** No FP4 QAT, no hidden-state cache, no cross-vocab logit projection — same tokenizer, same base, swap the rollout checkpoint per batch.
+- **The acronym is contested.** Xiaomi MiMo-V2-Flash (2026-01) used MOPD = *Multi-Teacher* On-Policy Distillation two months earlier; NVIDIA re-framed it as *Multi-Domain*. Same algorithm, different framing.
+- **2027 prediction.** OPD-as-cascade-stabilizer becomes a standard stage in any post-training stack with more than one specialized RL run.
+
+---
+
+# Depth (drill-down starts here)
+
+The summary above is the executive layer. Everything below is for the careful reader who wants the loss math, the recipe details, and the implementation gap.
 
 ## Background: why MOPD needed inventing
 
@@ -49,44 +68,13 @@ Compared to existing OPD recipes:
 
 The key differentiator: MOPD's teachers come for free. No extra training, no external models, no FP4 QAT or hidden-state caching infrastructure. The same tokenizer, same vocab, same base model — so the distillation can be done with the existing NeMo-RL OPD primitive plus a per-batch teacher swap.
 
----
-
-## The key idea: route prompts to per-domain teachers and use OPD as a stabilizer
-
-> [!quote] The contribution in one sentence
-> Insert a single short on-policy-distillation stage between Multi-domain RL and RLHF, routed per-prompt to one of three cascade-internal teachers (math SFT / RLHF side-branch / multi-domain best checkpoint), to recover capabilities the earlier specialized RL stages drifted away from — for free, in ~50 steps.
-
-Three sub-claims hold this up:
-
-- **Cascade-internal teachers are sufficient.** You don't need an external larger model. The math SFT checkpoint already had strong reasoning before specialized RL touched it; the RLHF side-branch already has good human-preference alignment; the multi-domain RL best checkpoint has the instruction-following gains. Each is the *previous-stage best on its own domain* and that's exactly what you want to restore.
-- **One teacher per prompt is enough.** Unlike [[deepseek-v4-opd|DeepSeek-V4]]'s weighted sum, MOPD picks exactly one teacher per training example by domain tag. Cheaper signal, no teacher conflict, simpler dispatcher.
-- **Sampled-token reverse-KL with importance clipping is enough.** Full-vocabulary KL (V4 style) is unnecessary at 30B-A3B scale; per-token sampled signal plus truncated $r_t \in [0.5, 2.0]$ importance clip handles train/inference policy skew with stability.
-
-Remove any one: lose internal teachers and MOPD becomes "yet another external-teacher OPD"; lose per-prompt routing and a single teacher pulls all domains toward its style; lose importance clipping and async on-policy training diverges.
-
----
-
 ## How it works
 
 ### Where MOPD sits in the cascade
 
-The 7-stage Nemotron-Cascade 2 pipeline (Figure 2 of the paper):
+![Nemotron-Cascade-2 7-stage training pipeline (paper Fig. 2): SFT → IF-RL → Multi-domain RL → MOPD → RLHF → Long-context RL → Code RL → SWE RL](EN/wiki/rl-infra/mopd-figs/cascade-pipeline.png)
 
-```
-   ┌──────────────────────────────────────────────────────────────────────┐
-   │                                                                       │
-   │  SFT → IF-RL → Multi-domain RL → MOPD → RLHF → Long-context RL       │
-   │                                                                       │
-   │       → Code RL → SWE RL → Nemotron-Cascade 2                         │
-   │                                                                       │
-   └──────────────────────────────────────────────────────────────────────┘
-
-   MOPD is a SINGLE stabilization stage between Multi-domain RL and RLHF.
-   It is NOT a per-round loop interleaved with each RL stage.
-   The cascade does not return to MOPD between later stages.
-```
-
-The placement is the key recipe choice. By the time MOPD runs:
+The placement is the key recipe choice. MOPD is a **single stabilization stage between Multi-domain RL and RLHF** — not a per-round loop interleaved with each RL stage, and the cascade does not return to MOPD between later stages. By the time MOPD runs:
 
 - **SFT** has produced a strong math reasoner (becomes math teacher).
 - **IF-RL** has built instruction-following capability but may have hurt human alignment.
@@ -155,93 +143,91 @@ training pool composition (approximate, from paper §4.4):
 
 There is **no cross-teacher logit mixing**. Each token in a rollout is supervised by exactly one teacher's log-prob. This is the architectural choice vs DeepSeek-V4's $\sum_i w_i D_{\text{KL}}(\pi_\theta \| \pi_{E_i})$ weighted sum.
 
-### Hyperparameters
+### Supporting machinery (skim or skip)
 
-A discrepancy between the **prose** (p.13) and the **appendix Table 8** worth knowing:
+> [!note]- Hyperparameters and the prose-vs-Table 8 inconsistency — open if you're reproducing
+> A discrepancy between the **prose** (p.13) and the **appendix Table 8** worth knowing:
+>
+> | Setting | Prose §4.4 | Table 8 (Appendix B) |
+> | ------- | ---------- | -------------------- |
+> | Learning rate | 2×10⁻⁶ with linear warmup over first 30 steps from 2×10⁻⁷ | 3×10⁻⁶ |
+> | Steps | "Typically converges within 40–50 steps" | 52 |
+> | Rollouts per prompt | 4 | 4 |
+> | Prompts per update (batch) | 128 | 128 |
+> | Effective batch (responses) | 512 | — |
+> | Max response length | — | 98K |
+> | Importance bounds | $\epsilon_{\text{low}} = 0.5$, $\epsilon_{\text{high}} = 2.0$ | — |
+> | Temperature / top-p | — | 1.0 / 1.0 |
+> | Overlong filtering | — | False |
+> | KL form | reverse-KL, sampled-token (not full-vocab) | — |
+>
+> Lead with the prose numbers; flag the LR inconsistency to anyone reproducing. The paper makes no claim about which is canonical.
 
-| Setting | Prose §4.4 | Table 8 (Appendix B) |
-| ------- | ---------- | -------------------- |
-| Learning rate | 2×10⁻⁶ with linear warmup over first 30 steps from 2×10⁻⁷ | 3×10⁻⁶ |
-| Steps | "Typically converges within 40–50 steps" | 52 |
-| Rollouts per prompt | 4 | 4 |
-| Prompts per update (batch) | 128 | 128 |
-| Effective batch (responses) | 512 | — |
-| Max response length | — | 98K |
-| Importance bounds | $\epsilon_{\text{low}} = 0.5$, $\epsilon_{\text{high}} = 2.0$ | — |
-| Temperature / top-p | — | 1.0 / 1.0 |
-| Overlong filtering | — | False |
-| KL form | reverse-KL, sampled-token (not full-vocab) | — |
+> [!note]- Why this is cheap relative to RLHF
+> Three structural reasons MOPD is cheap relative to RLHF or rerunning specialized RL:
+>
+> - **Teachers are free.** Math teacher = SFT checkpoint (no extra training). Multi-domain teacher = the best checkpoint you saved anyway during Multi-domain RL. RLHF teacher = 25 steps of side-branch RLHF (smaller than the main RLHF stage).
+> - **Dense per-token signal.** Unlike RLHF's per-trajectory scalar reward, MOPD scores every token. ~52 steps with dense signal recovers what 160 RLHF steps with sparse reward would.
+> - **No infrastructure changes.** Same tokenizer, same vocab, same base. The NeMo-RL OPD primitive needs only a per-batch teacher swap to become MOPD — no DeepSeek-V4-style hidden-state cache, no FP4 QAT, no TileLang kernel.
 
-Lead with the prose numbers; flag the LR inconsistency to anyone reproducing. The paper makes no claim about which is canonical.
+## Headline evidence
 
-### Why this works at modest cost
+**Setup.** Student: Nemotron-Cascade-2-30B-A3B (30B total / 3B active MoE), trained on 8× H100 nodes via NeMo-RL with a fork for multi-teacher dispatch. MOPD stage runs after Multi-domain RL using 128 prompts × 4 rollouts per update, LR 2×10⁻⁶ with 30-step linear warmup, ~52 total steps. Three benchmarks dominate the MOPD-specific story: ArenaHard v2, AIME 25, and (indirectly) the medal benchmarks.
 
-Three structural reasons MOPD is cheap relative to RLHF or rerunning specialized RL:
-
-- **Teachers are free.** Math teacher = SFT checkpoint (no extra training). Multi-domain teacher = the best checkpoint you saved anyway during Multi-domain RL. RLHF teacher = 25 steps of side-branch RLHF (smaller than the main RLHF stage).
-- **Dense per-token signal.** Unlike RLHF's per-trajectory scalar reward, MOPD scores every token. ~52 steps with dense signal recovers what 160 RLHF steps with sparse reward would.
-- **No infrastructure changes.** Same tokenizer, same vocab, same base. The NeMo-RL OPD primitive needs only a per-batch teacher swap to become MOPD — no DeepSeek-V4-style hidden-state cache, no FP4 QAT, no TileLang kernel.
-
----
-
-## Experiments
-
-### Headline numbers (Tables 1–2)
-
-Nemotron-Cascade-2-30B-A3B vs same-active-parameter baselines:
-
-| Benchmark | Nemotron-Cascade-2-30B-A3B | Qwen3.5-35B-A3B (2026-02) | Nemotron-3-Super-120B-A12B (2026-03) |
-| --------- | -------------------------- | -------------------------- | ------------------------------------ |
-| **IMO 2025** | **35/42 (Gold)** | — | — |
-| IMO AnswerBench | **79.3** | 74.8 | 77.2 |
-| IMO ProofBench | **72.9** | — | — |
-| **AIME 2025** | **92.4** (98.6 TIR) | 91.9 | 90.2 |
-| AIME 2026 | 90.9 (95.0 TIR) | **91.1** | 89.8 |
-| HMMT Feb25 | **94.6** | 89.0 | 93.7 |
-| **IOI 2025** | **439.28/600 (Gold)** | 348.6 | — |
-| **ICPC WF 2025** | **10/12 (Gold)** | — | — |
-| LiveCodeBench v6 | **87.2** (88.4 TIR) | 74.6 | 78.7 |
-| LCB Pro 25Q2 Med | **27.6** (36.8 TIR) | 17.8 | 23.2 |
-| MMLU-Pro | 79.8 | **85.3** | 83.7 |
-| GPQA-Diamond | 76.1 | **84.2** | 79.2 |
-| ArenaHard v2 (Avg) | **83.5** | 65.4 | — |
-| IFBench (prompt) | **82.9** | 70.2 | 72.6 |
-| SWE Verified (OpenHands) | 50.2 | **69.2** | 60.5 |
-| Terminal Bench 2.0 | 21.1 | **40.5** | 31.0 |
-| 𝜏²-Bench | 58.9 | **81.2** | 61.2 |
-
-The paper's Footnote 1 (p.4): Nemotron-Cascade 2 is *"the second open-weight LLM, after DeepSeek-V3.2-Speciale-671B-A37B, to achieve gold-medal performance in both the IMO and IOI"* — at **3B active parameters** vs DeepSeek's 37B active.
-
-### The MOPD-specific result: step efficiency vs RLHF
-
-The paper's main argument for MOPD (Table 3, prose p.13):
+**The main MOPD result** (Table 3, prose p.13):
 
 | Stage on the cascade | Steps | ArenaHard v2 (hard / overall) | AIME 25 |
-| -------------------- | ----- | ------------------------------ | ------- |
+| -------------------- | ----: | ----------------------------- | -----:  |
 | Multi-domain RL output | — | — | 91.0 |
-| **MOPD** (52 steps) | **52** | **85.5 / 71.0** | **92.0** |
-| RLHF (160 steps) | 160 | 80.7 / 71.2 | — |
+| **MOPD** (52 steps)    | **52** | **85.5 / 71.0** | **92.4** |
+| RLHF (160 steps)       | 160 | 80.7 / 71.2 | — |
 
-MOPD reaches higher ArenaHard scores in ~3× fewer steps than RLHF. On AIME 25 the +1.0 absolute improvement (91.0 → 92.0) is modest but came in 30 steps, where GRPO needed 25 for 91.0 — so on math MOPD is roughly compute-matched with GRPO, but on human-preference benchmarks it dramatically beats RLHF on step efficiency.
+> [!success] The MOPD step-efficiency number
+> MOPD reaches higher ArenaHard scores in ~3× fewer steps than RLHF. On AIME 25 the +1.4 absolute improvement (91.0 → 92.4) is modest but came in 30 steps, where GRPO needed 25 for 91.0 — math is roughly compute-matched, but human-preference benchmarks heavily favor MOPD per step.
+
+**The training dynamics** (Figure 3): reverse-KL drops monotonically, gradient norm decays smoothly, and MOPD overtakes GRPO on AIME25 within 30 steps and stays above the teacher line through step 60.
+
+![MOPD training dynamics (paper Fig. 3): reverse-KL ↓, grad_norm ↓, AIME25 avg@64 — MOPD overtakes GRPO and meets the teacher line](EN/wiki/rl-infra/mopd-figs/mopd-training-dynamics.png)
 
 > [!important] What the paper does NOT report
 > No GPU-hour or wall-clock comparison for MOPD specifically. No leave-MOPD-out ablation isolating its contribution per benchmark across the whole cascade. No ablation of teacher count (would 1 or 2 work? Would 4–6 be better?). The step-efficiency claim is **per-step, not per-second** — which matters because each MOPD step still requires a teacher forward pass.
 
-### Where MOPD doesn't help
-
-The benchmarks Nemotron-Cascade 2 loses on tell the story:
-
-| Benchmark | Cascade 2 | Qwen3.5-35B-A3B | Δ |
-| --------- | --------- | --------------- | -- |
-| MMLU-Pro | 79.8 | 85.3 | **−5.5** |
-| GPQA-Diamond | 76.1 | 84.2 | **−8.1** |
-| SWE Verified (OpenHands) | 50.2 | 69.2 | **−19.0** |
-| Terminal Bench 2.0 | 21.1 | 40.5 | **−19.4** |
-| 𝜏²-Bench | 58.9 | 81.2 | **−22.3** |
-
-The paper concedes (p.5) Cascade 2 *"underperforms Qwen3.5-35B-A3B primarily on knowledge-intensive and agentic tasks."* The structural reason ties back to MOPD: **the teacher pool has no GPQA teacher and no agentic-tool-use teacher**. MOPD can only restore capabilities for which a cascade-internal teacher exists. Knowledge gaps and agentic-task gaps require either an external teacher or longer RL — neither of which is in the recipe.
-
----
+> [!example]- Full benchmark sweep (drill-down)
+> Nemotron-Cascade-2-30B-A3B vs same-active-parameter baselines:
+>
+> | Benchmark | Nemotron-Cascade-2-30B-A3B | Qwen3.5-35B-A3B (2026-02) | Nemotron-3-Super-120B-A12B (2026-03) |
+> | --------- | -------------------------- | -------------------------- | ------------------------------------ |
+> | **IMO 2025** | **35/42 (Gold)** | — | — |
+> | IMO AnswerBench | **79.3** | 74.8 | 77.2 |
+> | IMO ProofBench | **72.9** | — | — |
+> | **AIME 2025** | **92.4** (98.6 TIR) | 91.9 | 90.2 |
+> | AIME 2026 | 90.9 (95.0 TIR) | **91.1** | 89.8 |
+> | HMMT Feb25 | **94.6** | 89.0 | 93.7 |
+> | **IOI 2025** | **439.28/600 (Gold)** | 348.6 | — |
+> | **ICPC WF 2025** | **10/12 (Gold)** | — | — |
+> | LiveCodeBench v6 | **87.2** (88.4 TIR) | 74.6 | 78.7 |
+> | LCB Pro 25Q2 Med | **27.6** (36.8 TIR) | 17.8 | 23.2 |
+> | MMLU-Pro | 79.8 | **85.3** | 83.7 |
+> | GPQA-Diamond | 76.1 | **84.2** | 79.2 |
+> | ArenaHard v2 (Avg) | **83.5** | 65.4 | — |
+> | IFBench (prompt) | **82.9** | 70.2 | 72.6 |
+> | SWE Verified (OpenHands) | 50.2 | **69.2** | 60.5 |
+> | Terminal Bench 2.0 | 21.1 | **40.5** | 31.0 |
+> | 𝜏²-Bench | 58.9 | **81.2** | 61.2 |
+>
+> The paper's Footnote 1 (p.4): Nemotron-Cascade 2 is *"the second open-weight LLM, after DeepSeek-V3.2-Speciale-671B-A37B, to achieve gold-medal performance in both the IMO and IOI"* — at **3B active parameters** vs DeepSeek's 37B active.
+>
+> **Where MOPD doesn't help.** The benchmarks Nemotron-Cascade 2 loses on tell the story:
+>
+> | Benchmark | Cascade 2 | Qwen3.5-35B-A3B | Δ |
+> | --------- | --------- | --------------- | -- |
+> | MMLU-Pro | 79.8 | 85.3 | **−5.5** |
+> | GPQA-Diamond | 76.1 | 84.2 | **−8.1** |
+> | SWE Verified (OpenHands) | 50.2 | 69.2 | **−19.0** |
+> | Terminal Bench 2.0 | 21.1 | 40.5 | **−19.4** |
+> | 𝜏²-Bench | 58.9 | 81.2 | **−22.3** |
+>
+> The paper concedes (p.5) Cascade 2 *"underperforms Qwen3.5-35B-A3B primarily on knowledge-intensive and agentic tasks."* The structural reason ties back to MOPD: **the teacher pool has no GPQA teacher and no agentic-tool-use teacher**. MOPD can only restore capabilities for which a cascade-internal teacher exists. Knowledge gaps and agentic-task gaps require either an external teacher or longer RL — neither of which is in the recipe.
 
 ## Strengths and limitations
 
@@ -249,7 +235,7 @@ The two strongest points: (1) the **cascade-internal teacher** insight is the ge
 
 Where the work is honest about scope but the limits matter:
 
-- **Not algorithmically novel.** The loss is GKD reverse-KL OPD ([[on-policy-distillation|Agarwal 2024]]) plus truncated importance weighting (standard in async on-policy RL — DAPO, PPO-clip). The per-prompt teacher routing was published two months earlier by Xiaomi MiMo-V2-Flash under the same acronym (see [naming collision](#naming-collision-with-xiaomi-mimo-v2-flash)).
+- **Not algorithmically novel.** The loss is GKD reverse-KL OPD ([[on-policy-distillation|Agarwal 2024]]) plus truncated importance weighting (standard in async on-policy RL — DAPO, PPO-clip). The per-prompt teacher routing was published two months earlier by Xiaomi MiMo-V2-Flash under the same acronym.
 - **No teacher-count ablation.** Would 1 or 2 teachers work? Would adding a GPQA teacher fix the knowledge-task gap? The paper doesn't say.
 - **No leave-MOPD-out ablation across the full cascade.** Table 3 / Figure 3 compare MOPD vs GRPO on AIME25 and ArenaHard v2 only. We can't isolate MOPD's contribution to IMO/IOI/ICPC gold.
 - **Hyperparameter inconsistency.** Prose says LR 2e-6 + warmup; Table 8 says 3e-6. Suggests the schedule was tuned more than reported.
@@ -261,8 +247,6 @@ Where the work is honest about scope but the limits matter:
 > [!warning] Naming collision with Xiaomi MiMo-V2-Flash
 > The acronym **MOPD was first used by Xiaomi** in MiMo-V2-Flash ([arXiv:2601.02780](https://arxiv.org/abs/2601.02780), 2026-01-06), where it stands for **Multi-Teacher On-Policy Distillation**. The Xiaomi MiMo Twitter account: *"Beyond arch innovation, MiMo-V2-Flash is cooked via a NEW post-training paradigm Multi-Teacher On-Policy Distillation (MOPD)"* ([source](https://x.com/XiaomiMiMo/status/2000930865757741342)). NVIDIA's Nemotron-Cascade 2 (2026-03) re-purposes the acronym as **Multi-Domain On-Policy Distillation** with essentially the same algorithm (per-prompt teacher routing for token-level reverse-KL distillation). The Nemotron-Cascade 2 paper cites Xiao et al. 2026 as prior work but doesn't acknowledge the acronym overlap. When reading any 2026 MOPD reference, **check whether it's Xiaomi's "Multi-Teacher" or NVIDIA's "Multi-Domain"** — same idea, same letters, different framings.
 
----
-
 ## What this means
 
 Two predictions worth tracking:
@@ -271,8 +255,6 @@ Two predictions worth tracking:
 2. **The "free internal teacher" insight will spread.** The DeepSeek-V4-style approach — train 10+ specialists, weight-merge with full-vocab KL — is expensive and infrastructure-heavy. NVIDIA's "the teacher is just an earlier checkpoint in your pipeline" insight is dramatically cheaper. For most practitioners without DeepSeek-V4 infrastructure, MOPD's recipe is the realistic adoption path.
 
 What this is *not*: a universal cure for cascade-RL drift. MOPD can only restore capabilities for which a cascade-internal teacher exists. Capability *extension* still requires either RL with verifiable reward or an external teacher.
-
----
 
 ## Source code & reproduction
 
@@ -358,8 +340,6 @@ This is **closer to the MOPD paper than NeMo-RL** — set `teacher_key="data_sou
 | [veRL `algo/opd`](https://verl.readthedocs.io/en/latest/algo/opd.html) | Multi-teacher routing via `data_source` | **Closest off-the-shelf** |
 | [NVIDIA NeMo-RL OPD](https://github.com/NVIDIA-NeMo/RL) | Single-teacher with top-k KL | Closest in spirit; needs multi-teacher extension |
 | [Tinker cookbook](https://github.com/thinking-machines-lab/tinker-cookbook) | Single + multi-teacher recipes | Multi-teacher but token-level KL, no per-prompt routing |
-
----
 
 ## Related reading
 
