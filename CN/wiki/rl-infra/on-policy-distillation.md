@@ -3,7 +3,7 @@ title: "On-Policy Distillation (OPD)：用稠密的教师信号替代 RL"
 category: rl-infra
 tags: [on-policy-distillation, opd, gkd, minillm, distillation, rl-post-training, reverse-kl, family-overview]
 created: 2026-05-19
-updated: 2026-05-21
+updated: 2026-05-22
 status: mature
 paper: arXiv:2306.13649
 code: https://github.com/huggingface/trl/blob/main/trl/trainer/gkd_trainer.py
@@ -77,6 +77,104 @@ LLM post-training 把强 teacher 或可验证 reward 的能力迁移到小学生
 
 OPD 是唯一一行前两列都打钩、后两列都不打钩的。
 
+## 前置概念：KL、on-policy、credit assignment、value head
+
+后面所有数学依赖的四个概念。如果已经熟练可以跳过 —— 后续不再解释。
+
+### KL 散度
+
+**Kullback-Leibler 散度**衡量同一定义域上两个概率分布 $P, Q$ 的差异：
+
+$$
+\mathrm{KL}(P \,\|\, Q) = \sum_x P(x) \log \frac{P(x)}{Q(x)} = \mathbb{E}_{x \sim P}\!\left[\log \frac{P(x)}{Q(x)}\right]
+$$
+
+性质：
+
+- $\mathrm{KL}(P\|Q) \ge 0$，当且仅当 $P = Q$ 时取等
+- **不对称**：$\mathrm{KL}(P\|Q) \ne \mathrm{KL}(Q\|P)$。这一非对称性是 "forward" vs "reverse" 之分的根源
+- 信息论解读：用为 $Q$ 优化的编码去编码服从 $P$ 的样本，平均多花的比特数
+
+期望是对 $P$ 取的 —— 积分只在"第一个参数"有质量的地方才有贡献。这就是两种方向行为差异的根本。
+
+### Forward vs Reverse KL —— mode-covering vs mode-seeking
+
+对同一对 $(P_{\text{target}}, P_{\text{model}})$ 的两种方向：
+
+| 方向 | 公式 | 期望对谁取 | 行为 |
+| ---- | ---- | --------- | ---- |
+| **Forward KL** | $\mathrm{KL}(P_{\text{target}} \| P_{\text{model}})$ | $x \sim P_{\text{target}}$ | **Mode-covering**：target 有质量的地方 model 必须放质量，否则 $\log(P_{\text{target}}/P_{\text{model}})$ 爆炸。覆盖尾部 |
+| **Reverse KL** | $\mathrm{KL}(P_{\text{model}} \| P_{\text{target}})$ | $x \sim P_{\text{model}}$ | **Mode-seeking**：model 不能在 target 没有质量的地方放质量，但可以忽略 target 的尾部（model 不在那里采样）。集中在最高概率 mode |
+
+具体 LM 例子。假设老师下一 token 分布是 `the:0.35, a:0.25, this:0.15, [47 个尾部 token 合计]:0.25`。一个容量有限的学生：
+
+- **Forward KL** 强制学生在所有 50 个 token 上分配非零概率，包括那 47 个尾部 —— 否则在老师采到的每个尾部 token 上都要付 $-\log 0 = +\infty$。容量浪费在尾部建模上
+- **Reverse KL** 允许学生几乎全部质量放在 `{the, a, this}` —— 期望是对学生自己分布取的，学生不采的地方根本不算损失。容量集中到老师的 mode 上
+
+对 LLM 蒸馏，**我们要 mode-seeking**，原因有二：(1) 尾部大多是噪声 / 罕见事件，学生不需要建模；(2) 推理时学生每步只生成一个 token，不是输出完整分布 —— 把质量集中在"老师最偏好的几个 token"上正是我们要的行为。
+
+[GKD paper](https://arxiv.org/abs/2306.13649) 在生成任务上实验证实：reverse KL > forward KL > MLE，尤其当学生容量明显小于老师时差距更大。
+
+### "每 token 反向 KL" 究竟是什么
+
+在 Transformer LM 中，每个生成位置 $t$ 上学生和老师**各自对整个词表 $V$**（通常 $|V| \approx$ 10 万-20 万）输出一个完整的概率分布：
+
+- 老师：$\pi_T(\cdot \mid y_{<t}, x)$ —— $|V|$ 维概率向量
+- 学生：$\pi_\theta(\cdot \mid y_{<t}, x)$ —— $|V|$ 维概率向量
+
+**位置 $t$ 上的每 token 反向 KL**：
+
+$$
+\mathrm{KL}\!\big(\pi_\theta(\cdot|y_{<t},x) \,\|\, \pi_T(\cdot|y_{<t},x)\big) = \sum_{v \in V} \pi_\theta(v|y_{<t},x) \log \frac{\pi_\theta(v|y_{<t},x)}{\pi_T(v|y_{<t},x)}
+$$
+
+"每 token" 的意思是：**每个位置 $t$ 有自己独立的一个 KL**，在该位置学生和老师的词表分布之间计算。OPD 损失把这些位置 KL 全部加起来。期望对学生分布取（所以叫 reverse）。
+
+### "on-policy" 是什么意思
+
+"On-policy" 意思是 **训练用的轨迹来自当前学生** $\pi_\theta$，**不是**来自固定数据集，也**不是**来自老师。
+
+跟 off-policy SFT 的对比很尖锐：
+
+| | Off-policy SFT / KD | On-policy OPD |
+| --- | ------------------- | -------------- |
+| 轨迹来源 | 固定语料（老师 rollout、人工 demo） | **当前学生 rollout 新轨迹** |
+| 训练时的状态分布 | "老师空间"——老师会访问的状态 | "学生空间"——学生推理时实际访问的状态 |
+| 失败模式 | **协变量偏移 / 错误累积**：学生训练时见到的状态推理时永远见不到。推理时一旦犯错就进入陌生地带，错误级联放大 | 没有这个问题——梯度直接在部署模型实际遇到的状态上计算 |
+
+这正是 **DAGGER（Ross, Gordon, Bagnell, AISTATS 2011）** 的洞察：模仿学习者要在 **自己的错误** 上被纠正，而不是在专家的干净轨迹上。OPD 就是 LLM token 序列上的 DAGGER。
+
+实现上 on-policy 意味着每个训练 step 做：
+
+1. 学生 rollout 新一条轨迹：$y \sim \pi_\theta(\cdot \mid x)$ —— 通常长度到 `max_new_tokens`
+2. 对 $y$ 中每个位置 $t$，在相同前缀 $(x, y_{<t})$ 上**跑老师 forward**，得到 $\pi_T(\cdot \mid y_{<t}, x)$
+3. 计算学生和老师分布的每 token 反向 KL
+4. 反传给学生
+
+老师 forward 是开销大头（每条训练 rollout 一次老师 forward）。工程技巧 —— top-k KL、hidden-state caching、FP4 量化老师 —— 主要都是为了让这一步可负担。
+
+### Credit assignment、sparse reward 和 value head
+
+这三个概念解释了 **RL 付出的开销**，也正是 OPD 省下来的部分。
+
+**Credit assignment（信用分配）** 是要弄清楚一条轨迹中哪些动作（token）该为最终结果负责（或受表扬）。LLM RL 典型场景：
+
+- 学生 rollout 一条 500 token 的数学解答
+- 验证器在最后返回 **1 个 scalar**：答案对了 `reward = 1`，错了 `reward = 0`
+- 要更新每个 token 的 logprob，你得知道"这个 token 对成功有没有贡献" —— 但你只有 500 token 末尾的 1 bit 信息
+
+奖励是 **sparse**（大部分 token 是 0）、**delayed**（信号在末尾才出现）、**coarse-grained**（序列级而非 token 级）。各算法各有 baseline 的解法：
+
+| 算法 | 怎么做 credit assignment |
+| ---- | ----------------------- |
+| **原始 REINFORCE** | 整条轨迹每个 token 用同一个末尾 scalar 当权重。方差超高、训练不稳 |
+| **PPO** | 训一个 **value head** $V_\phi(s_t)$ 预测从状态 $s_t$ 出发的期望回报。每 token 算 advantage $A_t = (r_t + \gamma V_\phi(s_{t+1})) - V_\phi(s_t)$，用 advantage 当 per-token 权重 |
+| **GRPO** | 每个 prompt 采 $N$ 条 rollout，用组均值当 baseline：$A_t = R_i - \bar R$。不用 value head，但 rollout 成本 $\times N$ |
+
+**Value head** 是一个小 MLP —— 通常就是策略模型最后 hidden state 之上接一个 Linear($H \to 1$) —— 预测一个 scalar："从这个状态往后的期望总回报"。7B PPO 配置下额外 ~7K 参数（参数量可忽略），但 value 分支的 forward/backward 翻倍，且要调 value loss。实现见 TRL 的 `AutoModelForCausalLMWithValueHead`（[`trl/models/modeling_value_head.py`](https://github.com/huggingface/trl/blob/main/trl/models/modeling_value_head.py)）。
+
+**OPD 为什么能绕掉这一整套**。老师在每个位置都提供一个 *完整分布* —— 这就是 token 级稠密信号。没有 sparse reward、没有 credit assignment、不需要 value head。"奖励" $\log(\pi_T(y_t)/\pi_\theta(y_t))$ 自带 per-token 信息量、方差天然低。这个 RL critic 基础设施的整体坍缩，才是 OPD vs RL 的真正计算节省 —— 比任何算法新意都重要。
+
 ## 谱系：GKD → MiniLLM → TML 重框架 → 变体
 
 技术家族的时间发展，附标志文献：
@@ -119,22 +217,80 @@ $$
 | $\beta$（KL 方向） | 0 = 正向 KL（mean-seeking）；1 = 反向 KL（mode-seeking）；0.5 = 对称 JSD。 | 1.0（反向） |
 | Discount $\gamma$ | 跨轨迹时间折扣。 | 0（reward 本来就 token 级稠密） |
 
-### 与策略梯度的对偶
+### 与策略梯度的对偶 —— 完整推导
 
-这是让 [[grpo|GRPO]] / [[ppo-for-llm|PPO]] 出身的人秒懂的结果。MiniLLM §3 的梯度推导：
+这是让 [[grpo|GRPO]] / [[ppo-for-llm|PPO]] 出身的人秒懂的结果。推导很短，完整列出。
+
+**Step 1.** 从纯 OPD 目标出发（单个位置 $t$，下标暂时省略）：
 
 $$
-\nabla_\theta\,\mathbb{E}_{y\sim\pi_\theta}\!\big[D_{\text{KL}}(\pi_\theta\|\pi_T)\big] \;=\; -\,\mathbb{E}_{y\sim\pi_\theta}\!\left[\sum_{t} \nabla_\theta \log\pi_\theta(y_t\mid y_{<t})\cdot \underbrace{\log\frac{\pi_T(y_t\mid y_{<t})}{\pi_\theta(y_t\mid y_{<t})}}_{\text{每 token 稠密"reward"}}\right]
+J(\theta) = \mathbb{E}_{y \sim \pi_\theta}\!\left[D_{\text{KL}}(\pi_\theta \| \pi_T)\right] = \mathbb{E}_{y \sim \pi_\theta}\!\left[\log \frac{\pi_\theta(y)}{\pi_T(y)}\right]
 $$
 
-就是 **普通 REINFORCE**，每 token reward 换成 teacher log-ratio。三个直接推论：
+期望对学生分布取。注意期望*和*被积函数都依赖 $\theta$。
 
-- **OPD 继承 PPO 的稳定性**。KL-to-teacher 同时充当 trust-region 正则项。
-- **OPD = 去 baseline 去 value head 的 GRPO**。GRPO 已经用 group-relative advantage 砍掉了 critic；OPD 再进一步，把 reward 本身做成 token 级。
-- **discount 不重要**。Reward 已经稠密，没有 credit assignment 问题留给 $\gamma$ 解决。
+**Step 2.** 求梯度。因为采样分布也依赖 $\theta$，要用 score function（REINFORCE）恒等式 $\nabla_\theta \mathbb{E}_{y \sim \pi_\theta}[f(y)] = \mathbb{E}_{y \sim \pi_\theta}[f(y) \nabla_\theta \log \pi_\theta(y) + \nabla_\theta f(y)]$：
+
+$$
+\nabla_\theta J(\theta) = \mathbb{E}_{y \sim \pi_\theta}\!\left[\log\frac{\pi_\theta(y)}{\pi_T(y)} \cdot \nabla_\theta \log \pi_\theta(y) \;+\; \nabla_\theta \log \pi_\theta(y)\right]
+$$
+
+第二项期望为 0（$\mathbb{E}_{\pi_\theta}[\nabla_\theta \log \pi_\theta] = 0$，标准 score function 恒等式），所以去掉：
+
+$$
+\nabla_\theta J(\theta) = \mathbb{E}_{y \sim \pi_\theta}\!\left[\log\frac{\pi_\theta(y)}{\pi_T(y)} \cdot \nabla_\theta \log \pi_\theta(y)\right]
+$$
+
+**Step 3.** 翻符号（我们是要 *最小化* KL，所以梯度*下降*方向是 $-\nabla_\theta J$）：
+
+$$
+-\nabla_\theta J(\theta) = \mathbb{E}_{y \sim \pi_\theta}\!\left[\log\frac{\pi_T(y)}{\pi_\theta(y)} \cdot \nabla_\theta \log \pi_\theta(y)\right]
+$$
+
+**Step 4.** 把所有位置加起来。完整 OPD 梯度（MiniLLM §3）：
+
+$$
+\boxed{\;-\nabla_\theta \mathcal{L}_{\text{OPD}} \;=\; \mathbb{E}_{y \sim \pi_\theta}\!\left[\sum_{t} \nabla_\theta \log \pi_\theta(y_t \mid y_{<t}) \cdot \underbrace{\log\frac{\pi_T(y_t \mid y_{<t})}{\pi_\theta(y_t \mid y_{<t})}}_{\text{每 token 稠密"reward"}}\right]\;}
+$$
+
+**Step 5.** 跟 REINFORCE 策略梯度对比。对 RL 目标 $J_{\text{RL}}(\theta) = \mathbb{E}_{y \sim \pi_\theta}[R(y)]$：
+
+$$
+\nabla_\theta J_{\text{RL}} = \mathbb{E}_{y \sim \pi_\theta}\!\left[\sum_t \nabla_\theta \log \pi_\theta(y_t \mid y_{<t}) \cdot R(y)\right]
+$$
+
+两个表达式**结构完全相同**。唯一差别是"奖励"是什么：
+
+$$
+R_{\text{OPD}}(s_t, a_t) \;=\; \log \frac{\pi_T(y_t \mid y_{<t})}{\pi_\theta(y_t \mid y_{<t})}
+$$
+
+**OPD 就是 REINFORCE，奖励 = teacher log-ratio 当作 per-token 稠密 reward**。
+
+### 为什么这个对偶是 load-bearing
+
+合成奖励 $\log(\pi_T/\pi_\theta)$ 的三个性质，决定了 RL critic 那一整套全部消失：
+
+| 性质 | 后果 |
+| ---- | ---- |
+| **Dense（稠密）**：每 token 都有非平凡数字，不只是末尾 | 不需要 credit assignment。不需要 value head 来把末尾稀疏 reward 反传到各位置 |
+| **Informative（信息丰富）**：幅值告诉学生该往哪走 —— 老师比学生更偏好这 token 时，ratio > 1，梯度推学生靠近 | 不用 baseline 方差就够低。GRPO 那个组均值 baseline 也不需要了 |
+| **Self-bounded（自界）**：学生与老师对齐时 ratio → 1，log → 0，梯度消失 | 收敛到老师分布。没有 reward hacking —— reward 是相对老师 *定义* 出来的。KL 项天然兼任 trust-region 正则（PPO 风格），不需要外加 KL penalty |
+
+从 RL 到 OPD 的结构性坍缩：
+
+| RL 组件 | OPD 等价物 |
+| ------- | ---------- |
+| Reward model | 老师 LM forward |
+| 稀疏 outcome reward $R(y) \in \{0, 1\}$ | 稠密 per-token $\log(\pi_T/\pi_\theta)$ |
+| Value head（PPO） | 不需要 —— reward 已经是 token 级 |
+| Group-mean baseline（GRPO） | 不需要 —— 方差已经很低 |
+| 重要性比率 + clip $\min(r_t A_t, \text{clip}(r_t) A_t)$ | 不需要 —— 按构造完全 on-policy |
+| KL-to-old-policy penalty | 已内置于 loss —— KL-to-teacher 本身就是 loss |
+| Discount $\gamma$ | 设 0 —— 不需要 credit 传播 |
 
 > [!quote] 心智模型
-> OPD 是把 GRPO 目标里稀疏 outcome reward $R(y) \in \{0, 1\}$ 换成稠密 token 级信号 $\log(\pi_T/\pi_\theta)$，再把 value head 拿掉（因为 reward 已经是 token 级的）后的 GRPO 目标。
+> OPD = GRPO 目标，把稀疏 outcome reward $R(y) \in \{0, 1\}$ 换成稠密 token 级信号 $\log(\pi_T/\pi_\theta)$，再把 value head 拿掉（reward 已经是 token 级）。KL-to-teacher **既产生**梯度信号，**又约束**每步策略移动的幅度。
 
 ### 为什么 "on-policy" 重要
 

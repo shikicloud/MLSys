@@ -3,7 +3,7 @@ title: "On-Policy Distillation (OPD): Dense Teacher Signal as an RL Replacement"
 category: rl-infra
 tags: [on-policy-distillation, opd, gkd, minillm, distillation, rl-post-training, reverse-kl, family-overview]
 created: 2026-05-19
-updated: 2026-05-21
+updated: 2026-05-22
 status: mature
 paper: arXiv:2306.13649
 code: https://github.com/huggingface/trl/blob/main/trl/trainer/gkd_trainer.py
@@ -77,6 +77,104 @@ Five competing methods on the same axes:
 
 OPD is the only row with both ticks in the first two columns and no ticks in the last two.
 
+## Preliminaries: KL, on-policy, credit assignment, value head
+
+Four concepts the rest of the page relies on. Skip this section if you already know them; the math after this point assumes them.
+
+### KL divergence
+
+The **Kullback-Leibler divergence** measures how different two probability distributions $P, Q$ on the same domain are:
+
+$$
+\mathrm{KL}(P \,\|\, Q) = \sum_x P(x) \log \frac{P(x)}{Q(x)} = \mathbb{E}_{x \sim P}\!\left[\log \frac{P(x)}{Q(x)}\right]
+$$
+
+Properties:
+
+- $\mathrm{KL}(P\|Q) \ge 0$, with equality iff $P = Q$.
+- **Asymmetric**: $\mathrm{KL}(P\|Q) \ne \mathrm{KL}(Q\|P)$. This asymmetry is the entire reason "forward" vs "reverse" matters.
+- Information-theoretic reading: the average extra bits needed to encode samples from $P$ using a code optimized for $Q$.
+
+The expectation is taken under $P$ — only the "first" argument's mass matters for where the integral has support. This drives the difference between the two directions.
+
+### Forward vs reverse KL — mode-covering vs mode-seeking
+
+Two directions for a single pair $(P_{\text{target}}, P_{\text{model}})$:
+
+| Direction | Formula | Expectation over | Behavior |
+| --------- | ------- | ---------------- | -------- |
+| **Forward KL** | $\mathrm{KL}(P_{\text{target}} \| P_{\text{model}})$ | $x \sim P_{\text{target}}$ | **Mode-covering**: model must put mass wherever target has mass, or the term $\log(P_{\text{target}}/P_{\text{model}})$ blows up. Tail-aware. |
+| **Reverse KL** | $\mathrm{KL}(P_{\text{model}} \| P_{\text{target}})$ | $x \sim P_{\text{model}}$ | **Mode-seeking**: model must avoid putting mass where target has no mass, but can ignore target's tails (it never samples there). Concentrates on the highest-probability modes. |
+
+Concrete LM example. Suppose the teacher's next-token distribution is `the:0.35, a:0.25, this:0.15, [47 tail tokens]:0.25 combined`. A student with limited capacity:
+
+- **Forward KL** forces the student to assign non-zero probability to all 50 tokens, including the 47 tail tokens — otherwise it pays $-\log 0 = +\infty$ on each one the teacher samples. Wasted capacity on tail modeling.
+- **Reverse KL** lets the student place essentially all its mass on `{the, a, this}` — the expectation is over the student's own samples, so anything the student doesn't sample contributes nothing. Capacity concentrates on the teacher's modes.
+
+For LLM distillation, **we want mode-seeking** for two reasons: (1) the tail is mostly noise/rare events we don't need the student to model, (2) at inference time the student generates *one* token per step, not the full distribution — concentrating mass on what the teacher prefers most is exactly the right behavior.
+
+The [GKD paper](https://arxiv.org/abs/2306.13649) experimentally confirms reverse KL > forward KL > MLE on generative tasks, especially when the student has significantly less capacity than the teacher.
+
+### What "per-token reverse KL" actually means
+
+In a Transformer LM, at each generated position $t$ the student and teacher each produce a **full categorical distribution over the vocabulary** $V$ (typically $|V| \approx$ 100K-200K):
+
+- Teacher: $\pi_T(\cdot \mid y_{<t}, x)$ — a $|V|$-dim probability vector
+- Student: $\pi_\theta(\cdot \mid y_{<t}, x)$ — a $|V|$-dim probability vector
+
+The **per-token reverse KL** at position $t$:
+
+$$
+\mathrm{KL}\!\big(\pi_\theta(\cdot|y_{<t},x) \,\|\, \pi_T(\cdot|y_{<t},x)\big) = \sum_{v \in V} \pi_\theta(v|y_{<t},x) \log \frac{\pi_\theta(v|y_{<t},x)}{\pi_T(v|y_{<t},x)}
+$$
+
+The "per-token" qualifier means: **each position $t$ has its own independent KL**, computed between the student's and teacher's vocabulary distributions *at that position*. The OPD loss sums these up across the trajectory. The expectation is over the student's distribution (hence "reverse").
+
+### What "on-policy" means
+
+"On-policy" means **the training trajectories are sampled from the current student** $\pi_\theta$, not from a fixed dataset or from the teacher.
+
+The contrast with off-policy SFT is sharp:
+
+| | Off-policy SFT / KD | On-policy OPD |
+| --- | ------------------- | -------------- |
+| Where trajectories come from | Fixed corpus (teacher's rollouts, demonstrations) | **Current student rolls out fresh** |
+| State distribution at training | "Teacher space" — states the teacher visits | "Student space" — states the student will actually visit at inference |
+| Failure mode | **Covariate shift / compounding error**: student trains on states it never sees at inference. One mistake at inference puts it in unfamiliar territory, error cascades. | None of that — gradient is computed on exactly the states the deployed model encounters. |
+
+This is the same insight as **DAGGER (Ross, Gordon, Bagnell, AISTATS 2011)**: an imitation learner should be corrected on its *own* mistakes, not the expert's clean trajectories. OPD is DAGGER on LLM token sequences.
+
+Implementation-wise, on-policy means each training step does:
+
+1. Sample a fresh student rollout: $y \sim \pi_\theta(\cdot \mid x)$ — typically up to `max_new_tokens` long.
+2. For each position $t$ in $y$, run the **teacher forward pass** on the same prefix $(x, y_{<t})$ to get $\pi_T(\cdot \mid y_{<t}, x)$.
+3. Compute per-token reverse KL between student and teacher distributions.
+4. Backprop through the student.
+
+The teacher forward is the expensive part (one teacher forward per training rollout). Engineering tricks — top-k KL, hidden-state caching, FP4-quantized teachers — are mostly about making this affordable.
+
+### Credit assignment, sparse reward, and the value head
+
+This trio explains the *cost* RL pays that OPD avoids.
+
+**Credit assignment** is the problem of figuring out which actions (tokens) in a trajectory deserve credit (or blame) for the final outcome. In LLM RL the typical setup is:
+
+- Student rolls out a 500-token solution to a math problem.
+- A verifier returns **one scalar** at the end: `reward = 1` if correct, `0` if not.
+- To update each token's log-probability, you need to know "did *this token* contribute to the success?" — but you only have one bit at the end of a 500-token sequence.
+
+The reward is **sparse** (most tokens get zero), **delayed** (the signal arrives at the end), and **coarse-grained** (sequence-level, not per-token). Algorithms attack this with various baselines:
+
+| Algorithm | How it does credit assignment |
+| --------- | ----------------------------- |
+| **Raw REINFORCE** | Every token in the trajectory gets the same final scalar as its weight. Variance is huge, training is unstable. |
+| **PPO** | Train a **value head** $V_\phi(s_t)$ predicting expected future reward from state $s_t$. Compute advantage $A_t = (r_t + \gamma V_\phi(s_{t+1})) - V_\phi(s_t)$ per token. The advantage acts as the per-token weight. |
+| **GRPO** | Sample $N$ rollouts per prompt, use the group mean as a baseline: $A_t = R_i - \bar R$. No value head, but $N \times$ rollout cost. |
+
+A **value head** is a small MLP — usually a single Linear($H \to 1$) on top of the policy's final hidden state — that predicts a scalar "expected total future reward from here". In a 7B PPO setup it adds ~7K parameters (negligible parameter cost) but doubles forward/backward compute on the value branch and adds value-loss tuning to the recipe. Implementation: TRL `AutoModelForCausalLMWithValueHead` ([`trl/models/modeling_value_head.py`](https://github.com/huggingface/trl/blob/main/trl/models/modeling_value_head.py)).
+
+**Why OPD avoids all of this.** The teacher provides a *full distribution* at each position — that's a token-level dense signal. There's no sparse-reward, no credit-assignment problem, no value head needed. The "reward" $\log(\pi_T(y_t)/\pi_\theta(y_t))$ is informative per token and low-variance. This collapse of the RL critic infrastructure is *the* compute saving in OPD vs RL, more than any algorithmic novelty.
+
 ## The lineage: GKD → MiniLLM → TML reframing → variants
 
 The chronological development of the family, with the canonical citations:
@@ -119,22 +217,80 @@ $$
 | $\beta$ (KL direction) | 0 = forward KL (mean-seeking), 1 = reverse KL (mode-seeking), 0.5 = symmetric JSD. | 1.0 (reverse) |
 | Discount factor $\gamma$ | Time discount across the trajectory. | 0 (reward is already token-level dense) |
 
-### The policy-gradient duality
+### The policy-gradient duality — full derivation
 
-This is the result that makes OPD legible to anyone fluent in [[grpo|GRPO]] / [[ppo-for-llm|PPO]]. Per MiniLLM §3, the gradient of the on-policy reverse-KL expectation is:
+This is the result that makes OPD legible to anyone fluent in [[grpo|GRPO]] / [[ppo-for-llm|PPO]]. The derivation is short enough to lay out in full.
+
+**Step 1.** Start from the pure-OPD objective (single position $t$, drop subscripts for clarity):
 
 $$
-\nabla_\theta\,\mathbb{E}_{y\sim\pi_\theta}\!\big[D_{\text{KL}}(\pi_\theta\|\pi_T)\big] \;=\; -\,\mathbb{E}_{y\sim\pi_\theta}\!\left[\sum_{t} \nabla_\theta \log\pi_\theta(y_t\mid y_{<t})\cdot \underbrace{\log\frac{\pi_T(y_t\mid y_{<t})}{\pi_\theta(y_t\mid y_{<t})}}_{\text{dense per-token "reward"}}\right]
+J(\theta) = \mathbb{E}_{y \sim \pi_\theta}\!\left[D_{\text{KL}}(\pi_\theta \| \pi_T)\right] = \mathbb{E}_{y \sim \pi_\theta}\!\left[\log \frac{\pi_\theta(y)}{\pi_T(y)}\right]
 $$
 
-This is **vanilla REINFORCE** with the per-token reward replaced by the teacher log-ratio. Three immediate corollaries:
+The expectation is over the student's distribution. Note both the expectation *and* the integrand depend on $\theta$.
 
-- **OPD inherits PPO's stability.** The KL-to-teacher term doubles as a trust-region regularizer.
-- **OPD = GRPO minus the sparse reward and value head.** GRPO already removed the critic via group-relative advantages; OPD goes one further and makes the reward itself token-level.
-- **The discount factor is irrelevant.** Reward is dense, so there's no credit-assignment problem $\gamma$ needs to solve.
+**Step 2.** Take the gradient. Because the sampling distribution depends on $\theta$, we use the score-function (REINFORCE) identity $\nabla_\theta \mathbb{E}_{y \sim \pi_\theta}[f(y)] = \mathbb{E}_{y \sim \pi_\theta}[f(y) \nabla_\theta \log \pi_\theta(y) + \nabla_\theta f(y)]$:
+
+$$
+\nabla_\theta J(\theta) = \mathbb{E}_{y \sim \pi_\theta}\!\left[\log\frac{\pi_\theta(y)}{\pi_T(y)} \cdot \nabla_\theta \log \pi_\theta(y) \;+\; \nabla_\theta \log \pi_\theta(y)\right]
+$$
+
+The second term has zero expectation ($\mathbb{E}_{\pi_\theta}[\nabla_\theta \log \pi_\theta] = 0$, the standard score-function identity), so it drops:
+
+$$
+\nabla_\theta J(\theta) = \mathbb{E}_{y \sim \pi_\theta}\!\left[\log\frac{\pi_\theta(y)}{\pi_T(y)} \cdot \nabla_\theta \log \pi_\theta(y)\right]
+$$
+
+**Step 3.** Flip the sign (we are *minimizing* KL, so the gradient *descent* direction uses $-\nabla_\theta J$):
+
+$$
+-\nabla_\theta J(\theta) = \mathbb{E}_{y \sim \pi_\theta}\!\left[\log\frac{\pi_T(y)}{\pi_\theta(y)} \cdot \nabla_\theta \log \pi_\theta(y)\right]
+$$
+
+**Step 4.** Sum across positions in the trajectory. The full OPD gradient (MiniLLM §3):
+
+$$
+\boxed{\;-\nabla_\theta \mathcal{L}_{\text{OPD}} \;=\; \mathbb{E}_{y \sim \pi_\theta}\!\left[\sum_{t} \nabla_\theta \log \pi_\theta(y_t \mid y_{<t}) \cdot \underbrace{\log\frac{\pi_T(y_t \mid y_{<t})}{\pi_\theta(y_t \mid y_{<t})}}_{\text{dense per-token "reward"}}\right]\;}
+$$
+
+**Step 5.** Compare against the REINFORCE policy gradient. For an RL objective $J_{\text{RL}}(\theta) = \mathbb{E}_{y \sim \pi_\theta}[R(y)]$:
+
+$$
+\nabla_\theta J_{\text{RL}} = \mathbb{E}_{y \sim \pi_\theta}\!\left[\sum_t \nabla_\theta \log \pi_\theta(y_t \mid y_{<t}) \cdot R(y)\right]
+$$
+
+The two expressions are **structurally identical**. The only difference is what plays the role of "reward":
+
+$$
+R_{\text{OPD}}(s_t, a_t) \;=\; \log \frac{\pi_T(y_t \mid y_{<t})}{\pi_\theta(y_t \mid y_{<t})}
+$$
+
+**OPD is REINFORCE with the teacher log-ratio as a dense per-token reward.**
+
+### Why this duality is load-bearing
+
+Three properties of the synthetic reward $\log(\pi_T/\pi_\theta)$ are why the rest of the RL critic stack vanishes:
+
+| Property | Consequence |
+| -------- | ----------- |
+| **Dense** (every token gets a non-trivial number, not just the last one) | No credit assignment needed. No value head needed to back-propagate a sparse final reward across positions. |
+| **Informative** (the magnitude tells the student which direction to move — if teacher likes the token more than student, ratio > 1, gradient pushes toward it) | Variance is low without any baseline. GRPO's group-mean baseline becomes unnecessary. |
+| **Self-bounded** (when student matches teacher, ratio → 1, log → 0, gradient vanishes) | Convergence is to the teacher distribution. No reward-hacking — the reward is *defined* relative to the teacher. The KL term doubles as a trust-region regularizer (PPO-style), without an external KL penalty. |
+
+The structural collapse from RL → OPD:
+
+| RL component | OPD equivalent |
+| ------------ | -------------- |
+| Reward model | Teacher LM forward pass |
+| Sparse outcome reward $R(y) \in \{0, 1\}$ | Dense per-token $\log(\pi_T/\pi_\theta)$ |
+| Value head (PPO) | Not needed — reward is already token-level |
+| Group-mean baseline (GRPO) | Not needed — variance is already low |
+| Importance ratio + clip $\min(r_t A_t, \text{clip}(r_t) A_t)$ | Not needed — fully on-policy by construction |
+| KL-to-old-policy penalty | Built into the loss — the KL-to-teacher IS the loss |
+| Discount factor $\gamma$ | Set to 0 — no credit propagation needed |
 
 > [!quote] Mental model
-> OPD is the GRPO objective where the sparse outcome reward $R(y) \in \{0, 1\}$ is replaced by the dense per-token signal $\log(\pi_T/\pi_\theta)$, and the value head is removed because the reward is already token-level.
+> OPD is the GRPO objective where the sparse outcome reward $R(y) \in \{0, 1\}$ is replaced by the dense per-token signal $\log(\pi_T/\pi_\theta)$, and the value head is removed because the reward is already token-level. The KL-to-teacher both *generates* the gradient signal and *constrains* how far the policy can move per step.
 
 ### Why "on-policy" matters
 
