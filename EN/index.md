@@ -37,7 +37,6 @@ updated: 2026-05-13
 - [[mopd]] — MOPD (Multi-Domain On-Policy Distillation): Nemotron-Cascade 2's single-stage stabilizer between Multi-domain RL and RLHF; 3 cascade-internal teachers routed per-prompt; IMO/IOI/ICPC 2025 gold at 3B active params — paper analysis
 
 ## ML Infrastructure
-- [[data-parallelism]] — DP family deep-dive: DDP / ZeRO 1-3 / FSDP 1-2 / HSDP / DWDP, optimizer-states memory math, Llama 3 70B parameter anatomy
 - [[distributed-training]] — Distributed training: data/model/pipeline parallelism
 - [[gpu-cluster-management]] — GPU cluster management and scheduling
 - [[training-frameworks]] — Training frameworks (Megatron-LM, DeepSpeed, FSDP)

@@ -37,7 +37,6 @@ updated: 2026-05-13
 - [[mopd]] — MOPD（多 Domain On-Policy 蒸馏）：Nemotron-Cascade 2 在 Multi-domain RL 和 RLHF 之间的单阶段稳定器；3 个 cascade 内部 teacher 按 prompt 路由；3B 激活参数拿 IMO/IOI/ICPC 2025 金牌 —— 论文分析
 
 ## 机器学习基础设施
-- [[data-parallelism]] — DP 家族深度解析：DDP / ZeRO 1-3 / FSDP 1-2 / HSDP / DWDP、优化器状态显存账本、Llama 3 70B 参数解剖
 - [[distributed-training]] — 分布式训练：数据/模型/流水线并行
 - [[gpu-cluster-management]] — GPU 集群管理与调度
 - [[training-frameworks]] — 训练框架（Megatron-LM、DeepSpeed、FSDP）

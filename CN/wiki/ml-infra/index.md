@@ -8,7 +8,6 @@ title: ML 基础设施
 
 ## 分布式训练
 
-- [[data-parallelism]] —— **DP 家族深度解析**：DDP / ZeRO 1-3 / FSDP 1-2 / HSDP / DWDP、优化器状态显存账本、Transformer 参数解剖（attention vs FFN）、Llama 3 70B 真实拆解
 - [[distributed-training]] —— 分布式训练深度解析
 
   - [[distributed-training#2. 数据并行 (DP) 训练细节|数据并行（DDP、Ring AllReduce）]]

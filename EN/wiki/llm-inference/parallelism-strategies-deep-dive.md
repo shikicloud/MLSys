@@ -3,7 +3,7 @@ title: "LLM Parallelism Strategies Complete Guide: DP / TP / PP / SP / CP / EP /
 category: llm-inference
 tags: [tensor-parallelism, data-parallelism, expert-parallelism, pipeline-parallelism, sequence-parallelism, context-parallelism, moe, multi-gpu, distributed-inference, distributed-training]
 created: 2026-04-14
-updated: 2026-05-20
+updated: 2026-05-22
 status: mature
 ---
 
@@ -134,9 +134,23 @@ for batch in loader:
 
 ### 2.4 When to Use
 
-- Model fits on one GPU → **DP first** (simplest, highest efficiency)
-- Need more throughput (larger batch size)
-- Gradient sync frequency is low (once per full fwd + bwd)
+DP is the **default axis for absorbing extra GPUs**. It's *throughput-side*, not capacity-side — first make the model fit (via TP/PP/CP/ZeRO), then DP fills the remaining GPU count.
+
+Concrete scenarios:
+
+| Situation | Recommendation |
+| --------- | -------------- |
+| Model ≤ 7B (with Adam states fits on one GPU) | **Pure DDP**, N GPUs = N-way DP |
+| Model 30B–70B fits in one node | **HSDP** (see §3.5) — shard intra-node, replicate inter-node |
+| Model 100B+ doesn't fit in node | **ZeRO-3 / FSDP FULL_SHARD** across the cluster — still DP semantically |
+| Frontier pretraining (100B+) | TP+PP+CP carve up the model itself, **DP fills out remaining GPUs** |
+| RL post-training (PPO / GRPO / DAPO) | Usually **pure DP** (FSDP2), rollout count = DP world_size |
+| Inference serving for higher QPS | Multiple replicas = inference-time "DP" (replicate model, shard traffic) |
+
+**Two hard limits on DP — adding more GPUs isn't free:**
+
+1. **Global batch size ceiling.** `DP_world_size × per-GPU batch = global batch`. Above ~4M tokens/step, large-batch training degrades convergence (well-documented since GPT-3). DP can't scale past the batch size your data + optimizer tolerate.
+2. **Gradient AllReduce dominates at scale.** Megatron-LM scaling studies show DP scaling tails off above ~1024 GPUs for very large models without careful comm overlap (see the [Megatron-LM scaling paper](https://arxiv.org/abs/2104.04473) §5.2). Cure: switch ZeRO-3 → HSDP, or add TP to shrink the per-GPU model and reduce AllReduce bytes.
 
 ### 2.5 Limitations
 
@@ -147,6 +161,125 @@ for batch in loader:
 | **Can't handle gigantic models** | If the model exceeds single-GPU memory → must combine with TP/PP |
 
 > **ZeRO / FSDP** fixes the memory-redundancy problem by sharding optimizer states, gradients, and parameters within the DP group. See §3.
+
+### 2.6 Where the memory actually lives: Transformer block anatomy
+
+To know what DP-sharding (§3) is *worth* sharding, you need to know where the parameter mass sits in a Transformer.
+
+#### Attention vs FFN — the two sub-layers
+
+Each Transformer block has two sub-layers, both reshaping `[B, S, H] → [B, S, H]`, both wrapped in residual + LayerNorm:
+
+| Property | Attention | FFN |
+| -------- | --------- | --- |
+| Information flow | **mixes across sequence dim** (token-to-token) | **mixes within hidden dim** (per-token) |
+| Math | $\text{softmax}(QK^T/\sqrt{d}) V$ | $\text{down}(\sigma(\text{gate}(x)) \odot \text{up}(x))$ |
+| Role analogy | **communication** between tokens | **computation** per token |
+| Complexity | $O(S^2 H)$ | $O(S \cdot H \cdot H_{\text{ffn}})$ |
+| Memory peak | $O(S^2)$ (FlashAttention → $O(S)$) | $O(S)$ |
+
+They alternate: attention pulls context in, FFN processes the per-token result.
+
+#### "Activation" — two distinct meanings
+
+The word is overloaded — always disambiguate:
+
+- **Activation function** (singular): the nonlinearity *inside* the FFN. Llama / Mistral / DeepSeek use **SwiGLU**; older GPT-2/3 use GeLU; BERT uses GeLU; Gemma uses GeGLU. Without it, two linear layers collapse to one.
+- **Activations** (plural noun): the intermediate tensors stored during forward — every layer's input/output, attention scores, FFN intermediate `[B, S, H_ffn]` tensor (this one's the biggest single tensor). These are *data*, not weights; they depend on the input batch; backward needs them for the chain rule. **This is what activation checkpointing trades off** — don't store them, recompute on backward.
+
+Memory account split:
+
+```
+Per-rank memory =
+    Weights         (depends on model size; static; what DP/FSDP shards)
+  + Gradients       (same count as weights; static during a step)
+  + Optimizer state (depends on optimizer; static)
+  + Activations     (depends on batch × seq; lives during forward; often biggest single block)
+  + Buffers / workspace (smaller)
+```
+
+ZeRO/FSDP focus on the first three. Activations are managed separately by activation checkpointing — see [`torch.utils.checkpoint`](https://github.com/pytorch/pytorch/blob/main/torch/utils/checkpoint.py).
+
+#### Why attention parameters are small, FFN parameters are large
+
+Hidden dim $H$, num Q-heads $n_q$, num KV-heads $n_{kv}$, FFN width $H_{\text{ffn}}$.
+
+**Attention** (multi-head with GQA ratio $r = n_q / n_{kv}$):
+
+| Matrix | Shape | Params |
+| ------ | ----- | -----: |
+| $W_Q$ | $H \times H$ | $H^2$ |
+| $W_K$ | $H \times H/r$ | $H^2/r$ |
+| $W_V$ | $H \times H/r$ | $H^2/r$ |
+| $W_O$ | $H \times H$ | $H^2$ |
+| **Total** | | $H^2(2 + 2/r)$ |
+
+Full MHA ($r=1$): $4 H^2$. Llama 3 70B GQA ($r=8$): $2.25 H^2$.
+
+**FFN** (SwiGLU, three matrices because of the gate):
+
+| Matrix | Shape | Params |
+| ------ | ----- | -----: |
+| $W_{\text{gate}}$ | $H \times H_{\text{ffn}}$ | $H \cdot H_{\text{ffn}}$ |
+| $W_{\text{up}}$ | $H \times H_{\text{ffn}}$ | $H \cdot H_{\text{ffn}}$ |
+| $W_{\text{down}}$ | $H_{\text{ffn}} \times H$ | $H \cdot H_{\text{ffn}}$ |
+| **Total** | | $3 H \cdot H_{\text{ffn}}$ |
+
+Modern $H_{\text{ffn}} \approx 8H/3$ (keeps total FLOPs ≈ vanilla 2-matrix MLP with $4H$ width), giving FFN $\approx 8 H^2$.
+
+**Ratio:**
+
+| Config | Attention | FFN | FFN / Attention |
+| ------ | --------- | --- | ---------------: |
+| MHA + vanilla GPT FFN | $4 H^2$ | $8 H^2$ | **2×** |
+| MHA + SwiGLU | $4 H^2$ | $8 H^2$ | **2×** |
+| GQA(r=8) + SwiGLU | $2.25 H^2$ | $8 H^2$ | **3.6×** |
+
+**FFN dominates by 2-4×.** GQA makes it worse: attention shrinks, FFN doesn't.
+
+#### Real 100B-class breakdown: Llama 3.1 70B
+
+Config from [HF model card](https://huggingface.co/meta-llama/Llama-3.1-70B/blob/main/config.json):
+
+```json
+{
+  "hidden_size": 8192,
+  "intermediate_size": 28672,
+  "num_hidden_layers": 80,
+  "num_attention_heads": 64,
+  "num_key_value_heads": 8,
+  "vocab_size": 128256
+}
+```
+
+Per-layer (head_dim = 128, GQA 1:8 so KV out_dim = 8 × 128 = 1024):
+
+| Block | Matrix | Shape | Params |
+| ----- | ------ | ----- | -----: |
+| Attention | $W_Q$ | $8192 \times 8192$ | 67.1 M |
+|  | $W_K$ | $8192 \times 1024$ | 8.4 M |
+|  | $W_V$ | $8192 \times 1024$ | 8.4 M |
+|  | $W_O$ | $8192 \times 8192$ | 67.1 M |
+|  | **Attention subtotal** | | **151.0 M** |
+| FFN | $W_{\text{gate}}$ | $8192 \times 28672$ | 234.9 M |
+|  | $W_{\text{up}}$ | $8192 \times 28672$ | 234.9 M |
+|  | $W_{\text{down}}$ | $28672 \times 8192$ | 234.9 M |
+|  | **FFN subtotal** | | **704.6 M** |
+| **Per-layer total** | | | **855.6 M** |
+
+Whole model:
+
+| Component | Params | Share |
+| --------- | -----: | -----: |
+| 80 × Attention | 12.1 B | **17.1 %** |
+| 80 × FFN | 56.4 B | **79.9 %** |
+| Input embedding ($128256 \times 8192$) | 1.05 B | 1.5 % |
+| LM head (untied) | 1.05 B | 1.5 % |
+| **Total** | **70.55 B** | 100 % |
+
+**FFN is ~80% of the parameter budget.** This is why DP-sharding (§3) pays off most for FFN matrices — they're the bulk of what's being replicated. It's also why MoE designs (DeepSeek-V3, Mixtral) target FFN: making it sparse via expert routing gets far more bang per FLOP than messing with attention.
+
+**MoE contrast — DeepSeek-V3 671B / 37B active** ([arXiv:2412.19437](https://arxiv.org/abs/2412.19437)): $H = 7168$, 60 layers, each layer has 1 shared expert + 256 routed experts (top-8 active). Almost the entire 671 B parameter count lives in the routed expert pool; per token only 8 contribute compute. This is why MoE inference needs **EP** rather than DP for the FFN — see §11 EDP/DEP.
 
 ---
 
@@ -263,7 +396,67 @@ for batch in loader:
     optimizer.step()
 ```
 
-FSDP2 (PyTorch 2.4+) further refines the API and performance, supporting finer-grained per-parameter sharding.
+FSDP2 (PyTorch 2.4+) is a full rewrite. Key differences from FSDP1:
+
+| Dimension | FSDP1 | FSDP2 |
+| --------- | ----- | ----- |
+| Internal repr | `FlatParameter` (params of a module flattened into 1D) | `DTensor` (each `nn.Parameter` independently sharded) |
+| API | `FSDP(model, ...)` (class wrap) | `fully_shard(model, ...)` (functional) |
+| TP composition | Manual via HSDP/2D mesh | Native DTensor mesh — 2D parallelism is a one-liner |
+| LoRA / partial freeze | Hard (flat hides per-param semantics) | Easy (set `requires_grad=False`) |
+| Mixed-precision granularity | per-FlatParameter | per-Parameter |
+| `torch.compile` | Partial | First-class |
+| Status | Deprecation track | **Default since PyTorch 2.5** |
+
+Sources:
+- FSDP1 paper: [arXiv:2304.11277](https://arxiv.org/abs/2304.11277)
+- FSDP2 design RFC: [pytorch/pytorch#114299](https://github.com/pytorch/pytorch/issues/114299)
+- FSDP1 code (deprecation-track): [`torch/distributed/fsdp/fully_sharded_data_parallel.py`](https://github.com/pytorch/pytorch/blob/main/torch/distributed/fsdp/fully_sharded_data_parallel.py)
+- FSDP2 code: [`torch/distributed/_composable/fsdp/_fully_shard/_fully_shard.py`](https://github.com/pytorch/pytorch/blob/main/torch/distributed/_composable/fsdp/_fully_shard/_fully_shard.py)
+- FSDP2 per-param sharding internals: [`_fsdp_param.py`](https://github.com/pytorch/pytorch/blob/main/torch/distributed/_composable/fsdp/_fully_shard/_fsdp_param.py), pre/post-forward hooks: [`_fsdp_param_group.py`](https://github.com/pytorch/pytorch/blob/main/torch/distributed/_composable/fsdp/_fully_shard/_fsdp_param_group.py)
+- DeepSpeed ZeRO-1/2: [`stage_1_and_2.py`](https://github.com/microsoft/DeepSpeed/blob/master/deepspeed/runtime/zero/stage_1_and_2.py); ZeRO-3: [`stage3.py`](https://github.com/microsoft/DeepSpeed/blob/master/deepspeed/runtime/zero/stage3.py)
+- Megatron-Core's distributed optimizer (effectively ZeRO-1): [`distrib_optimizer.py`](https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/optimizer/distrib_optimizer.py)
+
+> **No official "FSDP3" exists** as of 2026-05. Future plans tracked in [TorchTitan](https://github.com/pytorch/torchtitan).
+
+### 3.5b Optimizer-state memory by optimizer
+
+ZeRO's "12 bytes/param" figure for Adam isn't universal — different optimizers carry different states:
+
+| Optimizer | State per param | Bytes (FP32) | Notes |
+| --------- | --------------- | ------------:| ----- |
+| SGD (no momentum) | — | 0 | stateless |
+| SGD + momentum | velocity | 4 | one EMA |
+| **Adam / AdamW** | master + $m$ + $v$ | **12** | LLM default |
+| **Lion** ([Chen et al. 2023](https://arxiv.org/abs/2302.06675)) | momentum only | 4 | ⅓ of Adam |
+| **Adafactor** | factored $v$ (row + col vectors) | ~5 | Google's memory-saver |
+| **8-bit Adam** ([Dettmers et al. 2022](https://arxiv.org/abs/2110.02861)) | INT8 quantized $m, v$ | ~6 | ~½ Adam |
+
+PyTorch AdamW state: `state['exp_avg']` ($m$), `state['exp_avg_sq']` ($v$) — see [`torch/optim/adamw.py`](https://github.com/pytorch/pytorch/blob/main/torch/optim/adamw.py).
+8-bit Adam: [bitsandbytes/optim/adamw.py](https://github.com/bitsandbytes-foundation/bitsandbytes/blob/main/bitsandbytes/optim/adamw.py).
+
+### 3.5c HSDP — Hybrid Sharded Data Parallel
+
+Sharding intra-node (NVLink, ~600 GB/s) + replicating inter-node (IB, ~25 GB/s). Keeps AllGather/Reduce-Scatter on the fast fabric and only does AllReduce across the slower inter-node link.
+
+- **Pre-condition**: model fits in single node (8 × 80GB = 640 GB)
+- **FSDP2 config**: pass a 2D `DeviceMesh` with dims `("replicate", "shard")`
+- **DeepSpeed equivalent**: ZeRO++'s **hpZ** (hierarchical partitioning) — see [`deepspeed/runtime/zero/config.py`](https://github.com/microsoft/DeepSpeed/blob/master/deepspeed/runtime/zero/config.py) `zero_hpz_partition_size`
+- Tutorial: [PyTorch FSDP advanced tutorial — HSDP section](https://docs.pytorch.org/tutorials/intermediate/FSDP_advanced_tutorial.html)
+
+HSDP is what most production frontier-model trainers actually run on top of FSDP2 — saves an order of magnitude in cross-node bandwidth without giving up the per-rank memory savings.
+
+### 3.5d DWDP — the inference-side cousin (not training)
+
+**DWDP (Distributed Weight Data Parallelism)** ([arXiv:2604.01621](https://arxiv.org/abs/2604.01621), Li et al., 2026-04, NVIDIA) is *inference*-side, but conceptually borrows the ZeRO/FSDP "shard weights, fetch on demand" trick:
+
+- Target: **MoE inference on NVL72-class hardware**
+- Sharded thing: **MoE expert weights** (not optimizer states — there are none at inference)
+- Key innovation: **removes the inter-rank collective synchronization** that EP MoE needs at every layer. Each GPU progresses independently, fetching missing expert weights via peer-to-peer NVLink on demand.
+- Result: +8.8% TPS/GPU on DeepSeek-R1 vs DP attention + EP MoE baseline
+- Why now: GB200 NVL72's all-to-all NVLink fabric makes peer fetches in the millisecond budget — wouldn't work on IB-only clusters
+
+Conceptually fits between (a) the DP+EP pattern used today and (b) classical FSDP's AllGather-on-demand idea — but at inference and exclusively for MoE weight handling.
 
 ### 3.6 Which Stage When
 

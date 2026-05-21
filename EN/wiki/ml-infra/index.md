@@ -8,7 +8,6 @@ Distributed training, training frameworks, and ML systems plumbing.
 
 ## Distributed training
 
-- [[data-parallelism]] — **DP family deep-dive**: DDP / ZeRO 1-3 / FSDP 1-2 / HSDP / DWDP, optimizer-states memory math, Transformer parameter anatomy (attention vs FFN), Llama 3 70B real breakdown
 - [[distributed-training]] — distributed training deep dive
 
   - [[distributed-training#2. Data Parallelism (DP) Training Details|Data parallelism (DDP, Ring AllReduce)]]

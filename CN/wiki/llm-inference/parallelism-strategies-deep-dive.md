@@ -3,7 +3,7 @@ title: "LLM 并行策略完全指南：DP / TP / PP / SP / CP / EP / EDP / ETP"
 category: llm-inference
 tags: [张量并行, 数据并行, 专家并行, 流水线并行, 序列并行, 上下文并行, moe, 多gpu, 分布式推理, 分布式训练]
 created: 2026-04-14
-updated: 2026-05-20
+updated: 2026-05-22
 status: mature
 ---
 
@@ -133,9 +133,23 @@ for batch in loader:
 
 ### 2.4 使用场景
 
-- 模型能放进单张 GPU → **首选 DP**（最简单，效率最高）
-- 需要扩大吞吐量（batch size）
-- 梯度同步频率低（一次完整前向+反向后才同步一次）
+DP 是**把多余 GPU 用起来的默认轴**。它是 *吞吐侧*，不是 *容量侧* —— 先用 TP/PP/CP/ZeRO 让模型 *能跑*，剩下的 GPU 全部并到 DP 轴上。
+
+具体场景：
+
+| 情况 | 推荐 |
+| ---- | ---- |
+| 模型 ≤ 7B（加 Adam states 单卡装得下） | **纯 DDP**，N 张卡 = N-way DP |
+| 模型 30B-70B 单节点装得下 | **HSDP**（见 §3.5）—— 节点内 sharding、节点间 replicate |
+| 模型 100B+ 单节点装不下 | **ZeRO-3 / FSDP FULL_SHARD** 跨集群 —— 仍是 DP 语义 |
+| Frontier 预训练（100B+） | TP+PP+CP 切模型本身，**DP 填剩下的 GPU** |
+| RL post-training（PPO / GRPO / DAPO） | 通常**纯 DP**（FSDP2），rollout 数 = DP world_size |
+| 推理 serving 提高 QPS | 多副本 = 推理时的 "DP"（replicate model，分流量） |
+
+**DP 的两条硬限制 —— 不是 GPU 越多越好：**
+
+1. **Global batch size 上限**。`DP_world_size × per-GPU batch = global batch`。超过约 4M token/step 大批训练 *收敛反而变慢*（GPT-3 时代就有记录）。DP 不能无限扩。
+2. **梯度 AllReduce 在大规模时成瓶颈**。Megatron-LM scaling 研究表明，>1024 GPU 的超大模型上 DP 扩展性下降（见 [Megatron-LM scaling paper](https://arxiv.org/abs/2104.04473) §5.2）。解法：ZeRO-3 → HSDP 切换，或者引入 TP 把每卡模型缩小、减少 AllReduce 字节数。
 
 ### 2.5 不足
 
@@ -146,6 +160,125 @@ for batch in loader:
 | **无法处理超大模型** | 单卡放不下 → 必须结合 TP/PP |
 
 > **ZeRO / FSDP** 通过将优化器状态、梯度、参数在 DP 组内切片来解决内存冗余问题，详见 §3。
+
+### 2.6 显存到底住在哪：Transformer block 解剖
+
+要知道 DP-sharding（§3）*值得* 切什么，先得知道参数量住在 Transformer 的哪里。
+
+#### Attention vs FFN —— 两个 sub-layer
+
+每个 Transformer block 有两个 sub-layer，shape 都是 `[B, S, H] → [B, S, H]`，都包在 residual + LayerNorm 里：
+
+| 属性 | Attention | FFN |
+| ---- | --------- | --- |
+| 信息流向 | **沿 sequence 维度混合**（token 之间） | **沿 hidden 维度展开**（每 token 独立） |
+| 数学 | $\text{softmax}(QK^T/\sqrt{d}) V$ | $\text{down}(\sigma(\text{gate}(x)) \odot \text{up}(x))$ |
+| 角色比喻 | **"通信"** —— token 之间交换信息 | **"思考"** —— 每 token 内部加工 |
+| 复杂度 | $O(S^2 H)$ | $O(S \cdot H \cdot H_{\text{ffn}})$ |
+| 显存 peak | $O(S^2)$（FlashAttention 降到 $O(S)$） | $O(S)$ |
+
+两者交替起作用：attention 把 context 拉进来，FFN 加工 per-token 结果。
+
+#### "Activation" —— 两个不同含义
+
+中英文里 "activation" 都歧义，要看上下文：
+
+- **激活函数**（单数）：FFN *内部* 的非线性。Llama / Mistral / DeepSeek 用 **SwiGLU**；老 GPT-2/3 用 GeLU；BERT 用 GeLU；Gemma 用 GeGLU。没它两个 linear 就坍缩成一个
+- **激活值**（复数名词）：forward 过程中存的中间张量 —— 每层的输入/输出、attention scores、FFN 中间的 `[B, S, H_ffn]` 张量（最大的单个）。这些是 *数据*，不是权重；取决于输入 batch；backward 链式法则要它们。**这就是 activation checkpointing 在 trade-off 的东西** —— 不存，backward 时重算
+
+显存账本切分：
+
+```
+每卡总显存 =
+    Weights         （取决于模型大小；静态；DP/FSDP 切的就是它）
+  + Gradients       （数量等同于权重；step 内静态）
+  + Optimizer state （取决于优化器；静态）
+  + Activations     （取决于 batch × seq；forward 时存活；常常是单个最大块）
+  + Buffers / workspace（小）
+```
+
+ZeRO/FSDP 攻前三项。Activation 由 activation checkpointing 单独管 —— 见 [`torch.utils.checkpoint`](https://github.com/pytorch/pytorch/blob/main/torch/utils/checkpoint.py)。
+
+#### 为什么 attention 参数小、FFN 参数大
+
+Hidden dim $H$、Q 头数 $n_q$、KV 头数 $n_{kv}$、FFN 宽度 $H_{\text{ffn}}$。
+
+**Attention**（多头 + GQA 比率 $r = n_q / n_{kv}$）：
+
+| 矩阵 | 形状 | 参数 |
+| ---- | ---- | ----:|
+| $W_Q$ | $H \times H$ | $H^2$ |
+| $W_K$ | $H \times H/r$ | $H^2/r$ |
+| $W_V$ | $H \times H/r$ | $H^2/r$ |
+| $W_O$ | $H \times H$ | $H^2$ |
+| **合计** | | $H^2(2 + 2/r)$ |
+
+完整 MHA（$r=1$）：$4 H^2$。Llama 3 70B GQA（$r=8$）：$2.25 H^2$。
+
+**FFN**（SwiGLU，三个矩阵 —— 多了 gate）：
+
+| 矩阵 | 形状 | 参数 |
+| ---- | ---- | ----:|
+| $W_{\text{gate}}$ | $H \times H_{\text{ffn}}$ | $H \cdot H_{\text{ffn}}$ |
+| $W_{\text{up}}$ | $H \times H_{\text{ffn}}$ | $H \cdot H_{\text{ffn}}$ |
+| $W_{\text{down}}$ | $H_{\text{ffn}} \times H$ | $H \cdot H_{\text{ffn}}$ |
+| **合计** | | $3 H \cdot H_{\text{ffn}}$ |
+
+现代 $H_{\text{ffn}} \approx 8H/3$（保持总 FLOPs 跟老式 2 矩阵 MLP $4H$ 宽度接近），所以 FFN $\approx 8 H^2$。
+
+**比例**：
+
+| 配置 | Attention | FFN | FFN / Attention |
+| ---- | --------- | --- | ---------------:|
+| MHA + 老式 GPT FFN | $4 H^2$ | $8 H^2$ | **2×** |
+| MHA + SwiGLU | $4 H^2$ | $8 H^2$ | **2×** |
+| GQA(r=8) + SwiGLU | $2.25 H^2$ | $8 H^2$ | **3.6×** |
+
+**FFN 占 2-4 倍**。GQA 让差距更大（attention 缩水，FFN 不变）。
+
+#### 一个真实 100B 级别的拆解：Llama 3.1 70B
+
+配置（来自 [HF model card](https://huggingface.co/meta-llama/Llama-3.1-70B/blob/main/config.json)）：
+
+```json
+{
+  "hidden_size": 8192,
+  "intermediate_size": 28672,
+  "num_hidden_layers": 80,
+  "num_attention_heads": 64,
+  "num_key_value_heads": 8,
+  "vocab_size": 128256
+}
+```
+
+每层（head_dim = 128，GQA 1:8 所以 KV 输出维度 = 8 × 128 = 1024）：
+
+| 块 | 矩阵 | 形状 | 参数 |
+| -- | ---- | ---- | ----:|
+| Attention | $W_Q$ | $8192 \times 8192$ | 67.1 M |
+|  | $W_K$ | $8192 \times 1024$ | 8.4 M |
+|  | $W_V$ | $8192 \times 1024$ | 8.4 M |
+|  | $W_O$ | $8192 \times 8192$ | 67.1 M |
+|  | **Attention 小计** | | **151.0 M** |
+| FFN | $W_{\text{gate}}$ | $8192 \times 28672$ | 234.9 M |
+|  | $W_{\text{up}}$ | $8192 \times 28672$ | 234.9 M |
+|  | $W_{\text{down}}$ | $28672 \times 8192$ | 234.9 M |
+|  | **FFN 小计** | | **704.6 M** |
+| **每层总计** | | | **855.6 M** |
+
+整模型：
+
+| 组件 | 参数 | 占比 |
+| ---- | ----:| ----:|
+| 80 × Attention | 12.1 B | **17.1 %** |
+| 80 × FFN | 56.4 B | **79.9 %** |
+| Input embedding（$128256 \times 8192$） | 1.05 B | 1.5 % |
+| LM head（untied） | 1.05 B | 1.5 % |
+| **总计** | **70.55 B** | 100 % |
+
+**FFN 占参数预算的 ~80%**。这就是为什么 DP-sharding（§3）对 FFN 矩阵收益最大 —— 它们是被复制的主体。也是为什么 MoE 设计（DeepSeek-V3、Mixtral）瞄准 FFN：把它通过 expert routing 变稀疏，比改 attention 性价比高得多。
+
+**MoE 对比 —— DeepSeek-V3 671B / 37B 激活**（[arXiv:2412.19437](https://arxiv.org/abs/2412.19437)）：$H = 7168$，60 层，每层 1 shared expert + 256 routed expert（top-8 激活）。671 B 参数几乎全在 routed expert 池里；每 token 只走 8 个 expert。这就是为什么 MoE 推理 FFN 部分要用 **EP** 而不是 DP —— 详见 §11 EDP/DEP。
 
 ---
 
@@ -262,7 +395,67 @@ for batch in loader:
     optimizer.step()
 ```
 
-FSDP2 (PyTorch 2.4+) 进一步改进了 API 和性能，支持更细粒度的 per-parameter sharding。
+FSDP2 (PyTorch 2.4+) 是完整重写。跟 FSDP1 的关键差异：
+
+| 维度 | FSDP1 | FSDP2 |
+| ---- | ----- | ----- |
+| 内部表示 | `FlatParameter`（一个 module 参数 flatten 成 1D） | `DTensor`（每个 `nn.Parameter` 独立分片） |
+| API | `FSDP(model, ...)`（类包裹） | `fully_shard(model, ...)`（函数式） |
+| 与 TP 组合 | 通过 HSDP/2D mesh 手动组装 | 原生 DTensor mesh —— 2D 并行一行配置 |
+| LoRA / 部分冻参 | 难（flat 掩盖 per-param 语义） | 容易（设 `requires_grad=False`） |
+| 混合精度粒度 | per-FlatParameter | per-Parameter |
+| `torch.compile` | 部分支持 | 一等公民 |
+| 状态 | Deprecation 路线 | **PyTorch 2.5+ 默认** |
+
+参考：
+- FSDP1 论文：[arXiv:2304.11277](https://arxiv.org/abs/2304.11277)
+- FSDP2 设计 RFC：[pytorch/pytorch#114299](https://github.com/pytorch/pytorch/issues/114299)
+- FSDP1 代码（deprecation 路线）：[`torch/distributed/fsdp/fully_sharded_data_parallel.py`](https://github.com/pytorch/pytorch/blob/main/torch/distributed/fsdp/fully_sharded_data_parallel.py)
+- FSDP2 代码：[`torch/distributed/_composable/fsdp/_fully_shard/_fully_shard.py`](https://github.com/pytorch/pytorch/blob/main/torch/distributed/_composable/fsdp/_fully_shard/_fully_shard.py)
+- FSDP2 per-param sharding 内部：[`_fsdp_param.py`](https://github.com/pytorch/pytorch/blob/main/torch/distributed/_composable/fsdp/_fully_shard/_fsdp_param.py)，pre/post-forward hooks：[`_fsdp_param_group.py`](https://github.com/pytorch/pytorch/blob/main/torch/distributed/_composable/fsdp/_fully_shard/_fsdp_param_group.py)
+- DeepSpeed ZeRO-1/2：[`stage_1_and_2.py`](https://github.com/microsoft/DeepSpeed/blob/master/deepspeed/runtime/zero/stage_1_and_2.py)；ZeRO-3：[`stage3.py`](https://github.com/microsoft/DeepSpeed/blob/master/deepspeed/runtime/zero/stage3.py)
+- Megatron-Core distributed optimizer（实际是 ZeRO-1）：[`distrib_optimizer.py`](https://github.com/NVIDIA/Megatron-LM/blob/main/megatron/core/optimizer/distrib_optimizer.py)
+
+> **没有官方 "FSDP3"**，截至 2026-05。未来路线在 [TorchTitan](https://github.com/pytorch/torchtitan)。
+
+### 3.5b 不同优化器的状态对比
+
+ZeRO 的 "12 bytes/param" 是 Adam 专有的 —— 别的优化器状态量不同：
+
+| 优化器 | 状态 | bytes (FP32) | 备注 |
+| ------ | ---- | ------------:| ---- |
+| SGD（无 momentum） | — | 0 | 无状态 |
+| SGD + momentum | velocity | 4 | 一个 EMA |
+| **Adam / AdamW** | master + $m$ + $v$ | **12** | LLM 默认 |
+| **Lion**（[Chen et al. 2023](https://arxiv.org/abs/2302.06675)） | momentum 一份 | 4 | Adam 的 1/3 |
+| **Adafactor** | factored $v$（行 + 列向量） | ~5 | Google 的省内存方案 |
+| **8-bit Adam**（[Dettmers et al. 2022](https://arxiv.org/abs/2110.02861)） | INT8 量化 $m, v$ | ~6 | Adam 的一半 |
+
+PyTorch AdamW 状态：`state['exp_avg']`（$m$）、`state['exp_avg_sq']`（$v$）—— 见 [`torch/optim/adamw.py`](https://github.com/pytorch/pytorch/blob/main/torch/optim/adamw.py)。
+8-bit Adam：[`bitsandbytes/optim/adamw.py`](https://github.com/bitsandbytes-foundation/bitsandbytes/blob/main/bitsandbytes/optim/adamw.py)。
+
+### 3.5c HSDP —— 混合分片数据并行
+
+节点内 sharding（NVLink，~600 GB/s）+ 节点间 replicate（IB，~25 GB/s）。让 AllGather/Reduce-Scatter 流量留在快的 fabric 上，节点间只跑 AllReduce。
+
+- **前提**：模型能装进单节点（8 × 80GB = 640 GB）
+- **FSDP2 配置**：传入 2D `DeviceMesh`，维度 `("replicate", "shard")`
+- **DeepSpeed 对应**：ZeRO++ 的 **hpZ**（分层 partitioning）—— 见 [`deepspeed/runtime/zero/config.py`](https://github.com/microsoft/DeepSpeed/blob/master/deepspeed/runtime/zero/config.py) `zero_hpz_partition_size`
+- 教程：[PyTorch FSDP advanced tutorial — HSDP 部分](https://docs.pytorch.org/tutorials/intermediate/FSDP_advanced_tutorial.html)
+
+HSDP 是大部分生产 frontier-model 训练实际跑的 —— 在 FSDP2 之上，跨节点带宽降一个数量级，per-rank 显存收益不丢。
+
+### 3.5d DWDP —— 推理侧的近亲（不是训练）
+
+**DWDP (Distributed Weight Data Parallelism)**（[arXiv:2604.01621](https://arxiv.org/abs/2604.01621)，Li et al., 2026-04, NVIDIA）是 *推理* 侧，但概念上借用了 ZeRO/FSDP "切权重、按需 fetch" 的思路：
+
+- 目标：**NVL72 级硬件上的 MoE 推理**
+- 切的是：**MoE expert weights**（不是 optimizer states —— 推理时没有这玩意）
+- 关键创新：**去掉 EP MoE 每层的 inter-rank 集体同步**，让每张 GPU 独立推进，通过 peer-to-peer NVLink 按需 fetch 缺失的 expert weight
+- 结果：相对 DP attention + EP MoE baseline，DeepSeek-R1 上 +8.8% TPS/GPU
+- 为什么现在出：GB200 NVL72 的全连 NVLink fabric 让 peer fetch 在毫秒预算内可行 —— 在 IB-only 集群上做不了
+
+概念上夹在（a）现在用的 DP+EP 模式和（b）经典 FSDP 的 AllGather-on-demand 思路之间 —— 但发生在推理时、专攻 MoE 权重处理。
 
 ### 3.6 什么时候用哪个阶段
 
