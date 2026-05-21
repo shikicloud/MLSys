@@ -1,9 +1,9 @@
 ---
 title: "On-Policy Distillation (OPD): Dense Teacher Signal as an RL Replacement"
 category: rl-infra
-tags: [on-policy-distillation, opd, gkd, minillm, distillation, rl-post-training, reverse-kl, paper-review]
+tags: [on-policy-distillation, opd, gkd, minillm, distillation, rl-post-training, reverse-kl, family-overview]
 created: 2026-05-19
-updated: 2026-05-19
+updated: 2026-05-21
 status: mature
 paper: arXiv:2306.13649
 code: https://github.com/huggingface/trl/blob/main/trl/trainer/gkd_trainer.py
@@ -11,20 +11,52 @@ code: https://github.com/huggingface/trl/blob/main/trl/trainer/gkd_trainer.py
 
 # On-Policy Distillation (OPD): Dense Teacher Signal as an RL Replacement
 
-> [!info] Paper metadata
-> - **Original paper**: [arXiv:2306.13649](https://arxiv.org/abs/2306.13649) — *On-Policy Distillation of Language Models: Learning from Self-Generated Mistakes* (Agarwal, Vieillard, Zhou, Stańczyk, Ramos, Geist, Bachem; DeepMind; ICLR 2024). The paper title is literally "on-policy distillation of language models" — this **is** the OPD paper.
+> [!info] Lineage metadata
+> - **Origin paper (GKD)**: [arXiv:2306.13649](https://arxiv.org/abs/2306.13649) — *On-Policy Distillation of Language Models: Learning from Self-Generated Mistakes* (Agarwal, Vieillard, Zhou, Stańczyk, Ramos, Geist, Bachem; DeepMind; ICLR 2024). The title is literally "on-policy distillation of language models" — this **is** the OPD paper.
 > - **Companion paper**: [arXiv:2306.08543](https://arxiv.org/abs/2306.08543) — *MiniLLM: Knowledge Distillation of Large Language Models* (Gu, Dong, Wei, Huang; Microsoft / Tsinghua; NeurIPS 2024; v3 retitled *MiniLLM: On-Policy Distillation of Large Language Models*). Provides the policy-gradient derivation.
-> - **2025 reframing**: [Thinking Machines Lab blog](https://thinkingmachines.ai/blog/on-policy-distillation/) (Kevin Lu, 2025-10-27). Not a new paper — a Qwen3-scale repackaging of GKD that popularized the "OPD" label and the "RL replacement" framing.
+> - **2025 reframing**: [Thinking Machines Lab blog](https://thinkingmachines.ai/blog/on-policy-distillation/) (Kevin Lu, 2025-10-27). Not a new paper — a Qwen3-scale repackaging that popularized the "OPD" label and the "RL replacement" framing.
 > - **Reference code**: [HF TRL `GKDTrainer`](https://github.com/huggingface/trl/blob/main/trl/trainer/gkd_trainer.py); also veRL `algo/opd`, NVIDIA NeMo-RL, TML `tinker-cookbook`.
-
-> [!abstract]+ TL;DR
-> On-Policy Distillation is the **technique introduced by Agarwal et al. 2023 (GKD paper, arXiv:2306.13649)** for knowledge distillation where the student samples its own rollouts and a frozen teacher scores each token via reverse KL. Mathematically, it is **policy gradient with a dense per-token reward equal to $\log(\pi_T/\pi_\theta)$** — same shape as [[grpo|GRPO]] minus the sparse outcome reward and value head, with KL-to-teacher serving as *both* the reward and the trust-region regularizer. The technique sat as a quiet KD method until **Thinking Machines Lab's 2025-10 blog** reframed it as an *RL post-training replacement*, with the headline number **74.4 % AIME'24 at ~1,800 GPU-h** on Qwen3-8B-Base (vs Qwen3's own RL recipe at 67.6 % / ~17,920 GPU-h). As of mid-2026 the strongest production deployments are **NVIDIA Nemotron-Cascade 2** (MOPD interleaved with cascade RL), **Alibaba Qwen3** small models, and **DeepSeek-V4** (multi-teacher full-vocabulary OPD entirely replacing the mixed-RL stage — see [[deepseek-v4-opd]]).
 
 ---
 
+## Summary (read this if you have 2 minutes)
+
+**What it is.** On-Policy Distillation (OPD) is the family of post-training techniques where a *student* LLM samples its own rollouts and a frozen *teacher* scores each generated token via per-token reverse KL. The lineage is **GKD (2023, ICLR 2024) → MiniLLM (2023) → Thinking Machines Lab reframing (Oct 2025) → 10+ named variants in 2025-26**. The label "OPD" is the post-2025 marketing term; the algorithm is GKD at $(\lambda, \beta) = (1.0, \text{reverse KL})$.
+
+**The one idea.** Replace RL's sparse scalar reward with the teacher's per-token log-probabilities, while still sampling trajectories from the *current student* so the gradient direction matches the deployment distribution. Three sub-pieces hold it up:
+
+1. **Reverse KL is mode-seeking** — the student concentrates probability on teacher-likely tokens instead of covering teacher tails.
+2. **On-policy trajectories** ($y \sim \pi_\theta$) — gradient computed on the states the deployed student actually visits, eliminating SFT's compounding-error pathology.
+3. **No reward / value model needed** — the per-token teacher log-prob *is* the dense reward, so the entire RL critic infrastructure collapses.
+
+The headline mathematical insight is the **policy-gradient duality**: per-token reverse KL is REINFORCE with the teacher log-ratio $\log(\pi_T/\pi_\theta)$ as a dense per-token reward, with the KL itself doubling as a trust-region regularizer. **OPD = GRPO minus the sparse outcome reward and the value head.** Remove any one of the three pieces: lose mode-seeking and you cover teacher tails wastefully (forward KL); lose on-policy and you re-introduce SFT's distribution-shift problem; bring back the reward model and you've reinvented RLHF.
+
+**Headline result.** TML's 2025-10 reproduction on Qwen3-8B-Base:
+
+| Method | AIME'24 | Compute (GPU-h, ~) |
+| ------ | ------: | -----------------: |
+| SFT only (400 K prompts) | 60 % | — |
+| Qwen3 RL recipe | 67.6 % | ~17,920 |
+| **On-Policy Distillation** | **74.4 %** | **~1,800** |
+
+~10× compute reduction with a *better* AIME score. The 10× direction is corroborated by Qwen3's own tech report (1/10 GPU-h for the OPD stage); TML's higher 50–100× self-distillation claim has not been independently replicated.
+
+**Why it matters.**
+
+- **Production-validated.** Three flagship recipes as of mid-2026: NVIDIA Nemotron-Cascade 2 (MOPD interleaved with cascade RL), Alibaba Qwen3 small models, DeepSeek-V4 (multi-teacher full-vocabulary OPD entirely replacing the mixed-RL stage).
+- **Collapses RL infrastructure.** When a strong teacher exists, OPD removes the reward model, the value head, and the credit-assignment problem in a single move.
+- **Not an RL killer.** OPD is imitation learning — bounded above by teacher capability. For frontier capability extension (no teacher available) RL retains a fundamental role.
+- **2026–27 prediction.** Multi-teacher full-vocabulary OPD becomes the default post-training when a teacher exists; OPD+RL hybrids (KDRL, dGRPO) replace pure RL for everything else.
+
+---
+
+# Depth (drill-down starts here)
+
+The summary above is the executive layer. Everything below is for the careful reader who wants full lineage, mathematical detail, the variant taxonomy, and production-recipe specifics.
+
 ## Background: why on-policy distillation needed inventing
 
-LLM post-training has two existing lanes for transferring capability from a strong teacher / verifiable rewards into a smaller / specialist student, and both have a structural flaw:
+LLM post-training has two pre-existing lanes for transferring capability from a teacher / verifiable rewards into a smaller / specialist student, and both have a structural flaw:
 
 | Lane | Trajectory distribution | Reward density | Failure mode |
 | ---- | ----------------------- | -------------- | ------------ |
@@ -45,24 +77,27 @@ Five competing methods on the same axes:
 
 OPD is the only row with both ticks in the first two columns and no ticks in the last two.
 
----
+## The lineage: GKD → MiniLLM → TML reframing → variants
 
-## The key idea: dense per-token teacher signal on student rollouts
+The chronological development of the family, with the canonical citations:
 
-> [!quote] The contribution in one sentence
-> Replace the sparse scalar reward of RL with the teacher's per-token log-probabilities, while still sampling trajectories from the *current student* so the gradient direction matches the deployment distribution.
+| Date | Work | Contribution |
+| ---- | ---- | ------------ |
+| 2010 | [DAGGER](https://arxiv.org/abs/1011.0686) (Ross, Gordon, Bagnell) | Pre-LLM ancestor: on-policy imitation learning with expert correction. OPD is DAGGER on LLM token sequences. |
+| Jun 2023 | [**GKD**](https://arxiv.org/abs/2306.13649) (DeepMind, Agarwal et al.) | The OPD algorithm. Generalizes KD with $(\lambda, \beta)$ knobs; pure OPD is $(\lambda{=}1, \text{reverse KL})$. ICLR 2024. |
+| Jun 2023 | [**MiniLLM**](https://arxiv.org/abs/2306.08543) (Microsoft / Tsinghua, Gu et al.) | Independent contemporaneous derivation; explicitly shows OPD = REINFORCE with teacher log-ratio reward. NeurIPS 2024. v3 retitled "On-Policy Distillation of Large Language Models". |
+| 2024 | HF TRL `GKDTrainer` lands | The canonical open implementation; what most 2025 work builds on. |
+| May 2025 | [**Qwen3 tech report**](https://arxiv.org/abs/2505.09388) | First flagship production deployment: off-policy → on-policy distillation replaces stages 3-4 of full RL pipeline for 0.6B–14B + 30B-A3B MoE small models. Reports 1/10 GPU-h cost. |
+| Jun 2025 | [**KDRL**](https://arxiv.org/abs/2506.02208) (Xu, Zhu et al.) | First clean OPD+RL hybrid: replaces GRPO's KL-to-old-policy with KL-to-teacher; jointly optimizes rule reward + OPD. |
+| Oct 2025 | [**TML blog**](https://thinkingmachines.ai/blog/on-policy-distillation/) (Kevin Lu) | Reframes GKD as "OPD" and as an *RL replacement*. Headline: Qwen3-8B-Base 74.4 % AIME'24 @ ~1,800 GPU-h vs Qwen3 RL recipe 67.6 % @ ~17,920 GPU-h. |
+| Nov 2025 | [**Black-Box OPD / GAD**](https://arxiv.org/abs/2511.10643) (Ye, Dong et al.) | OPD when only completions (no logits) are available — for OpenAI / Anthropic teachers. Adversarial discriminator. |
+| Mar 2026 | [**NVIDIA Nemotron-Cascade 2**](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/) | Introduces MOPD — single OPD stabilization stage inside 7-stage Cascade RL with 3 cascade-internal teachers. IMO/IOI/ICPC 2025 gold medals at 3B active params. |
+| Apr 2026 | [**DeepSeek-V4**](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro) | First flagship that *entirely replaces* mixed-RL with multi-teacher full-vocabulary OPD. 1.6T/49B MoE. |
+| Apr 2026 | [**Rethinking OPD**](https://arxiv.org/abs/2604.13016) (Tsinghua) | Characterizes successful OPD as alignment on a 97-99 % shared high-probability token set; identifies cross-family negative transfer. |
 
-Three sub-claims hold this up:
+The "OPD as a concept" emerged from TML's Oct 2025 blog; the algorithm has been called by other names (GKD, on-policy KD, RKL-KD) since 2023.
 
-- **Reverse KL is mode-seeking** — the student concentrates probability mass on teacher-likely tokens instead of spreading to cover the teacher's tails. Right choice for combinatorial LLM output spaces.
-- **On-policy trajectories** — gradient computed on the states the deployed student will actually visit, eliminating SFT's compounding-error pathology.
-- **No reward / value model needed** — per-token teacher log-prob *is* the dense reward signal, so the entire RL critic infrastructure collapses.
-
-Remove any one: lose mode-seeking and you cover teacher tails wastefully (forward KL); lose on-policy and you re-introduce SFT's distribution-shift problem; bring back the reward model and you've reinvented RLHF.
-
----
-
-## How it works
+## The mathematical core
 
 ### The OPD loss
 
@@ -124,59 +159,58 @@ A second-order knob with first-order consequences at scale. Two ways to compute 
 
 Token-level OPD is what HF TRL implements and what TML used; full-vocabulary is what DeepSeek-V4 (Apr 2026) argues you need at flagship scale because the token-level estimator's variance compounds on long rollouts.
 
----
+## Variant taxonomy
 
-## Variants and production deployments
+Verified named variants in 2025-26 use. Each row identifies the *delta* relative to vanilla GKD-with-$\lambda{=}1$.
 
-Verified deployments and named variants in 2025–2026 use. This is the "Experiments" section for a technique umbrella page.
-
-### Variants
-
-| Variant | Origin | Key delta vs GKD-with-$\lambda{=}1$ |
-| ------- | ------ | ----------------------------------- |
-| **OPSD** (Self-Distillation) ([arXiv:2602.04942](https://arxiv.org/abs/2602.04942)) | 2025–26 | Teacher is the student's earlier checkpoint or a privileged-info version of itself. Continual-learning primitive. |
-| **KDRL** ([arXiv:2506.02208](https://arxiv.org/abs/2506.02208)) | Xu, Zhu et al., Jun 2025 | Replaces GRPO's KL-to-old-policy with reverse-KL-to-teacher; jointly optimizes rule-based reward + OPD. |
-| **dGRPO** ([survey](https://arxiv.org/abs/2604.00626)) | 2025–26 | GRPO advantage + per-token OPD loss as a dense auxiliary head. |
-| **MOPD** (Multi-Domain) ([Nemotron-Cascade 2](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/)) | NVIDIA, Mar 2026 | Single stabilization stage inside 7-stage Cascade RL; 3 cascade-internal teachers (math SFT / RLHF side-branch / multi-domain RL best) routed per-prompt; sampled-token reverse-KL with importance clipping. Detailed at [[mopd]]. **Note**: same acronym used 2 months earlier by Xiaomi MiMo-V2-Flash as "Multi-**Teacher** OPD". |
+| Variant | Origin | Key delta vs vanilla OPD |
+| ------- | ------ | ------------------------ |
+| **OPSD** (Self-Distillation) ([arXiv:2602.04942](https://arxiv.org/abs/2602.04942)) | 2025-26 | Teacher is the student's earlier checkpoint or a privileged-info version of itself. Continual-learning primitive. |
+| **KDRL** ([arXiv:2506.02208](https://arxiv.org/abs/2506.02208)) | Xu, Zhu et al., Jun 2025 | Replaces GRPO's KL-to-old-policy with reverse-KL-to-teacher; jointly optimizes rule-based reward + OPD in one gradient step. |
+| **dGRPO** ([survey](https://arxiv.org/abs/2604.00626)) | 2025-26 | GRPO advantage + per-token OPD loss as a dense auxiliary head. |
+| **MOPD** (Multi-Domain) ([Nemotron-Cascade 2](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/)) | NVIDIA, Mar 2026 | Single stabilization stage inside 7-stage Cascade RL; 3 cascade-internal teachers routed per-prompt; sampled-token reverse-KL with importance clipping. Detailed at [[mopd]]. **Note**: same acronym used 2 months earlier by Xiaomi MiMo-V2-Flash as "Multi-**Teacher** OPD". |
 | **MAD-OPD** ([arXiv:2605.01347](https://arxiv.org/abs/2605.01347)) | 2026 | Multi-agent debate as the teacher signal. Attempts to break single-teacher ceiling. |
 | **Reward-Extrapolated OPD** ([arXiv:2602.12125](https://arxiv.org/abs/2602.12125)) | 2026 | Adds RL reward head so student can learn beyond teacher. |
 | **Black-Box OPD (GAD)** ([arXiv:2511.10643](https://arxiv.org/abs/2511.10643)) | Ye, Dong et al., Nov 2025 | OPD when only completions (no logits) are available — for OpenAI / Anthropic teachers. Uses adversarial discriminator. |
 | **Multi-teacher full-vocab OPD** ([DeepSeek-V4](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro)) | DeepSeek, Apr 2026 | $\sum_i w_i D_{\text{KL}}(\pi_\theta\|\pi_{E_i})$ over 10+ specialists, full-vocabulary KL. Flagship-scale demo. See [[deepseek-v4-opd]]. |
 
-### Production deployments (verified from primary sources)
+The variants split into three axes: **what's the teacher** (single / multi-teacher / self / debate / black-box), **what gets added** (extra RL reward, RL exploration term, importance clipping), and **how the KL is computed** (token-level / full-vocab / top-k restricted).
+
+## Production deployments
+
+Verified flagship recipes that ship OPD in their production pipeline.
 
 | Deployment | Recipe | Source |
 | ---------- | ------ | ------ |
 | **NVIDIA Nemotron-Cascade 2** (Mar 2026) | 30B-A3B MoE. Single MOPD stage between Multi-domain RL and RLHF in a 7-stage Cascade RL pipeline. 3 cascade-internal teachers (math SFT / RLHF side-branch / multi-domain RL best). 52 steps recover what 160 RLHF steps would. **IMO/IOI/ICPC 2025 gold medals** at 3B active params. See [[mopd]] for full details. | [Nemotron-Cascade 2 page](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/) |
-| **Alibaba Qwen3** small models (May 2025) | 0.6B–14B + 30B-A3B-MoE. Off-policy distillation (teacher: larger Qwen3) → on-policy distillation. Skips stages 3–4 of full RL pipeline. **Reported 1/10 GPU-hour cost.** | [Qwen3 tech report](https://arxiv.org/abs/2505.09388) |
+| **Alibaba Qwen3 small models** (May 2025) | 0.6B–14B + 30B-A3B-MoE. Off-policy distillation (teacher: larger Qwen3) → on-policy distillation. Skips stages 3–4 of full RL pipeline. **Reported 1/10 GPU-hour cost.** | [Qwen3 tech report](https://arxiv.org/abs/2505.09388) |
 | **DeepSeek-V4** (Apr 2026) | 1.6T/49B MoE. Per-domain (SFT → GRPO) specialists → multi-teacher full-vocab OPD merge. **Entirely replaces** V3.2's mixed-RL stage. Detailed at [[deepseek-v4-opd]]. | [V4 tech report](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf) |
 
-### Headline numbers from TML's reproduction
+### Headline numbers (TML's Qwen3-8B reproduction)
 
-TML's 2025-10 blog replicates the Qwen3 OPD recipe with Qwen3-8B-Base / Qwen3-32B:
+TML's 2025-10 blog replicates the Qwen3 OPD recipe with Qwen3-8B-Base and Qwen3-32B as teacher:
 
 | Method | AIME'24 | Compute (GPU-h, ~) |
-| ------ | ------- | ------------------ |
+| ------ | ------: | -----------------: |
 | SFT only (400 K prompts) | 60 % | not reported |
 | SFT extrapolated to 2 M | ~70 % | not reported |
 | Qwen3 RL recipe | 67.6 % | ~17,920 |
 | **On-Policy Distillation** | **74.4 %** | **~1,800** |
 
-~10× compute reduction with a *better* AIME score. The TML blog further claims 50–100× when self-distilling; **independent replication of the 100× number has not been published as of May 2026.** Qwen3's tech report (1/10 GPU-h) corroborates the ~10× direction; the higher end is single-lab.
+> [!success] ~10× compute reduction with a *better* AIME score
+> The TML blog further claims 50–100× when self-distilling; **independent replication of the 100× number has not been published as of May 2026.** Qwen3's tech report (1/10 GPU-h) corroborates the ~10× direction; the higher end is single-lab.
 
 ### Where OPD is *not* used
 
-For calibration: **DeepSeek-R1 → smaller students** uses **SFT-only off-policy** distillation (~800 K verified traces). **Meta Llama 4** uses codistillation with dynamic soft/hard weighting — public materials don't describe student-rollout-based on-policy. **Anthropic, OpenAI, Mistral, Cohere** — no public evidence of on-policy distillation in their pipelines.
-
----
+For calibration: **DeepSeek-R1 → smaller students** uses **SFT-only off-policy** distillation (~800 K verified traces). **Meta Llama 4** uses codistillation with dynamic soft/hard weighting — public materials don't describe student-rollout-based on-policy. **Anthropic, OpenAI, Mistral, Cohere** — no public evidence of on-policy distillation in their pipelines as of May 2026.
 
 ## Strengths and limitations
 
 The two strongest points: (1) it produces a **token-dense gradient signal with no reward / value model**, collapsing most RL post-training infrastructure when a teacher exists; (2) the **on-policy trajectory** eliminates SFT's compounding-error pathology, so the student trains on the states it will actually visit.
 
-Where it falls down and the limits matter:
+Where it falls down:
 
-- **Bounded by teacher capability.** Reverse KL is imitation-learning — the student concentrates on teacher-likely tokens and cannot discover solutions the teacher lacks. For frontier reasoning where the goal is to *surpass* the teacher, OPD is at best a warm-start.
+- **Bounded by teacher capability.** Reverse KL is imitation learning — the student concentrates on teacher-likely tokens and cannot discover solutions the teacher lacks. For frontier reasoning where the goal is to *surpass* the teacher, OPD is at best a warm-start.
 - **Cold-start fragile.** Reverse KL requires the student's support to cover teacher-likely tokens. Without prior SFT the student doesn't have it and the gradient explodes. TML's recipe relies on Qwen3-Base already being heavily pretrained.
 - **Cross-family negative transfer.** A teacher with different "thinking patterns" (different RL history, different family) can *degrade* the student. [Tsinghua's Rethinking OPD paper](https://arxiv.org/abs/2604.13016) characterizes successful OPD as alignment on a 97–99 % shared high-probability token set. Use same-family teachers or GOLD-style cross-tokenizer alignment.
 - **Biased token-level estimator.** Vanilla token-level reverse KL is not an unbiased estimator of sequence-level reverse KL; variance compounds on long rollouts (16 K+ token reasoning traces — directly relevant to agentic settings). [DeepSeek-V4's full-vocabulary KL](#token-level-vs-full-vocabulary-kl) is the leading workaround.
@@ -189,9 +223,7 @@ Where it falls down and the limits matter:
 
 ### OPD-vs-RL debate
 
-The headline argument since late 2025. The synthesis position (most production teams) is **"use both"**: RL for exploration, OPD for stability and regression recovery. KDRL is the cleanest formulation — joint reverse-KL-to-teacher + GRPO reward in one gradient step, reporting +4.7 % vs SFT, +2.6 % vs GRPO, +1.1 % vs KD-RKL. NVIDIA's Nemotron-Cascade 2 takes the same architectural stance at scale: MOPD is *interleaved with* cascade RL, not a replacement.
-
----
+The headline argument since late 2025. The synthesis position (most production teams) is **"use both"**: RL for exploration, OPD for stability and regression recovery. KDRL is the cleanest formulation — joint reverse-KL-to-teacher + GRPO reward in one gradient step, reporting +4.7 % vs SFT, +2.6 % vs GRPO, +1.1 % vs KD-RKL. NVIDIA's Nemotron-Cascade 2 takes the same architectural stance at scale: MOPD is *interleaved with* cascade RL, not a replacement. The pure-OPD-replaces-RL position is best defended by DeepSeek-V4, which entirely drops the mixed-RL stage in favor of multi-teacher full-vocabulary OPD — but only after a per-domain SFT→GRPO specialist-training stage that produced the teachers.
 
 ## What this means
 
@@ -202,8 +234,6 @@ Three predictions worth tracking:
 3. **The interesting research moves off the loss function.** GKD and MiniLLM nailed the math in 2023. 2026 work is on (a) variance reduction (full-vocab KL, sequence-level corrections), (b) cross-tokenizer alignment (GOLD), (c) cost-effective teacher serving (logit caching, FP4 QAT, hidden-state caching), (d) hybrid OPD+RL objectives (KDRL, dGRPO).
 
 What this is *not*: a universal RL killer. When the goal is to exceed the strongest available teacher, OPD has nothing to offer beyond warm-starting. RL retains a fundamental role.
-
----
 
 ## Source code & reproduction
 
@@ -276,11 +306,10 @@ trainer.train()
 
 This is the minimum to reproduce TML's AIME number — actual production runs use multi-teacher routing, full-vocab KL (DeepSeek-V4 path), and the engineering tricks in `tinker-cookbook` / veRL.
 
----
-
 ## Related reading
 
 - [[deepseek-v4-opd]] — DeepSeek-V4's multi-teacher full-vocabulary OPD recipe; the flagship-scale instantiation.
+- [[mopd]] — NVIDIA Nemotron-Cascade 2's Multi-Domain OPD; production interleaving with cascade RL.
 - [[grpo]] — The RL algorithm OPD is most often compared / combined with; OPD is structurally GRPO minus the sparse reward.
 - [[ppo-for-llm]] — The trust-region intuition shared with OPD's KL-to-teacher penalty.
 - [[rlhf-overview]] — The standard RL post-training pipeline OPD displaces.

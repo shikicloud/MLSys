@@ -1,9 +1,9 @@
 ---
 title: "On-Policy Distillation (OPD)：用稠密的教师信号替代 RL"
 category: rl-infra
-tags: [on-policy-distillation, opd, gkd, minillm, distillation, rl-post-training, reverse-kl, paper-review]
+tags: [on-policy-distillation, opd, gkd, minillm, distillation, rl-post-training, reverse-kl, family-overview]
 created: 2026-05-19
-updated: 2026-05-19
+updated: 2026-05-21
 status: mature
 paper: arXiv:2306.13649
 code: https://github.com/huggingface/trl/blob/main/trl/trainer/gkd_trainer.py
@@ -11,16 +11,48 @@ code: https://github.com/huggingface/trl/blob/main/trl/trainer/gkd_trainer.py
 
 # On-Policy Distillation (OPD)：用稠密的教师信号替代 RL
 
-> [!info] 论文元信息
-> - **原 paper**：[arXiv:2306.13649](https://arxiv.org/abs/2306.13649) —— *On-Policy Distillation of Language Models: Learning from Self-Generated Mistakes*（Agarwal, Vieillard, Zhou, Stańczyk, Ramos, Geist, Bachem；DeepMind；ICLR 2024）。论文标题就是字面意义上的 "on-policy distillation of language models" —— 这 **就是** OPD 原始论文。圈内简称 GKD (Generalized Knowledge Distillation)。
+> [!info] 谱系元信息
+> - **起源 paper (GKD)**：[arXiv:2306.13649](https://arxiv.org/abs/2306.13649) —— *On-Policy Distillation of Language Models: Learning from Self-Generated Mistakes*（Agarwal, Vieillard, Zhou, Stańczyk, Ramos, Geist, Bachem；DeepMind；ICLR 2024）。论文标题就是字面意义上的 "on-policy distillation of language models" —— 这 **就是** OPD 原始论文。
 > - **配套 paper**：[arXiv:2306.08543](https://arxiv.org/abs/2306.08543) —— *MiniLLM: Knowledge Distillation of Large Language Models*（Gu, Dong, Wei, Huang；Microsoft / Tsinghua；NeurIPS 2024；v3 改名为 *MiniLLM: On-Policy Distillation of Large Language Models*）。提供 OPD = 策略梯度的推导。
-> - **2025 重新框架**：[Thinking Machines Lab 博客](https://thinkingmachines.ai/blog/on-policy-distillation/)（Kevin Lu, 2025-10-27）。**不是新论文** —— 是 GKD 在 Qwen3 规模上的重新包装，让 "OPD" 这个标签和"RL 替代品"叙事流行起来。
+> - **2025 重新框架**：[Thinking Machines Lab 博客](https://thinkingmachines.ai/blog/on-policy-distillation/)（Kevin Lu, 2025-10-27）。**不是新论文** —— 是 Qwen3 规模上的重新包装，让 "OPD" 这个标签和"RL 替代品"叙事流行起来。
 > - **参考实现**：[HF TRL `GKDTrainer`](https://github.com/huggingface/trl/blob/main/trl/trainer/gkd_trainer.py)；veRL `algo/opd`、NVIDIA NeMo-RL、TML `tinker-cookbook` 也有。
 
-> [!abstract]+ TL;DR
-> On-Policy Distillation 是 **Agarwal 等 2023 年 GKD 论文 (arXiv:2306.13649)** 提出的知识蒸馏技术：student 自己采 rollout，**冻结**的 teacher 通过反向 KL 给每个 token 打分。数学上，这是 **策略梯度，每 token 稠密 reward 等于 $\log(\pi_T/\pi_\theta)$** —— 形状跟 [[grpo|GRPO]] 一模一样，只是把稀疏的 outcome reward 和 value head 拿掉了，换成 KL-to-teacher 同时充当 reward *和* trust-region 正则项。这个技术安静地存在了两年多，直到 **Thinking Machines Lab 2025-10 博客** 把它重新框架成 *RL post-training 替代品*，标志数字 **Qwen3-8B-Base 上 74.4 % AIME'24 @ ~1,800 GPU-h**（vs Qwen3 自家 RL recipe 67.6 % @ ~17,920 GPU-h）。到 2026 年中，最强的生产部署是 **NVIDIA Nemotron-Cascade 2**（MOPD 与 cascade RL 交错）、**Alibaba Qwen3** 小模型、以及 **DeepSeek-V4**（多教师全词表 OPD 完全替换 mixed-RL 阶段 —— 见 [[deepseek-v4-opd]]）。
+---
+
+## 摘要（2 分钟读完这一节就够）
+
+**它是什么**。On-Policy Distillation (OPD) 是一族 post-training 技术：student 自己采 rollout，**冻结**的 teacher 通过每 token 反向 KL 给每个生成 token 打分。谱系是 **GKD (2023, ICLR 2024) → MiniLLM (2023) → Thinking Machines Lab 重新框架 (2025-10) → 2025-26 涌现的 10+ 个变体**。"OPD" 这个标签是 2025 年之后的市场叫法；算法本身就是 GKD 在 $(\lambda, \beta) = (1.0, \text{反向 KL})$ 上的特例。
+
+**核心思想**。把 RL 的稀疏标量 reward 换成 teacher 的每 token log-probability，但仍然从 *当前 student* 采轨迹，让梯度方向对齐部署分布。三个支柱：
+
+1. **反向 KL 是 mode-seeking** —— student 把概率质量集中到 teacher 高概率 token，而不是覆盖 teacher 的尾部。
+2. **On-policy 轨迹** ($y \sim \pi_\theta$) —— 梯度在部署 student 实际会经过的状态上算，消除 SFT 的 compounding-error 病。
+3. **不需要 reward / value model** —— 每 token teacher log-prob *就是* 稠密 reward 信号，整套 RL critic 基础设施塌缩。
+
+数学上的标志洞察是 **策略梯度对偶**：每 token 反向 KL 就是 REINFORCE，每 token reward 等于 teacher log-ratio $\log(\pi_T/\pi_\theta)$，而 KL 本身又同时充当 trust-region 正则项。**OPD = 去掉稀疏 outcome reward 和 value head 的 GRPO**。去掉任一支柱：失去 mode-seeking 就浪费在覆盖 teacher 尾部（正向 KL）；失去 on-policy 就重引入 SFT 的分布偏移问题；带回 reward model 就重新发明了 RLHF。
+
+**头条结果**。TML 2025-10 在 Qwen3-8B-Base 上的复现：
+
+| 方法 | AIME'24 | 计算量（GPU-h，约） |
+| ---- | ------: | ------------------: |
+| 仅 SFT (400 K prompt) | 60 % | — |
+| Qwen3 RL recipe | 67.6 % | ~17,920 |
+| **On-Policy Distillation** | **74.4 %** | **~1,800** |
+
+~10× 计算降低 + AIME 反而更高。10× 这个方向被 Qwen3 自己的 tech report 印证（OPD 阶段 1/10 GPU-h）；TML 进一步声称自蒸馏 50–100× 这一端到 2026-05 没有独立复现。
+
+**为什么这重要**。
+
+- **生产已验证**。到 2026 年中三个旗舰 recipe：NVIDIA Nemotron-Cascade 2（MOPD 与 cascade RL 交错）、Alibaba Qwen3 小模型、DeepSeek-V4（多教师全词表 OPD 完全替换 mixed-RL 阶段）。
+- **塌缩 RL 基础设施**。有强 teacher 时，OPD 一招干掉 reward model、value head 和 credit-assignment 问题。
+- **不是 RL 杀手**。OPD 是 imitation learning —— 被 teacher 能力封顶。前沿能力扩展（没 teacher）RL 仍有不可替代角色。
+- **2026–27 预测**。多教师全词表 OPD 变成有 teacher 时的默认 post-training；OPD+RL 混合（KDRL、dGRPO）替代纯 RL 用于其它场景。
 
 ---
+
+# 深度部分（往下展开细节）
+
+上面摘要是 executive 层。下面是给愿意细读谱系、数学推导、变体分类和生产 recipe 细节的人准备的。
 
 ## 背景：为什么需要发明 on-policy 蒸馏
 
@@ -45,24 +77,27 @@ LLM post-training 把强 teacher 或可验证 reward 的能力迁移到小学生
 
 OPD 是唯一一行前两列都打钩、后两列都不打钩的。
 
----
+## 谱系：GKD → MiniLLM → TML 重框架 → 变体
 
-## 核心思想：student rollout 上的稠密 per-token 教师信号
+技术家族的时间发展，附标志文献：
 
-> [!quote] 一句话总结贡献
-> 把 RL 的稀疏标量 reward 换成 teacher 的每 token log-probability，但仍然从 *当前 student* 采轨迹，让梯度方向对齐部署分布。
+| 日期 | 工作 | 贡献 |
+| ---- | ---- | ---- |
+| 2010 | [DAGGER](https://arxiv.org/abs/1011.0686)（Ross, Gordon, Bagnell） | 前 LLM 时代的祖宗：on-policy imitation learning + expert correction。OPD 是 DAGGER 用到 LLM token 序列上的版本。 |
+| 2023-06 | [**GKD**](https://arxiv.org/abs/2306.13649)（DeepMind, Agarwal et al.） | OPD 算法本身。用 $(\lambda, \beta)$ 旋钮泛化 KD；纯 OPD 是 $(\lambda{=}1, \text{反向 KL})$。ICLR 2024。 |
+| 2023-06 | [**MiniLLM**](https://arxiv.org/abs/2306.08543)（Microsoft / Tsinghua, Gu et al.） | 独立的同期推导；显式证明 OPD = REINFORCE 配 teacher log-ratio reward。NeurIPS 2024。v3 改名 "On-Policy Distillation of Large Language Models"。 |
+| 2024 | HF TRL `GKDTrainer` 落地 | 标志性开源实现；2025 多数工作都基于它。 |
+| 2025-05 | [**Qwen3 tech report**](https://arxiv.org/abs/2505.09388) | 首个旗舰生产部署：离线 → on-policy 蒸馏替代 0.6B–14B + 30B-A3B MoE 小模型完整 RL 管线的 stage 3-4。报告 1/10 GPU-h 成本。 |
+| 2025-06 | [**KDRL**](https://arxiv.org/abs/2506.02208)（Xu, Zhu et al.） | 首个干净的 OPD+RL 混合：把 GRPO 的 KL-to-old-policy 换成 KL-to-teacher；同一梯度步联合规则 reward + OPD。 |
+| 2025-10 | [**TML 博客**](https://thinkingmachines.ai/blog/on-policy-distillation/)（Kevin Lu） | 把 GKD 重新框架成 "OPD" 和 *RL 替代品*。标志数字：Qwen3-8B-Base 74.4 % AIME'24 @ ~1,800 GPU-h vs Qwen3 RL recipe 67.6 % @ ~17,920 GPU-h。 |
+| 2025-11 | [**Black-Box OPD / GAD**](https://arxiv.org/abs/2511.10643)（Ye, Dong et al.） | 只能拿到输出文本（看不到 logits）时的 OPD —— OpenAI / Anthropic teacher 用得上。对抗判别器。 |
+| 2026-03 | [**NVIDIA Nemotron-Cascade 2**](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/) | 引入 MOPD —— 7-stage Cascade RL 内的单一 OPD 稳定阶段，3 个 cascade 内部 teacher。IMO/IOI/ICPC 2025 金牌在 3B 激活参数上。 |
+| 2026-04 | [**DeepSeek-V4**](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro) | 首个 *完全替换* mixed-RL 阶段的旗舰：多教师全词表 OPD。1.6T/49B MoE。 |
+| 2026-04 | [**Rethinking OPD**](https://arxiv.org/abs/2604.13016)（清华） | 把成功 OPD 刻画为 97-99 % 共享高概率 token 集上的对齐；识别跨家族负迁移。 |
 
-三个支撑次级声明：
+"OPD 作为概念" 是 TML 2025-10 博客让它流行的；算法本身从 2023 起被叫过 GKD、on-policy KD、RKL-KD 等多个名字。
 
-- **反向 KL 是 mode-seeking** —— student 把概率质量集中到 teacher 高概率 token，而不是覆盖 teacher 的尾部。对组合性 LLM 输出空间是正确选择。
-- **On-policy 轨迹** —— 梯度在部署 student 实际会经过的状态上算，消除 SFT 的 compounding-error 病。
-- **不需要 reward / value model** —— 每 token teacher log-prob *就是* 稠密 reward 信号，整套 RL critic 基础设施塌缩。
-
-去掉任何一个：失去 mode-seeking 就浪费在覆盖 teacher 尾部（正向 KL）；失去 on-policy 就重引入 SFT 的分布偏移问题；带回 reward model 就重新发明了 RLHF。
-
----
-
-## 实现细节
+## 数学核心
 
 ### OPD loss
 
@@ -124,26 +159,26 @@ $$
 
 Token 级是 HF TRL 实现的版本，也是 TML 用的；全词表是 DeepSeek-V4（2026-04）的主张 —— V4 认为旗舰规模下 token 级估计器的方差在长 rollout 上累积，必须用全词表。
 
----
+## 变体分类
 
-## 变体与生产部署
+2025-26 在用的命名变体。每行标的是相对 vanilla GKD-with-$\lambda{=}1$ 的 *delta*。
 
-2025–2026 在用的变体和已验证的部署。技术总伞页相当于 paper review 的 "Experiments" 这一节。
-
-### 变体
-
-| 变体 | 起源 | 相对 GKD-with-$\lambda{=}1$ 的关键差异 |
-| ---- | ---- | ------------------------------------- |
-| **OPSD**（Self-Distillation）([arXiv:2602.04942](https://arxiv.org/abs/2602.04942)) | 2025–26 | Teacher 是 student 自己的早期 checkpoint 或它的特权信息版本。Continual learning 原语。 |
+| 变体 | 起源 | 相对 vanilla OPD 的关键差异 |
+| ---- | ---- | -------------------------- |
+| **OPSD**（Self-Distillation）([arXiv:2602.04942](https://arxiv.org/abs/2602.04942)) | 2025-26 | Teacher 是 student 自己的早期 checkpoint 或它的特权信息版本。Continual learning 原语。 |
 | **KDRL** ([arXiv:2506.02208](https://arxiv.org/abs/2506.02208)) | Xu, Zhu 等, 2025-06 | 把 GRPO 的 KL-to-old-policy 换成 KL-to-teacher；同一个梯度步联合优化规则 reward + OPD。 |
-| **dGRPO** ([survey](https://arxiv.org/abs/2604.00626)) | 2025–26 | GRPO advantage + per-token OPD loss 作为稠密辅助 head。 |
-| **MOPD**（Multi-Domain）([Nemotron-Cascade 2](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/)) | NVIDIA, 2026-03 | 7-stage Cascade RL 内的单一稳定阶段；3 个 cascade 内部 teacher（math SFT / RLHF 侧分支 / multi-domain RL best）按 prompt 路由；采样 token 反向 KL + 重要性裁剪。详见 [[mopd]]。**注意**：相同缩写两个月前被 Xiaomi MiMo-V2-Flash 用过，含义是 "Multi-**Teacher** OPD"。 |
+| **dGRPO** ([survey](https://arxiv.org/abs/2604.00626)) | 2025-26 | GRPO advantage + per-token OPD loss 作为稠密辅助 head。 |
+| **MOPD**（Multi-Domain）([Nemotron-Cascade 2](https://research.nvidia.com/labs/nemotron/nemotron-cascade-2/)) | NVIDIA, 2026-03 | 7-stage Cascade RL 内的单一稳定阶段；3 个 cascade 内部 teacher 按 prompt 路由；采样 token 反向 KL + 重要性裁剪。详见 [[mopd]]。**注意**：相同缩写两个月前被 Xiaomi MiMo-V2-Flash 用过，含义是 "Multi-**Teacher** OPD"。 |
 | **MAD-OPD** ([arXiv:2605.01347](https://arxiv.org/abs/2605.01347)) | 2026 | 多智能体辩论当 teacher 信号。试图突破单 teacher 天花板。 |
 | **Reward-Extrapolated OPD** ([arXiv:2602.12125](https://arxiv.org/abs/2602.12125)) | 2026 | 加 RL reward head 让 student 能学超过 teacher。 |
 | **Black-Box OPD (GAD)** ([arXiv:2511.10643](https://arxiv.org/abs/2511.10643)) | Ye, Dong 等, 2025-11 | 只能拿到输出文本（看不到 logits）时的 OPD —— 用对抗判别器。OpenAI / Anthropic teacher 用得上。 |
 | **多教师全词表 OPD** ([DeepSeek-V4](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro)) | DeepSeek, 2026-04 | $\sum_i w_i D_{\text{KL}}(\pi_\theta\|\pi_{E_i})$ 跨 10+ specialist，全词表 KL。旗舰规模演示。详见 [[deepseek-v4-opd]]。 |
 
-### 生产部署（primary source 验证）
+变体可以拆成三个轴：**teacher 是什么**（单 / 多教师 / 自蒸馏 / 辩论 / 黑盒）、**加了什么**（额外 RL reward、RL exploration 项、重要性裁剪）、**KL 怎么算**（token 级 / 全词表 / top-k 受限）。
+
+## 生产部署
+
+把 OPD 装进生产管线的旗舰 recipe。
 
 | 部署 | Recipe | 来源 |
 | ---- | ------ | ---- |
@@ -151,24 +186,23 @@ Token 级是 HF TRL 实现的版本，也是 TML 用的；全词表是 DeepSeek-
 | **Alibaba Qwen3 小模型**（2025-05） | 0.6B–14B + 30B-A3B-MoE。离线蒸馏（teacher：更大 Qwen3）→ on-policy 蒸馏。替代完整 RL 管线的 stage 3–4。**报告 1/10 GPU-hour 成本**。 | [Qwen3 tech report](https://arxiv.org/abs/2505.09388) |
 | **DeepSeek-V4**（2026-04） | 1.6T/49B MoE。Per-domain (SFT → GRPO) specialist → 多教师全词表 OPD merge。**完全替换** V3.2 mixed-RL 阶段。详见 [[deepseek-v4-opd]]。 | [V4 tech report](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro/blob/main/DeepSeek_V4.pdf) |
 
-### TML 复现的标志数字
+### 标志数字（TML Qwen3-8B 复现）
 
-TML 2025-10 博客用 Qwen3-8B-Base / Qwen3-32B 复现 Qwen3 OPD recipe：
+TML 2025-10 博客用 Qwen3-8B-Base 当 student、Qwen3-32B 当 teacher 复现 Qwen3 OPD recipe：
 
 | 方法 | AIME'24 | 计算量（GPU-h，约） |
-| ---- | ------- | ------------------ |
+| ---- | ------: | ------------------: |
 | 仅 SFT (400K prompt) | 60 % | 未报告 |
 | SFT 外推到 2M | ~70 % | 未报告 |
 | Qwen3 RL recipe | 67.6 % | ~17,920 |
 | **On-Policy Distillation** | **74.4 %** | **~1,800** |
 
-~10× 计算降低 + AIME 反而更高。TML 博客进一步声称自蒸馏 50–100×；**100× 这个数到 2026-05 没有独立复现**。Qwen3 tech report 的 1/10 GPU-h 印证了 ~10× 方向；更高那端是单实验室数字。
+> [!success] ~10× 计算降低 + AIME 反而更高
+> TML 博客进一步声称自蒸馏 50–100×；**100× 这个数到 2026-05 没有独立复现**。Qwen3 tech report 的 1/10 GPU-h 印证了 ~10× 方向；更高那端是单实验室数字。
 
 ### 哪些地方 *没* 用 OPD
 
-为了校准：**DeepSeek-R1 → 小学生**用 **SFT-only 离线**蒸馏（~800K 已验证 trace）。**Meta Llama 4** 用 codistillation 配动态软/硬目标加权 —— 公开材料没描述 student-rollout 形式的 on-policy。**Anthropic、OpenAI、Mistral、Cohere** —— 公开材料里没有 on-policy distillation 的证据。
-
----
+为了校准：**DeepSeek-R1 → 小学生**用 **SFT-only 离线**蒸馏（~800K 已验证 trace）。**Meta Llama 4** 用 codistillation 配动态软/硬目标加权 —— 公开材料没描述 student-rollout 形式的 on-policy。**Anthropic、OpenAI、Mistral、Cohere** —— 到 2026-05 公开材料里没有 on-policy distillation 的证据。
 
 ## 优势与限制
 
@@ -189,9 +223,7 @@ TML 2025-10 博客用 Qwen3-8B-Base / Qwen3-32B 复现 Qwen3 OPD recipe：
 
 ### OPD vs RL 争论
 
-2025 年底起的标志性争论。综合立场（多数生产团队）是 **"两个都用"**：RL 干 exploration，OPD 干稳定 + 回归恢复。KDRL 是最干净的写法 —— 同一梯度步联合 KL-to-teacher + GRPO reward，报告 +4.7 %（vs SFT）、+2.6 %（vs GRPO）、+1.1 %（vs KD-RKL）。NVIDIA Nemotron-Cascade 2 在规模上采取同样的架构立场：MOPD *与* cascade RL 交错，不是替代。
-
----
+2025 年底起的标志性争论。综合立场（多数生产团队）是 **"两个都用"**：RL 干 exploration，OPD 干稳定 + 回归恢复。KDRL 是最干净的写法 —— 同一梯度步联合 KL-to-teacher + GRPO reward，报告 +4.7 %（vs SFT）、+2.6 %（vs GRPO）、+1.1 %（vs KD-RKL）。NVIDIA Nemotron-Cascade 2 在规模上采取同样的架构立场：MOPD *与* cascade RL 交错，不是替代。"纯 OPD 替代 RL" 这边最强辩护是 DeepSeek-V4，完全砍掉 mixed-RL 阶段换成多教师全词表 OPD —— 但前提是先有 per-domain SFT→GRPO 的 specialist 训练阶段产出 teacher。
 
 ## 这意味着什么
 
@@ -202,8 +234,6 @@ TML 2025-10 博客用 Qwen3-8B-Base / Qwen3-32B 复现 Qwen3 OPD recipe：
 3. **有意思的研究不再在 loss 函数**。GKD 和 MiniLLM 在 2023 把数学钉死了。2026 的研究在：(a) 方差减少（全词表 KL、sequence 级修正），(b) 跨 tokenizer 对齐 (GOLD)，(c) 经济 teacher 服务（logit 缓存、FP4 QAT、隐藏状态缓存），(d) OPD+RL 混合目标 (KDRL、dGRPO)。
 
 这 *不是*：万能 RL 杀手。当目标超越最强可得 teacher 时 OPD 只能 warm-start。RL 仍有不可替代的角色。
-
----
 
 ## 源码与复现
 
@@ -276,11 +306,10 @@ trainer.train()
 
 复现 TML AIME 数字的最小骨架 —— 实际生产用多教师路由、全词表 KL（DeepSeek-V4 路径）、`tinker-cookbook` / veRL 里的工程技巧。
 
----
-
 ## 相关阅读
 
 - [[deepseek-v4-opd]] —— DeepSeek-V4 的多教师全词表 OPD recipe；旗舰规模实例。
+- [[mopd]] —— NVIDIA Nemotron-Cascade 2 的 Multi-Domain OPD；生产中与 cascade RL 交错。
 - [[grpo]] —— OPD 最常被对比 / 组合的 RL 算法；OPD 结构上是去稀疏 reward 的 GRPO。
 - [[ppo-for-llm]] —— OPD KL-to-teacher 项共享的 trust-region 直觉。
 - [[rlhf-overview]] —— OPD 替代的标准 RL post-training 管线。

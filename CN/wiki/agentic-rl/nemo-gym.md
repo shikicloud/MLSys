@@ -3,8 +3,9 @@ title: "NeMo Gym：NVIDIA 的 LLM RL 环境框架"
 category: agentic-rl
 tags: [nemo-gym, rl-environments, rollout, verifier, apptainer, fastapi, hydra, framework]
 created: 2026-05-13
-updated: 2026-05-19
+updated: 2026-05-21
 status: mature
+code: https://github.com/NVIDIA-NeMo/Gym
 ---
 
 # NeMo Gym：NVIDIA 的 LLM RL 环境框架
@@ -15,10 +16,33 @@ status: mature
 > - **生态位**：NVIDIA NeMo 平台的一部分（训练侧：NeMo RL；推理侧：Nemotron）
 > - **状态**：早期开发中（API 仍在演进）。在 Nemotron 训练中已经实战。
 
-> [!abstract]+ TL;DR
-> NeMo Gym 是 NVIDIA RL 训练栈的 **环境 / rollout 侧** —— 与 trainer 库（[[rl-training-frameworks|NeMo RL、VeRL、Unsloth]]）配对使用。你交给它一份任务数据集 + 一个 agent harness + 一个 verifier，它会起三个 FastAPI 微服务（resources / model / agent），按任意并发度在这些任务上跑你的 agent，给每条 rollout 打分，然后把 `(input, output, reward)` 三元组送给你的 trainer。库里自带 **84 个 benchmark**（SWE-bench、GPQA、BigCodeBench、MATH、IFBench、GDPVal、Newton Bench …）、**19 个 agent harness**（simple、OpenHands-style SWE、LangGraph、Mini-SWE、Verifiers …）和 **6 种 model server**（OpenAI、Azure OpenAI、vLLM、local vLLM …）。涉及不可信代码执行（SWE-bench、code-gen）时用 **Apptainer**（不是 Docker —— 训练集群节点本身就跑在 enroot 容器里，套娃只有 Apptainer 玩得转）。简单任务用 Python 进程级 sandbox。配置走 Hydra / OmegaConf YAML；分布式协调走 Ray；HTTP 走 aiohttp（不是 httpx —— [[#实现细节|工程选择见下]]）。
+---
+
+## 摘要（2 分钟读完这一节就够）
+
+**它是什么**。NeMo Gym 是 NVIDIA RL 训练栈的 **环境 / rollout 侧** —— 与 trainer 库（[[rl-training-frameworks|NeMo RL、VeRL、Unsloth]]）配对使用。你交给它一份任务数据集 + 一个 agent harness + 一个 verifier，它会起三个 FastAPI 微服务，按任意并发度在这些任务上跑你的 agent，给每条 rollout 打分，然后把 `(input, output, reward)` 三元组送给你的 trainer。
+
+**核心思想**。**环境 = 数据集 + harness + verifier + state**，打包成 **三个独立 FastAPI 服务 + 稳定 HTTP 合约**。三个支撑次级声明：
+
+1. **四组件拆分够用** —— 任何想叫 "RL post-training 环境" 的东西都能干净映射到 dataset（任务）+ harness（模型如何交互）+ verifier（如何打分）+ state（每任务执行上下文）。
+2. **3-server 切分**（resources / model / agent）—— Verifier + state 住 *resources*，LLM 推理住 *model*，编排住 *agent*。各自独立扩展，YAML 里可换。
+3. **HTTP + Hydra 合约** —— Trainer 用版本化 Pydantic schema 通过 HTTP 跟 HeadServer 对话；Ray、sandbox 生命周期、容器选型全部藏在合约后面。
+
+去掉任何一个：verifier 代码就跟 harness 代码混；无法独立扩展 model 推理；trainer 跟 rollout 实现耦合。
+
+**具体系统 / 生产部署**。在 **Nemotron** 训练里实战过（框架 README 自己写了）；[[on-policy-distillation#生产部署primary-source-验证|Nemotron-Cascade 2]]（2026-03，IMO / IOI / ICPC 金牌）的多 domain GRPO + MOPD 管线用 NeMo Gym。库里自带 **84 个 benchmark**、**19 个 agent harness**、**6 种 model server**；一等公民对接 [[rl-training-frameworks|NeMo RL]]（GRPO/DAPO）、VeRL、Unsloth。Agent 一侧的 rollout-driver 对应物是 [[prorl-agent]]。
+
+**为什么这重要**。
+
+- **Rollout 即服务把 trainer 跟环境解耦**。加 benchmark、改工具、换 sandbox 不动 RL 框架。换 trainer（VeRL ↔ NeMo RL ↔ Unsloth）就是改 config，不是 port 代码。
+- **84-benchmark 目录是护城河**。任何人都能一周搭出架构；搭 84 个生产级集成要花年。战略价值在目录，不在 FastAPI 设计。
+- **工程选择能省几个调试周末**。aiohttp 不 httpx（httpcore 在 16K+ 并发下 O(n²) 连接池挂死）、Apptainer 不 Docker（训练节点本身在 enroot 容器里）、Lustre 上 `RAY_TMPDIR=/tmp`（AF_UNIX 107-byte 限制）。规模化跑出来的细节。
 
 ---
+
+# 深度部分（往下展开细节）
+
+上面摘要是 executive 层。下面是给愿意细读架构和工程细节的人准备的。
 
 ## 背景：RL 环境为什么是它自己独立的基础设施问题
 
@@ -32,8 +56,6 @@ LLM 的 RL 后训练需要按高并发对当前策略生成 rollout，对每条 
 
 标准的"trainer 库捆绑环境"做法（TRL `make_env`、OpenRLHF runner）把环境代码耦合进 trainer 进程 —— 导致 (a) 跨 trainer 复用难、(b) 并发被 trainer event loop 卡住、(c) 共享内存里状态管理危险。NeMo Gym 的设计思路是 **把关切拆成独立的 FastAPI 服务、用稳定 HTTP 合约连接** —— 跟 2014 年微服务的论点同一个，应用在 RL rollout 上。
 
-跟 trainer 捆绑环境对比：
-
 | 维度 | Trainer 捆绑（TRL、OpenRLHF） | NeMo Gym（微服务） |
 | ---- | -------------------------- | ---------------- |
 | 耦合 | 环境代码住 trainer 进程 | 三个 FastAPI 服务 via aiohttp 连接 |
@@ -42,33 +64,10 @@ LLM 的 RL 后训练需要按高并发对当前策略生成 rollout，对每条 
 | 状态隔离 | 共享进程状态 | Per-server 状态，可独立重启 |
 | 故障恢复 | Crash 杀整个 trainer | 服务 crash 独立隔离 |
 
----
-
-## 核心思想：环境 = 数据集 + harness + verifier + state，组成 3-server FastAPI 架构
+## 系统架构
 
 > [!quote] 一句话总结贡献
 > **环境**（environment）是 agent 为完成任务而与之交互的完整系统 —— 数据集（任务）、harness（模型如何交互）、verifier（如何打分）、state（每任务执行上下文） —— 它的正确打包方式是 **三个独立 FastAPI 服务 + 稳定 HTTP 合约**。
-
-三个支撑次级声明：
-
-- **四组件拆分够用**。任何你想叫 "RL post-training 环境" 的东西都能干净映射到 dataset + harness + verifier + state。Verifier 是唯一 *必须* benchmark 特定的部件。
-- **3-server 架构（resources / model / agent）是正确粒度**。Verifier + state 住 *resources server*；LLM 推理住 *model server*；编排住 *agent server*。各有不同扩展规律、可独立替换。
-- **HTTP + Hydra 配置是正确合约**。Trainer 通过 HTTP 用版本化 Pydantic schema 跟 HeadServer 对话；其它（config、Ray、sandbox 生命周期）藏在合约后面。
-
-去掉任何一个：失去四组件拆分 verifier 代码就跟 harness 代码混；失去 3-server 切分就无法独立扩展 model 推理；失去 HTTP 合约 trainer 就跟 rollout 实现耦合。
-
----
-
-## 实现细节
-
-### 心智模型：环境 = 数据集 + harness + verifier + state
-
-| 组件 | 是什么 | 住哪 |
-| ---- | ------ | ---- |
-| **数据集** | JSONL 文件，一行一任务。每行带模型面向 prompt（`responses_create_params.input`）和 verifier 面向元数据（`verifier_metadata`）。 | `resources_servers/<bench>/data/` + GitLab MLflow 仓（`train`/`validation`） |
-| **Harness** | 模型如何与世界交互 —— 单轮 / 多轮 / 带工具 / 错了重试 / 思维链。 | Agent server（`responses_api_agents/`） |
-| **Verifier** | 接收模型输出 + 任务元数据，返回 `reward ∈ {0.0, 1.0}` 的函数。 | Resources server（`resources_servers/<bench>/app.py`，`verify()` 方法） |
-| **State** | 每任务执行上下文 —— 工作目录、git 仓库、session id、sandbox 容器。 | resources server 内部，按需 per-task 派生 Apptainer / Python sandbox |
 
 端到端 loop：
 
@@ -76,8 +75,6 @@ LLM 的 RL 后训练需要按高并发对当前策略生成 rollout，对每条 
 data/example.jsonl  ─►  agent server  ─►  model server  ─►  agent server  ─►  resources server  ─►  reward
    (一行一个任务)        (跑 harness)     (LLM forward)     (解析输出)        (在 sandbox 里 verify)
 ```
-
-### 系统架构
 
 ```mermaid
 %%{init: {'flowchart':{'nodeSpacing':30,'rankSpacing':35,'curve':'basis'}}}%%
@@ -121,9 +118,11 @@ flowchart TB
 - **HeadServer 是指挥** —— 合并 config、起 Ray、启动子 server、暴露统一健康端点。你的 CLI 只跟 HeadServer 对话。
 - **容器 / sandbox 在 resources server 内派生**，只有任务需要隔离执行时才派生。多数 benchmark（MCQA、judge-based）根本不要 sandbox；SWE-bench / GDPVal / Newton Bench 才需要。
 
-### 三种 server 详解
+## 三种 server 详解
 
-**Resources server**（`resources_servers/`）—— Verifier 那一侧。每个实现 `verify()`：
+### Resources server —— Verifier 那一侧
+
+每个实现 `verify()`：
 
 ```python
 class MyBenchmarkServer(SimpleResourcesServer):
@@ -134,27 +133,29 @@ class MyBenchmarkServer(SimpleResourcesServer):
         return VerifyResponse(reward=1.0 if score else 0.0)
 ```
 
-`verifier_metadata` 字典 **对框架不透明** —— 你想塞什么字段就塞什么（测试用例、标准答案、task id、gold patch、隐藏测试输入），框架原样从 JSONL 行管道到你的 `verify()`。
+`verifier_metadata` 字典 **对框架不透明** —— 你想塞什么字段就塞什么（测试用例、标准答案、task id、gold patch、隐藏测试输入），框架原样从 JSONL 行管道到你的 `verify()`。仓库自带 **84 个 resources server**。
 
-仓库自带 **84 个 resources server**。按类别抽样：
+> [!note]- 84 个 benchmark 按类别（参考资料 —— 不做调研可跳过）
+>
+> | 类别 | 示例 |
+> | ---- | ---- |
+> | 代码生成 | `code_gen`、`bigcodebench`、`evalplus`、`competitive_coding_challenges`、`code_fim` |
+> | SWE / 仓库级 | `swerl_gen`、`swerl_llm_judge` |
+> | 数学与形式推理 | `math_with_code`、`math_with_judge`、`math_formal_lean`、`imo_proofbench_judge`、`polymath` |
+> | 科学 Q&A | `gpqa_diamond`、`mcqa`、`ugphysics_judge`、`frontierscience_judge` |
+> | 长上下文 / 检索 | `ruler`、`mrcr`、`hotpotqa_qa`、`aalcr` |
+> | 工具使用与 agent | `tavily_search`、`google_search`、`xlam_fc`、`ns_tools` |
+> | 安全 / 对齐 | `jailbreak_detection`、`indirect_prompt_injection`、`over_refusal_detection`、`xstest`、`abstention` |
+> | 结构化输出 | `format_verification`、`structured_outputs`、`structeval`、`ifbench` |
+> | 视觉 / 多模态 | `labbench2_vlm`、`vlm_eval_kit`、`gdpval` |
+> | SQL 与数据 | `bird_sql`、`spider2_lite`、`text_to_sql` |
+> | 领域 | `rdkit_chemistry`、`ether0`、`finance_sec_search`、`cvdp` |
+> | RL 环境（Gym 风格） | `gymnasium`、`grl_sokoban`、`grl_tetris`、`blackjack` |
+> | 外部库桥接 | `aviary`、`openenv`、`reasoning_gym`、`arc_agi` |
 
-| 类别 | 示例 |
-| ---- | ---- |
-| 代码生成 | `code_gen`、`bigcodebench`、`evalplus`、`competitive_coding_challenges`、`code_fim` |
-| SWE / 仓库级 | `swerl_gen`、`swerl_llm_judge` |
-| 数学与形式推理 | `math_with_code`、`math_with_judge`、`math_formal_lean`、`imo_proofbench_judge`、`polymath` |
-| 科学 Q&A | `gpqa_diamond`、`mcqa`、`ugphysics_judge`、`frontierscience_judge` |
-| 长上下文 / 检索 | `ruler`、`mrcr`、`hotpotqa_qa`、`aalcr` |
-| 工具使用与 agent | `tavily_search`、`google_search`、`xlam_fc`、`ns_tools` |
-| 安全 / 对齐 | `jailbreak_detection`、`indirect_prompt_injection`、`over_refusal_detection`、`xstest`、`abstention` |
-| 结构化输出 | `format_verification`、`structured_outputs`、`structeval`、`ifbench` |
-| 视觉 / 多模态 | `labbench2_vlm`、`vlm_eval_kit`、`gdpval` |
-| SQL 与数据 | `bird_sql`、`spider2_lite`、`text_to_sql` |
-| 领域 | `rdkit_chemistry`、`ether0`、`finance_sec_search`、`cvdp` |
-| RL 环境（Gym 风格） | `gymnasium`、`grl_sokoban`、`grl_tetris`、`blackjack` |
-| 外部库桥接 | `aviary`、`openenv`、`reasoning_gym`、`arc_agi` |
+### Response API model —— LLM 那一侧
 
-**Response API model**（`responses_api_models/`）—— 暴露 OpenAI 兼容端点的薄包装。6 种：
+暴露 OpenAI 兼容端点的薄包装。6 种：
 
 | Server | 后端 |
 | ------ | ---- |
@@ -167,89 +168,35 @@ class MyBenchmarkServer(SimpleResourcesServer):
 
 为什么单独抽 model 层：agent 代码后端无关。同一份 SWE-Agent harness 既能跑 GPT-5（用 `openai_model`），也能跑某个 Nemotron checkpoint（用 `vllm_model`），还能跑进程内 vLLM（用 `local_vllm_model`）—— agent 代码一字不改，只换 YAML。
 
-**Response API agent**（`responses_api_agents/`）—— Harness 那一侧。**19 个 harness**：
+### Response API agent —— Harness 那一侧
 
-| Harness | 干什么 |
-| ------- | ------ |
-| `simple_agent` | 一次模型调用，无工具。QA 风格 benchmark 的默认。 |
-| `proof_refinement_agent` | 多轮修正循环：模型看 verifier 报错再重试。 |
-| `swe_agents` | OpenHands 风格 SWE-bench harness（bash + 文件编辑工具，每任务一个容器）。 |
-| `mini_swe_agent` | 更轻量的 SWE harness。 |
-| `stirrup_agent` | 通用代码执行 harness，executor 可插拔（本地 sandbox / Apptainer）。 |
-| `langgraph_agent` | 把 LangGraph 定义的 agent 桥接进 Gym schema。 |
-| `verifiers_agent` | 桥接 `Verifiers` 库。 |
-| `aviary_agent` | 桥接 FutureHouse 的 Aviary 环境。 |
-| `harbor_agent` | HPC 集群上的 Singularity 环境，容器内跑 FastAPI。 |
-| `gymnasium_agent` | 经典 Gym/Gymnasium 环境（Sokoban、Tetris、Blackjack）。 |
-| `browsecomp_agent` | 浏览网页类任务。 |
-| `tool_simulation_agent` | 模拟工具响应的 tool-use 评测。 |
+19 个自带 harness 覆盖从单次 QA 到 OpenHands 风格 SWE-bench：
+
+> [!note]- 19 个 agent harness（参考资料 —— 不选型可跳过）
+>
+> | Harness | 干什么 |
+> | ------- | ------ |
+> | `simple_agent` | 一次模型调用，无工具。QA 风格 benchmark 的默认。 |
+> | `proof_refinement_agent` | 多轮修正循环：模型看 verifier 报错再重试。 |
+> | `swe_agents` | OpenHands 风格 SWE-bench harness（bash + 文件编辑工具，每任务一个容器）。 |
+> | `mini_swe_agent` | 更轻量的 SWE harness。 |
+> | `stirrup_agent` | 通用代码执行 harness，executor 可插拔（本地 sandbox / Apptainer）。 |
+> | `langgraph_agent` | 把 LangGraph 定义的 agent 桥接进 Gym schema。 |
+> | `verifiers_agent` | 桥接 `Verifiers` 库。 |
+> | `aviary_agent` | 桥接 FutureHouse 的 Aviary 环境。 |
+> | `harbor_agent` | HPC 集群上的 Singularity 环境，容器内跑 FastAPI。 |
+> | `gymnasium_agent` | 经典 Gym/Gymnasium 环境（Sokoban、Tetris、Blackjack）。 |
+> | `browsecomp_agent` | 浏览网页类任务。 |
+> | `tool_simulation_agent` | 模拟工具响应的 tool-use 评测。 |
 
 > [!important] 多轮 agent 契约
 > 多轮 agent 必须把以下两类东西沿调用链 *显式传下去*：**cookies**（`cookies=request.cookies` —— 有状态环境靠它标识 session）；每次模型响应里的 **token id 与 log-prob**（`prompt_token_ids`、`generation_token_ids`、`generation_log_probs`）—— trainer 下游算 advantage 要用。丢掉它们梯度就废。
 
-### 配置：Hydra + YAML
-
-每个 server 实例是一个顶层 key：
-
-```yaml
-my_benchmark_server:
-  resources_servers:
-    my_benchmark:
-      entrypoint: app.py
-      domain: coding
-      verified: false
-
-my_agent_instance:
-  responses_api_agents:
-    simple_agent:
-      entrypoint: app.py
-      resources_server:
-        type: resources_servers
-        name: my_benchmark
-      model_server:
-        type: responses_api_models
-        name: policy_model
-      datasets:
-      - name: my_dataset
-        type: train
-        jsonl_fpath: path/to/data.jsonl
-        gitlab_identifier:
-          dataset_name: my_benchmark
-          version: 0.0.1
-        license: MIT
-```
-
-模型端点凭据放在项目根目录的 `env.yaml`（per-user，不进 server config）。
-
-### 数据：JSONL schema + GitLab 数据集仓
-
-Schema：
-
-```json
-{
-  "responses_create_params": {
-    "input": [
-      {"role": "system", "content": "..."},
-      {"role": "user", "content": "..."}
-    ]
-  },
-  "verifier_metadata": {"task_id": "...", "test_cases": [...]}
-}
-```
-
-三档数据等级：
-
-| 等级 | 住哪儿 | 什么时候用 |
-| ---- | ------ | --------- |
-| `example` | `data/example.jsonl` —— 5 条，进 git | 冒烟测试、CI、演示 |
-| `train` | GitLab MLflow 仓（**不** 进 git） | RL 训练 rollout |
-| `validation` | GitLab MLflow 仓（**不** 进 git） | held-out 评测 |
-
-### 容器与 sandbox 的故事
+## 容器与 sandbox 的故事
 
 NeMo Gym 这块最容易被读错。两条互不相干的路径。
 
-> [!important] NeMo Gym 不直接用 Docker
+> [!warning] NeMo Gym 不直接用 Docker
 > 生产隔离走 **Apptainer**。训练集群节点本身就跑在 enroot 容器里 —— Docker daemon 在 enroot 里嵌不起来 —— 所以 Apptainer 是唯一能套娃的方案。Apptainer *会消费* Docker 镜像（`docker://...` URI）但跑容器的是 Apptainer，不是 Docker。引用 `docs/infrastructure/engineering-notes/swe-rl-case-study.md`：*"Apptainer was the only containerization framework that we could run from within an enroot container."*
 
 ```mermaid
@@ -291,22 +238,16 @@ command_exec_timeout: 300
 
 容器内起一个长生命周期 `bash`；agent 通过 stdin 发命令，每条命令后跟独一无二的 end-marker echo 用来分隔输出。`ulimit -v` 限内存，`timeout` 限单条 exec 时间。整套编排在 `responses_api_agents/stirrup_agent/apptainer_provider.py`（~700 行）和 `responses_api_agents/swe_agents/app.py`（~2000 行）。
 
-**本地 sandbox 路径**（开发 / 简单任务）—— 用户：`newton_bench`、`competitive_coding_challenges`、`stirrup_agent`（默认无容器配置时）。实现在 `resources_servers/newton_bench/newton_bench_utils/sandbox.py`：
+**本地 sandbox 路径**（开发 / 简单任务）—— 用户：`newton_bench`、`competitive_coding_challenges`、`stirrup_agent`（默认无容器配置时）。实现在 `resources_servers/newton_bench/newton_bench_utils/sandbox.py`：守护 worker 进程 via `multiprocessing.Pipe()`、受限 `__builtins__` 白名单（禁 `os`、`sys`、`subprocess`、`eval`、`exec`、`open`）、AST + 正则预检、`signal.SIGALRM` wall-clock 超时。不是真隔离 —— "限制 Python 能做什么，赌模型不会逃逸"。适合做纯函数正确性检查，不适合任意 shell。
 
-- 守护 worker 进程 via `multiprocessing.Pipe()`。
-- 受限 `__builtins__` 白名单（禁 `os`、`sys`、`subprocess`、`eval`、`exec`、`open`）。
-- 提交进来的代码先 AST + 正则预检。
-- `signal.SIGALRM` wall-clock 超时。
+**哪些不在容器里**：三种 NeMo Gym server 自己跑在 host（或 Ray worker）上的普通 Python 进程；多数 resources server 也不派生容器；CI 不建镜像 —— `.github/workflows/_build_container.yml` 转发到共享的 NVIDIA FW-CI 模板；NeMo Gym CI 只跑 `pytest`。
 
-不是真隔离 —— "限制 Python 能做什么，赌模型不会逃逸"。适合做纯函数正确性检查，不适合任意 shell。
+> [!warning] 别把"用 Docker 镜像"和"用 Docker"搞混
+> NeMo Gym 配置里到处是 `docker://...` URI。这是 **Apptainer 从 Docker Hub 拉镜像**，不是 Docker daemon 执行。任何 NeMo Gym 部署里都没有 `docker` 进程。搞错了你会在 HPC 节点上浪费一下午装 Docker —— 那里根本装不上。
 
-**哪些不在容器里**：
+## 分布式执行与工程选择
 
-- **三种 NeMo Gym server 自己** 跑在 host（或 Ray worker）上的普通 Python 进程，不在容器里。
-- **多数 resources server 也不派生容器** —— MCQA、format 检查、judge 打分全在 resources server 自己进程里跑。
-- **CI 不建镜像** —— `.github/workflows/_build_container.yml` 转发到共享的 NVIDIA FW-CI 模板；NeMo Gym CI 只跑 `pytest`。
-
-### 分布式执行：Ray
+### Ray
 
 ```python
 @ray.remote(
@@ -322,9 +263,7 @@ def run_agent_remote(params: dict[str, Any]) -> Any:
 > [!warning] Lustre Ray socket 路径坑
 > 工作目录路径过长（NVIDIA 集群上的 Lustre 挂载）时，Ray AF_UNIX socket 路径超过 Linux 107-byte 限制，`ray.init()` 报错莫名其妙。解法：跑前 `RAY_TMPDIR=/tmp`。`ng_test` 派生隔离 venv，Python 里写 `os.environ` 不会传过去 —— 必须外部设（`RAY_TMPDIR=/tmp ng_test ...`）。
 
-### 值得记住的工程选择
-
-非显然的决定，已经踩过坑：
+### 非显然的工程选择，已经踩过坑
 
 | 规则 | 为什么 |
 | ---- | ------ |
@@ -337,9 +276,63 @@ def run_agent_remote(params: dict[str, Any]) -> Any:
 | **钉 `openai<=2.6.1`** | Schema 兼容。别引 LiteLLM / Anthropic SDK / 其它客户端。用 `nemo_gym/openai_utils.py`。 |
 | **外部工具自动安装** | `setup_<tool>.py` 加 `ensure_<tool>()`，在 `model_post_init()` 里调；`conftest.py` 加 `pytest_configure` 钩子让 `skipif` marker 看见装好的工具。 |
 
----
+## 配置与数据
 
-## 生产部署与生态
+### Hydra + YAML
+
+每个 server 实例是一个顶层 key：
+
+```yaml
+my_benchmark_server:
+  resources_servers:
+    my_benchmark:
+      entrypoint: app.py
+      domain: coding
+      verified: false
+
+my_agent_instance:
+  responses_api_agents:
+    simple_agent:
+      entrypoint: app.py
+      resources_server:
+        type: resources_servers
+        name: my_benchmark
+      model_server:
+        type: responses_api_models
+        name: policy_model
+      datasets:
+      - name: my_dataset
+        type: train
+        jsonl_fpath: path/to/data.jsonl
+        gitlab_identifier:
+          dataset_name: my_benchmark
+          version: 0.0.1
+        license: MIT
+```
+
+模型端点凭据放在项目根目录的 `env.yaml`（per-user，不进 server config）。
+
+### JSONL schema 与数据集等级
+
+```json
+{
+  "responses_create_params": {
+    "input": [
+      {"role": "system", "content": "..."},
+      {"role": "user", "content": "..."}
+    ]
+  },
+  "verifier_metadata": {"task_id": "...", "test_cases": [...]}
+}
+```
+
+| 等级 | 住哪儿 | 什么时候用 |
+| ---- | ------ | --------- |
+| `example` | `data/example.jsonl` —— 5 条，进 git | 冒烟测试、CI、演示 |
+| `train` | GitLab MLflow 仓（**不** 进 git） | RL 训练 rollout |
+| `validation` | GitLab MLflow 仓（**不** 进 git） | held-out 评测 |
+
+## 具体系统与生产部署
 
 框架页的 "Experiments" 槽 —— 验证过的部署和集成。
 
@@ -355,20 +348,15 @@ def run_agent_remote(params: dict[str, Any]) -> Any:
 | veRL | 一等公民 | [Tutorial](https://docs.nvidia.com/nemo/gym/latest/training-tutorials/verl.html) |
 | Unsloth | 一等公民 | [Tutorial](https://docs.nvidia.com/nemo/gym/latest/training-tutorials/unsloth-training.html) |
 
-### 集成的环境库（Gym 寄居的 resources）
+### 集成的环境库与 harness
 
-| 库 | 在哪 |
-| -- | ---- |
+| 库 / harness | 在哪 |
+| ------------ | ---- |
 | Aviary (FutureHouse) | `resources_servers/aviary` |
 | Harbor | `responses_api_agents/harbor_agent` |
 | OpenEnv | `resources_servers/openenv` |
 | Reasoning Gym | `resources_servers/reasoning_gym` |
 | Verifiers | `responses_api_agents/verifiers_agent` |
-
-### 集成的 agent harness
-
-| Harness | 在哪 |
-| ------- | ---- |
 | OpenHands | `responses_api_agents/swe_agents` |
 | Mini SWE Agent | `responses_api_agents/mini_swe_agent` |
 | LangGraph | `responses_api_agents/langgraph_agent` |
@@ -400,28 +388,21 @@ def run_agent_remote(params: dict[str, Any]) -> Any:
 └──────────────────────────────────────────────────────────────────────┘
 ```
 
----
-
 ## 优势与限制
 
 最强两点：(1) **覆盖广** —— 自带 84 个 benchmark + 19 个 harness + 6 种 model 后端在学术风格 RL 库里很罕见；(2) **架构契合规模** —— FastAPI + aiohttp + Ray + Apptainer 这一套是 "Slurm 集群上数千并发 rollout" 的正解，工程选择（`aiohttp-vs-httpx`、Lustre 坑）那种能省几个周末的调试。
 
 诚实承认的限制：
 
-- **早期开发**。README 自己写了。API 会变；下游集成最好钉 commit。
-- **多数 benchmark 仅限 Linux**。可执行文件必须能在 Linux 跑（见 `CLAUDE.md`）。macOS / Windows 只能开发用。
+- **早期开发**。API 会变；下游集成最好钉 commit。
+- **多数 benchmark 仅限 Linux**。macOS / Windows 只能开发用。
 - **GitLab 数据集仓是 NVIDIA 内部的**。外部用户能 fallback 到 HuggingFace，但主路径假设 NVIDIA 的 GitLab + MLflow。
 - **pre-commit hook 会自动改文件**。新贡献者经常踩 "hook 改了文件，commit 失败" —— `add-verified-flag` 和 `update-readme-table` 会重写 YAML 和 README；重新 `git add` 再 commit 就好。
 - **SWE 风格任务依赖 Apptainer**。在没有 Apptainer 的平台上得先装（`apt-get install -y apptainer` 在新版 Ubuntu 上可以），或者回落到本地 sandbox —— 但 sandbox 跑不了真的 SWE-bench。
 - **测试隔离很重**。`ng_test` 每个 server 起一个新 venv —— 依赖隔离对，但第一次跑慢。`skip_venv_if_present` 用于迭代。
 - **文档落后于代码**。仓库里 ~84 个 benchmark；公开文档只深入讲了少数几个。其它的合同就是源代码 README + 测试。
 
-> [!warning] 别把"用 Docker 镜像"和"用 Docker"搞混
-> NeMo Gym 配置里到处是 `docker://...` URI。这是 **Apptainer 从 Docker Hub 拉镜像**，不是 Docker daemon 执行。任何 NeMo Gym 部署里都没有 `docker` 进程。搞错了你会在 HPC 节点上浪费一下午装 Docker —— 那里根本装不上。
-
----
-
-## 这意味着什么
+## 启示
 
 两条值得跟踪的预测：
 
@@ -429,8 +410,6 @@ def run_agent_remote(params: dict[str, Any]) -> Any:
 2. **84-benchmark 表面是护城河**。任何人都能一周搭出 3-server FastAPI 架构；搭 84 个生产级 benchmark 集成要花年。NeMo Gym 的战略位置 *不是* 架构，而是目录。
 
 这 *不是*：通用 agent 平台（harness 合约是 RL-rollout-shaped 不是 chat-shaped），也不是 trainer 库替代品（Gym 做 rollout 不算梯度），也不是托管服务（自己跑）。
-
----
 
 ## 源码与复现
 
@@ -479,11 +458,9 @@ ng_reward_profile +input_jsonl_fpath=resources_servers/mcqa/data/example.jsonl \
 | `docs/infrastructure/engineering-notes/aiohttp-vs-httpx.md` | HTTP 栈选型的"为什么"。能省一个调试周末。 |
 | `docs/infrastructure/engineering-notes/swe-rl-case-study.md` | 为什么 Apptainer、部署拓扑、CPU 容量估算。 |
 
----
-
 ## 相关阅读
 
-- [[prorl-agent]] —— Rollout 即服务基础设施（不同但概念邻近的 NVIDIA 项目）。
+- [[prorl-agent]] —— Rollout 即服务基础设施（不同但概念邻近的 NVIDIA 项目；rollout-driver 在 agent 一侧的对应物）。
 - [[environment-design]] —— 什么样的 RL 环境对 LLM 来说算好？
 - [[rl-training-frameworks]] —— 消费 NeMo Gym rollout 的 trainer 一侧。
 - [[grpo]] / [[ppo-for-llm]] / [[rlhf-overview]] —— 驱动对环境需求的 RL 算法。

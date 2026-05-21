@@ -3,7 +3,7 @@ title: "DeepSpeed Ulysses: Sequence Parallelism via Head-Sharding AllToAll"
 category: llm-inference
 tags: [deepspeed-ulysses, context-parallelism, sequence-parallelism, long-context, attention, alltoall, microsoft, paper-review]
 created: 2026-05-19
-updated: 2026-05-19
+updated: 2026-05-21
 status: mature
 paper: arXiv:2309.14509
 code: https://github.com/deepspeedai/DeepSpeed
@@ -12,22 +12,44 @@ code: https://github.com/deepspeedai/DeepSpeed
 # DeepSpeed Ulysses: Sequence Parallelism via Head-Sharding AllToAll
 
 > [!info] Paper metadata
-> - **Paper**: [arXiv:2309.14509](https://arxiv.org/abs/2309.14509) — *DeepSpeed Ulysses: System Optimizations for Enabling Training of Extreme Long Sequence Transformer Models* (Sam Ade Jacobs, Masahiro Tanaka, Chengming Zhang, Minjia Zhang, Shuaiwen Leon Song, Samyam Rajbhandari, Yuxiong He; Microsoft)
-> - **Posted**: 2023-09-25 (v1), 2023-10-04 (v2 current)
+> - **Paper**: [arXiv:2309.14509](https://arxiv.org/abs/2309.14509) — *DeepSpeed Ulysses: System Optimizations for Enabling Training of Extreme Long Sequence Transformer Models* (Sam Ade Jacobs, Masahiro Tanaka, Chengming Zhang, Minjia Zhang, Shuaiwen Leon Song, Samyam Rajbhandari, Yuxiong He; Microsoft, 2023)
 > - **Code**: [deepspeedai/DeepSpeed](https://github.com/deepspeedai/DeepSpeed) — primary file `deepspeed/sequence/layer.py` (`DistributedAttention` class)
-> - **Blog**: [DeepSpeed Ulysses README](https://github.com/microsoft/DeepSpeed/blob/master/blogs/deepspeed-ulysses/README.md)
-> - **Tutorial**: [deepspeed.ai/tutorials/ds-sequence](https://www.deepspeed.ai/tutorials/ds-sequence/)
-> - **Follow-up**: [Ulysses-Offload (FPDT)](https://github.com/deepspeedai/DeepSpeed/blob/master/blogs/ulysses-offload/README.md) — 2024-12, 4M tokens on 32× A100
+> - **Blog**: [DeepSpeed Ulysses README](https://github.com/microsoft/DeepSpeed/blob/master/blogs/deepspeed-ulysses/README.md) · **Tutorial**: [deepspeed.ai/tutorials/ds-sequence](https://www.deepspeed.ai/tutorials/ds-sequence/)
+> - **Follow-up**: [Ulysses-Offload (FPDT)](https://github.com/deepspeedai/DeepSpeed/blob/master/blogs/ulysses-offload/README.md) — 4M tokens on 32× A100
 > - **Companion page**: [[ring-attention]] — the P2P-ring-based alternative
-
-> [!abstract]+ TL;DR
-> DeepSpeed Ulysses solves long-context attention by doing two **AllToAll transpositions** per attention layer: before attention, the data layout flips from sequence-sharded `[N/P, d]` to head-sharded `[N, d/P]` — so each GPU temporarily holds the *full sequence* but only $1/P$ of the heads, runs **standard FlashAttention locally**, then AllToAlls back to sequence-sharded. The result: comm volume is $4Nh/P$ per link per layer — **constant when $N$ and $P$ scale together**, the cleanest scaling behavior in the SP zoo. But there's a hard cap: $P \leq \text{num\_heads}$ (and for GQA models, $P \leq \text{num\_kv\_heads}$, which can be as small as 8). Reported numbers from Microsoft: **256× A100, GPT 1.2B–30B, ~175 TFLOPs/GPU sustained (54 % of hardware peak), 1M-token sequences**. Used in production by **HuggingFace TRL/Accelerate (since 2025)**, **Tencent xDiT** (diffusion video via [USP](https://arxiv.org/abs/2405.07719)), **verl** RL framework, and **Microsoft's own Megatron-DeepSpeed**. **Compared to** [[ring-attention|Ring Attention]]: Ulysses scales head-count-limited but has constant per-rank comm and natural causal-mask balance; Ring scales unlimited but needs bandwidth-rich fabric. Production answer is **hybrid (USP)** — intra-node Ulysses × inter-node Ring.
 
 ---
 
+## Summary (read this if you have 2 minutes)
+
+**What it is.** DeepSpeed Ulysses (Microsoft, Sep 2023) is a sequence-parallel attention scheme that lets you train transformers on million-token sequences by *re-laying-out* activations rather than chopping the attention math. Two AllToAll transpositions per layer flip data between **sequence-sharded** `[N/P, d]` and **head-sharded** `[N, d/P]` layouts; head-sharded attention runs locally on each GPU with **standard, unmodified FlashAttention**.
+
+**The one idea.** Make attention embarrassingly parallel by sharding the *head* axis, not the sequence axis, *during attention*. Three pieces hold it up:
+
+1. **AllToAll transpose** — `[N/P, d]` → `[N, d/P]` before attention, reverse after. Per-link comm volume is $4Nh/P$ per layer — **constant when $N$ and $P$ scale together**.
+2. **Unmodified attention kernel** — each GPU holds the *full sequence* on $1/P$ of the heads, so any stock FlashAttention 2/3 kernel runs as-is. No custom streaming softmax.
+3. **Causal mask is naturally balanced** — every rank's causal triangle is identical because every rank holds the full sequence. No Striped/zigzag scheduling needed.
+
+Remove any one: lose the $1/P$ scaling, need a custom distributed kernel, or eat causal load-imbalance.
+
+**Headline result.** 256× A100, GPT 1.2B–30B; **sustained ~175 TFLOPs/GPU (54 % of A100 peak)** at 64K; trains **1M-token sequences**; **2.5× faster, 4× longer** than Megatron-SP baseline. Weak scaling holds at 256K × 256 GPUs (147.4 TFLOPs). The critical limit: **$P \leq \text{num\_kv\_heads}$** — for GQA models (Llama-3, Mistral) that's 8, so pure Ulysses caps at one NVLink node.
+
+**Why it matters.**
+
+- **Stock FlashAttention works unmodified.** No fused distributed kernel; no streaming softmax surgery. Ulysses *wraps* the local attention call.
+- **Default intra-node sequence-parallel primitive in 2026.** Shipped in HuggingFace TRL/Accelerate (`sp_backend="deepspeed"`), Tencent xDiT (diffusion video), verl RL, ms-swift, Megatron-DeepSpeed.
+- **The production answer is hybrid.** Inner Ulysses (NVLink node, 8 GPUs) × outer Ring (cross-node IB) — see [USP](https://arxiv.org/abs/2405.07719), [LoongTrain](https://arxiv.org/abs/2406.18485). Ulysses lost the "single-axis" race to Ring; it won the "intra-node primitive" niche.
+- **12-month watch.** GQA/MQA/MLA trends keep shrinking KV head counts. Either Ulysses migrates to operating at the *full* head count (broadcasting replicated KV — adds comm), or it stays as the intra-node half of every hybrid CP scheme.
+
+---
+
+# Depth (drill-down starts here)
+
+The summary above is the executive layer. Everything below is for the careful reader who wants the comm-volume derivation, the GQA head-count math, and the source code.
+
 ## Background: why sequence parallelism is its own problem
 
-LLM training has four orthogonal parallelism axes ([[parallelism-strategies-deep-dive|TP / PP / DP / EP]]), each sharding a different dimension of the model. None of them shard the **sequence dimension** of activations. Past 128 K tokens, this becomes the binding constraint:
+LLM training has four orthogonal parallelism axes ([[parallelism-strategies-deep-dive|TP / PP / DP / EP]]). None of them shard the **sequence dimension** of activations. Past 128 K tokens, this becomes the binding constraint:
 
 | Axis | What it shards | Activation memory at long $N$ |
 | ---- | -------------- | ----------------------------- |
@@ -40,16 +62,12 @@ What's needed is a *sequence-parallel* axis: shard the $N$ tokens across $P$ ran
 
 Two competing answers emerged in 2023:
 
-1. **[[ring-attention|Ring Attention]]** (Liu/Zaharia/Abbeel, 2023-10) — keep Q on each device, rotate K/V around a ring, use FlashAttention's streaming softmax to accumulate across rotations.
-2. **DeepSpeed Ulysses** (Microsoft, 2023-09) — *reshape the data* so attention can run locally on each device's slice. Use two AllToAlls to switch between sequence-sharded and head-sharded layouts.
+1. **[[ring-attention|Ring Attention]]** (Liu/Zaharia/Abbeel, Oct 2023) — keep Q on each device, rotate K/V around a ring, use FlashAttention's streaming softmax to accumulate across rotations.
+2. **DeepSpeed Ulysses** (Microsoft, Sep 2023) — *reshape the data* so attention can run locally on each device's slice. Use two AllToAlls to switch between sequence-sharded and head-sharded layouts.
 
 Both produce mathematically-identical attention output. They differ in **which dimension is sharded when**, what communication primitive moves data, and what the scaling limits are.
 
-The paper's argument for Ulysses over the ring approach:
-
-> "Existing systems [Megatron-SP, ColAI-SP] incur communication volume O(M), making their effective throughput poor as the sequence length and parallelism degree increase. **DeepSpeed Ulysses incurs O(M/P) communication volume**, allowing it to scale to longer sequences and larger parallelism degrees without communication bottleneck."
-
-Per the paper's Table 1 (verbatim):
+Per the paper's Table 1:
 
 | Method | Communication complexity | Activation memory | Param memory | Attention-mechanism agnostic |
 | ------ | ------------------------ | ----------------- | ------------ | ---------------------------- |
@@ -57,28 +75,18 @@ Per the paper's Table 1 (verbatim):
 | Megatron-SP | $O(M)$ | ✓ | ✗ | ✗ |
 | **DS-Ulysses** | $\mathbf{O(M/P)}$ | ✓ | ✓ | ✓ |
 
----
+The paper's argument verbatim: *"DeepSpeed Ulysses incurs $O(M/P)$ communication volume, allowing it to scale to longer sequences and larger parallelism degrees without communication bottleneck."*
 
-## The key idea: AllToAll-flip between sequence-sharded and head-sharded layouts
+## The architecture: AllToAll-flip between two layouts
 
 > [!quote] The contribution in one sentence
 > Before attention, AllToAll transposes the activation from **sequence-sharded** `[N/P, d]` to **head-sharded** `[N, d/P]` (so each GPU holds the full sequence on a head subset and runs standard FlashAttention locally); after attention, AllToAll transposes back.
 
-Three sub-claims hold this up:
-
-- **Comm volume is sub-linear in $N$.** Each AllToAll moves $1/P$ of an $Nh$-sized tensor per link. Four per layer (QKV in, output out). Total: $4Nh/P$ — when $N$ and $P$ scale together, this is **constant**. Ring's per-step volume is also constant per rotation, but Ring needs $P{-}1$ rotations; Ulysses always uses 2 (or 4 counting QKV).
-- **The attention kernel is unmodified.** After the first AllToAll, each GPU holds the *full sequence* for $1/P$ of the heads — standard FlashAttention runs as-is. No custom streaming softmax, no per-step ring orchestration. Whatever attention implementation the user has (FlashAttention 2/3, SDPA, Triton sparse) just works.
-- **Causal mask is naturally balanced.** Because each GPU processes the full sequence on its head subset, the causal triangle is identical on every rank — no zigzag scheduling needed, no Striped Attention follow-up.
-
-Remove any one: lose AllToAll's $1/P$ scaling and you're back to ring-style $P{-}1$ comm rounds; lose the head-sharded local attention and you need custom kernels; lose causal balance and you need extra scheduling.
-
----
-
-## How it works
+![DeepSpeed Ulysses AllToAll architecture (paper Fig. 2). Two red AllToAll comms straddle the local attention block: pre-attention flips `[N/P, d]` → `[N, d/P]`; post-attention flips back. Inside attention, each GPU owns the full sequence for $h_c/P$ heads.](EN/wiki/llm-inference/deepspeed-ulysses-figs/alltoall-architecture.png)
 
 ### Algorithm
 
-The paper's Figure 2 describes the forward pass:
+Symbols from the paper: $N$ = sequence length, $b$ = micro-batch, $d$ = hidden, $h_c$ = head count, $h_s = d/h_c$ = head size, $P$ = sequence parallel degree.
 
 ```
                        sequence-sharded               head-sharded
@@ -88,14 +96,13 @@ The paper's Figure 2 describes the forward pass:
    Input X    ─────►   X_local                                       ─┐
                        │                                              │
                        ▼                                              │
-                       Q_local, K_local, V_local                      │
-                       (each [N/P, d])                                │
+                       Q_local, K_local, V_local  (each [N/P, d])     │
                        │                                              │
    AllToAll #1  ───────┘  scatter heads,  gather sequence             │
                        ▼                                              │
                        Q, K, V  (each [N, hc/P, hs])    ──► attention │
                        │                                  (local)     │
-                       │                                              │
+                       ▼                                              │
                        Context  [N, hc/P, hs] = [N, d/P]              │
                        │                                              │
    AllToAll #2  ───────┘  scatter sequence,  gather heads             │
@@ -104,8 +111,6 @@ The paper's Figure 2 describes the forward pass:
                        │                                              │
    Output proj W_O ───►Output  [N/P, d]                              ─┘
 ```
-
-Symbols from the paper: $N$ = sequence length, $b$ = micro-batch, $d$ = hidden, $h_c$ = head count, $h_s = d/h_c$ = head size, $P$ = sequence parallel degree.
 
 **Why this works mathematically.** After AllToAll #1, each GPU holds the full sequence's $Q, K, V$ for its assigned heads. Multi-head attention is **embarrassingly parallel across heads** — different heads never interact during attention. So a GPU with $h_c / P$ heads can compute *exactly* the attention output for those heads, using whatever standard FlashAttention kernel is available. After AllToAll #2, the output is sequence-sharded again, ready for the output projection and downstream FFN.
 
@@ -165,7 +170,9 @@ class DistributedAttention(torch.nn.Module):
 
 `_SeqAllToAll` is a `torch.autograd.Function`. **Backward is symmetric** — the same op with `scatter_idx` and `gather_idx` swapped. So the gradient AllToAll is free.
 
-`sp_stream` / `sp_overlap_comm` enables backward-overlap on a separate CUDA stream (added post-publication). **Forward AllToAlls remain blocking** — see the next subsection.
+> [!note] Two implementation details visible only in code
+> - **`sp_stream` / `sp_overlap_comm`** enables backward-overlap on a separate CUDA stream — added *post-publication*. Forward AllToAlls remain blocking (see next subsection).
+> - **`scatter_idx=2, gather_idx=0`** defaults assume the standard `(batch, seq, heads, head_dim)` layout. If your model uses `(batch, heads, seq, head_dim)`, you must swap these or the AllToAll reshuffles the wrong axis silently.
 
 ### Why no forward compute-comm overlap
 
@@ -177,59 +184,76 @@ USP / LoongTrain effectively *fix* this by splitting QKV AllToAll into per-head 
 
 ### Causal mask: naturally balanced
 
-After AllToAll #1, each rank holds the *full sequence* for its head subset. The causal triangle on each rank is identical — no [[ring-attention#causal-mask-load-imbalance-the-unspoken-weakness|Striped/zigzag fix needed]]. This is the cleanest aspect of Ulysses vs Ring.
-
-### FlashAttention integration
-
-Per Section 3.4: "DeepSpeed Ulysses works with efficient attention implementations such as FlashAttention v2 (Dao 2023)." User code passes any local attention module:
-
-```python
-from deepspeed.sequence.layer import DistributedAttention
-from flash_attn import flash_attn_func
-
-local_attn = lambda q, k, v: flash_attn_func(q, k, v, causal=True)
-dist_attn = DistributedAttention(local_attn,
-                                  sequence_process_group=spg)
-```
-
-Then `dist_attn(q, k, v)` runs the AllToAlls + FlashAttention. FlashAttention v3 (Hopper-optimized) works the same way.
+After AllToAll #1, each rank holds the *full sequence* for its head subset. The causal triangle on each rank is identical — no [[ring-attention|Striped/zigzag fix needed]]. This is the cleanest aspect of Ulysses vs Ring.
 
 ### Memory
 
 Per Section 3.3: Ulysses reduces **activation memory** but not model-state memory. It's integrated with **ZeRO-3** which partitions model states (weights + grads + optimizer state) across the combined $\text{DP} \times \text{SP}$ group — each rank owns $1/(\text{DP} \cdot \text{SP})$ of model state.
 
-KV cache during forward exists in two layouts across the layer:
+KV activation during forward exists in two layouts across the layer:
+
 - **Outside attention**: sequence-sharded `[N/P, d]` per rank — total $Nd/P$ bytes
 - **Inside attention**: head-sharded `[N, d/P]` per rank — total $Nd/P$ bytes
 
 Both are $1/P$ of full, just along different axes.
 
----
+### Supporting machinery (skim or skip)
 
-## Experiments
+> [!note]- FlashAttention integration — open if wiring Ulysses into an existing trainer
+> Per Section 3.4: *"DeepSpeed Ulysses works with efficient attention implementations such as FlashAttention v2 (Dao 2023)."* User code passes any local attention module:
+>
+> ```python
+> from deepspeed.sequence.layer import DistributedAttention
+> from flash_attn import flash_attn_func
+>
+> local_attn = lambda q, k, v: flash_attn_func(q, k, v, causal=True)
+> dist_attn = DistributedAttention(local_attn,
+>                                   sequence_process_group=spg)
+> ```
+>
+> Then `dist_attn(q, k, v)` runs the AllToAlls + FlashAttention. FlashAttention v3 (Hopper-optimized) works the same way. SDPA, Triton sparse, and custom kernels also slot in — Ulysses is genuinely attention-kernel-agnostic.
 
-### Hardware
+## Headline evidence
 
-**Up to 256 A100 (40 GB)**, NVSwitch intra-node + IB fat-tree inter-node. Models: GPT 1.2B, 7B, 30B; dense and blocked-sparse attention variants.
+**Setup.** Up to 256 A100 (40 GB), NVSwitch intra-node + IB fat-tree inter-node. Models: GPT 1.2B, 7B, 30B; dense and blocked-sparse attention variants.
 
-### Headline numbers (verbatim from paper)
+**The main result: throughput vs Megatron-SP at scale.** On 32 A100 with a 7B dense model, Ulysses sustains ~175 TFLOPs/GPU across 16K–256K sequences; Megatron-SP OOMs beyond 32K:
 
-| Model | Hardware | Sequence | Throughput | vs Megatron-SP |
-| ----- | -------- | -------- | ---------- | -------------- |
-| GPT 1.2B (Fig 3, strong scaling) | 8–64 A100 | 8K → 1M | ~100 TFLOPs/GPU sustained | — (Megatron OOMs early) |
-| GPT 7B dense (Fig 4) | 32 A100 | 8K | 159 TFLOPs | 106 TFLOPs |
-| GPT 7B dense | 32 A100 | 64K | 175 TFLOPs | OOM |
-| GPT 7B dense | 32 A100 | 256K | runs | OOM |
-| GPT 30B dense (Fig 5) | 64 A100 | 8K | 165 TFLOPs | 45 TFLOPs |
-| GPT 30B dense | 64 A100 | 256K | 134 TFLOPs | OOM (≥128K) |
-| GPT 7B sparse (Fig 6) | 32 A100 | 8K → 256K | 132 → 68 TFLOPs | — (Megatron OOM @ 256K) |
-| GPT 30B sparse (Fig 7) | 64 A100 | 256K | 73 TFLOPs | OOM (≥128K) |
+![DeepSpeed-Ulysses vs Megatron-LM, 7B GPT dense, 32 A100 (paper Fig. 4). Megatron OOMs beyond 32K; Ulysses sustains 175 TFLOPs all the way to 256K.](EN/wiki/llm-inference/deepspeed-ulysses-figs/throughput-7b-vs-megatron.png)
 
-Weak scaling (Table 3): 64 K @ 64 GPUs: 161.4 TFLOPs; 128 K @ 128 GPUs: 157.4 TFLOPs; **256 K @ 256 GPUs: 147.4 TFLOPs**. The "constant comm at constant $N/P$" claim holds empirically.
+> [!success] The headline number
+> Sustained throughput of **over 175 TFLOPs/GPU (54 % of A100 hardware peak)** at 64K on the 7B model. Headline abstract claim: **"2.5× faster with 4× longer sequence length"** than Megatron-SP.
 
-**Abstract headline**: "trains 2.5× faster with 4× longer sequence length than the existing method SOTA baseline" and "sustained throughput of over 175 TFLOPs/GPU (over 54 % of hardware peak)".
+**The critical limit: $P \leq \text{num\_heads}$.** Throughput at 30B shows the same OOM story — Megatron-SP collapses past 64K, Ulysses runs to 256K — but the head-count cap means scaling to >32 GPUs requires the model's `num_q_heads` ≥ 32:
 
-**Convergence (Fig 8)**: 1.3B GPT at 32K on 8 A100, $SP=4$ — loss curves of Megatron-SP, Ulysses + ZeRO-1, ZeRO-2, ZeRO-3 are identical. Mathematically equivalent.
+![30B GPT dense, 64 A100 (paper Fig. 5). Megatron OOMs at 128K; Ulysses runs to 256K.](EN/wiki/llm-inference/deepspeed-ulysses-figs/throughput-30b-vs-megatron.png)
+
+**Weak scaling: the "constant comm" claim, validated.** When $N$ and $P$ scale together, throughput stays nearly flat — exactly what $4Nh/P$ being constant predicts:
+
+| Seq × GPUs | Time/iter (s) | TFLOPs/GPU |
+| ----------: | ------------: | ---------: |
+| 64K × 64 | 87.6 | 161.4 |
+| 128K × 128 | 175 | 157.4 |
+| **256K × 256** | **376** | **147.4** |
+
+> [!example]- All experimental results (drill-down)
+> **Strong scaling (1.2B GPT, 8–64 A100, Fig 3).** Per-GPU throughput stays in the 90–110 TFLOPs band as sequence grows 8K → 1M. The 1M data point requires 64 GPUs (Ulysses degree $P = 64$ on a model with $h_c \geq 64$).
+>
+> **7B / 30B vs Megatron-SP head-to-head (Fig 4, 5).** Both Megatron-SP and Ulysses can do short sequences, but Megatron OOMs first:
+>
+> | Model | Hardware | Sequence | Ulysses TFLOPs | Megatron-SP |
+> | ----- | -------- | -------- | -------------: | ----------- |
+> | GPT 7B dense | 32 A100 | 8K | 159 | 106 |
+> | GPT 7B dense | 32 A100 | 64K | 175 | OOM |
+> | GPT 7B dense | 32 A100 | 256K | runs | OOM |
+> | GPT 30B dense | 64 A100 | 8K | 165 | 45 |
+> | GPT 30B dense | 64 A100 | 256K | 134 | OOM (≥128K) |
+> | GPT 7B sparse | 32 A100 | 8K → 256K | 132 → 68 | — (256K OOM) |
+> | GPT 30B sparse | 64 A100 | 256K | 73 | OOM (≥128K) |
+>
+> **Convergence is identical to Megatron-SP (Fig 8).** 1.3B GPT, 32K sequence, 8 A100, $SP=4$. Loss curves of Megatron-SP, Ulysses+ZeRO-1, ZeRO-2, ZeRO-3 overlap — Ulysses is mathematically equivalent to a non-SP run, just memory-cheaper.
+>
+> ![LM loss over iterations, four configs (paper Fig. 8). Curves are visually indistinguishable.](EN/wiki/llm-inference/deepspeed-ulysses-figs/loss-convergence.png)
 
 ### Production deployments (verified)
 
@@ -238,24 +262,22 @@ Weak scaling (Table 3): 64 K @ 64 GPUs: 161.4 TFLOPs; 128 K @ 128 GPUs: 157.4 TF
 | **Microsoft Megatron-DeepSpeed** | Primary integration target named in the paper | [Megatron-DeepSpeed](https://github.com/microsoft/Megatron-DeepSpeed) — `--ds-sequence-parallel-size N` flag |
 | **HuggingFace TRL / Accelerate (SFT, 2025)** | Official Ulysses SP backend; `sp_backend="deepspeed"`, `sp_size=N` | [huggingface.co/blog/ulysses-sp](https://huggingface.co/blog/ulysses-sp) |
 | **Ulysses-Offload (FPDT, 2024-12)** | DeepSpeed follow-up. **4M tokens on 32× A100 with Llama-70B**, **2M tokens on 4× A100-40GB with 8B model**, "55% MFU across 2.7B to 80B" | [Ulysses-Offload blog](https://github.com/deepspeedai/DeepSpeed/blob/master/blogs/ulysses-offload/README.md) |
-| **Tencent xDiT** (diffusion video) | Uses USP (Ulysses + Ring) for HunyuanVideo, CogVideoX, Wan2.1/2.2, Mochi-1. On 8 GPUs, Ulysses-2 × Ring-2 × CFG-2 → **6.12× speedup vs single-GPU** | [xdit-project/xDiT](https://github.com/xdit-project/xDiT), [arXiv:2411.01738](https://arxiv.org/abs/2411.01738) |
-| **verl** RL post-training framework | Ulysses for long-context rollouts | discussed on [PyTorch forum](https://discuss.pytorch.org/t/support-for-ulysses-ring-distributed-attention-for-long-context-training-32k-for-32b-dense-models/223106) |
+| **Tencent xDiT** (diffusion video) | USP (Ulysses + Ring) for HunyuanVideo, CogVideoX, Wan2.1/2.2, Mochi-1. 8 GPUs, Ulysses-2 × Ring-2 × CFG-2 → **6.12× speedup vs single-GPU** | [xdit-project/xDiT](https://github.com/xdit-project/xDiT), [arXiv:2411.01738](https://arxiv.org/abs/2411.01738) |
+| **verl** RL post-training framework | Ulysses for long-context rollouts | [PyTorch forum thread](https://discuss.pytorch.org/t/support-for-ulysses-ring-distributed-attention-for-long-context-training-32k-for-32b-dense-models/223106) |
 | **ms-swift (Alibaba ModelScope)** | Ulysses + Ring zigzag | community framework |
 
 ### Compared with [[ring-attention|Ring Attention]]
 
 | Property | DeepSpeed Ulysses | [[ring-attention\|Ring Attention]] |
 | -------- | ----------------- | ---------------- |
-| What moves between GPUs | QKV reshuffled by AllToAll (twice per layer) | KV blocks rotate around a ring ($N{-}1$ rounds) |
-| Comm volume per layer per link | $4Nh/P$ — $O(N/P)$ (sublinear in $N$ when scaling $P$) | $\sim 2c d$ per rotation × $(N{-}1)$ rotations |
+| What moves between GPUs | QKV reshuffled by AllToAll (twice per layer) | KV blocks rotate around a ring ($P{-}1$ rounds) |
+| Comm volume per layer per link | $4Nh/P$ — $O(N/P)$ (sublinear in $N$ when scaling $P$) | $\sim 2c d$ per rotation × $(P{-}1)$ rotations |
 | Compute / comm overlap | ✗ Blocking | ✓ Fully hidden when $c \geq F/B$ |
 | Hard GPU-count limit | $P \leq \text{num\_heads}$ (much worse for GQA) | None |
 | Cross-node scaling | ✗ AllToAll over IB degrades | ✓ P2P bandwidth-friendly |
 | Causal-mask balance | ✓ Naturally balanced | ✗ Needs Striped / zigzag fix |
 | Attention kernel changes | None — uses stock FlashAttention | Yes — fused with FA streaming softmax |
 | Best fabric | NVLink / NVSwitch intra-node | NVLink or IB inter-node |
-
----
 
 ## Strengths and limitations
 
@@ -276,8 +298,6 @@ Where the work is honest about scope but the limits matter:
 > - **Cross-node IB, head count limits scaling**: **Ring wins**. P2P overlaps; no head-count cap.
 > - **Both at scale (most production)**: **Hybrid — USP / LoongTrain**. Inner Ulysses degree = node size; outer Ring degree = node count. Best of both.
 
----
-
 ## What this means
 
 Two predictions worth tracking:
@@ -286,8 +306,6 @@ Two predictions worth tracking:
 2. **The head-count cap will tighten further with GQA / MQA / MLA.** DeepSeek-V3's MLA collapses KV to a tiny compressed representation; Llama-4 reportedly continues the GQA trend with fewer KV heads. Pure Ulysses will look increasingly weaker against Ring as KV head counts shrink. The way out is either combining with Ring (USP) or operating at the *full* head-count level rather than KV-head-count (requires distributed broadcast of replicated KV — adds comm).
 
 What this is *not*: a universal long-context solver (the head-count cap rules out frontier-scale pure Ulysses), nor an inference primitive (Ulysses is training-side; decode-side is its own story), nor a replacement for FlashAttention (Ulysses wraps FlashAttention, doesn't replace it).
-
----
 
 ## Source code & reproduction
 
@@ -368,8 +386,6 @@ output = usp_attn(q, k, v, mesh=mesh, causal=True)
 | `tests/unit/sequence_parallelism/test_ulysses.py` | Round-trip test asserting AllToAll(AllToAll(x)) = x |
 | `blogs/deepspeed-ulysses/README.md` | Official walkthrough |
 | `blogs/ulysses-offload/README.md` | FPDT extension for 4M-token training |
-
----
 
 ## Related reading
 
