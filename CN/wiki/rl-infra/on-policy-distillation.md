@@ -329,6 +329,7 @@ Token 级是 HF TRL 实现的版本，也是 TML 用的；全词表是 DeepSeek-
 | **Reward-Extrapolated OPD** ([arXiv:2602.12125](https://arxiv.org/abs/2602.12125)) | 2026 | 加 RL reward head 让 student 能学超过 teacher。 |
 | **Black-Box OPD (GAD)** ([arXiv:2511.10643](https://arxiv.org/abs/2511.10643)) | Ye, Dong 等, 2025-11 | 只能拿到输出文本（看不到 logits）时的 OPD —— 用对抗判别器。OpenAI / Anthropic teacher 用得上。 |
 | **多教师全词表 OPD** ([DeepSeek-V4](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro)) | DeepSeek, 2026-04 | $\sum_i w_i D_{\text{KL}}(\pi_\theta\|\pi_{E_i})$ 跨 10+ specialist，全词表 KL。旗舰规模演示。详见 [[deepseek-v4-opd]]。 |
+| **SPD**（Self-Policy Distillation）([arXiv:2605.22675](https://arxiv.org/abs/2605.22675)) | Cambridge/HKUST/UChicago, 2026-05 | 无老师。自蒸馏，自生成被一个 **KV 激活投影** 引导 —— 投影到能力子空间上，子空间从 20-500 例校准集的 correctness-aligned 梯度的 SVD 得到。然后在引导后的输出上做标准 SFT。详见 [[self-policy-distillation]]。 |
 
 变体可以拆成三个轴：**teacher 是什么**（单 / 多教师 / 自蒸馏 / 辩论 / 黑盒）、**加了什么**（额外 RL reward、RL exploration 项、重要性裁剪）、**KL 怎么算**（token 级 / 全词表 / top-k 受限）。
 

@@ -1,9 +1,12 @@
 ---
 title: 变更日志
-updated: 2026-05-19
+updated: 2026-05-22
 ---
 
 # 变更日志
+
+## 2026-05-22
+- [摄入] arXiv:2605.22675 "Self-Policy Distillation via Capability-Selective Subspace Projection"（Hao, Shang, Long, Zhao, Liang；剑桥/港科/芝大；2026-05-21 预印本）—— 论文精读在 [[self-policy-distillation]]，位于 `wiki/rl-infra/`。无老师、无 RL 的自蒸馏路线：用一个 20-500 例校准集的 **correctness-aligned NLL** 梯度做 SVD 提取低秩能力子空间，在中间层 + 最后一层构造投影矩阵 $P_K^{(\ell)}, P_V^{(\ell)}$，自生成时挂为 hook 把 KV 激活投影到能力子空间，再在引导后的输出上做标准 LoRA SFT。标志数（Qwen2.5-0.5B）：vs Base 平均 +8.9 %，vs SSD +6.4 %；OOD 迁移 —— QA 校准的子空间把 GSM8K 11→26 %、MBPP 17→21 %。关键消融：full-sequence loss 在 MBPP 上*比 Base 还差*（11.9 %），correctness-aligned 拿到 25.5 % —— token-mask 选择是 load-bearing 的。我的批评：小模型 showcase（涨幅随规模衰减）；correctness-token 规则藏在 App. A.1；正文没给 rank $r$；"self-policy" 名字是 RL 营销（没有真正的策略梯度）。在 [[on-policy-distillation]] 的变体分类表里新增一行。EN + CN 都做了。
 
 ## 2026-05-20
 - [新建] [[aurora]] —— Aurora 论文精读（Together AI，ICML 2026，arXiv:2602.06932）。把投机解码 draft 训练写成异步 RL，跑在线上 SGLang 流量上：target+verifier 是环境，draft 是策略 π，被接受 / 被拒分支都流到分布式 buffer，异步训练服务器通过 GPU-aware RPC 热替换权重。双项损失 = accept 交叉熵 + Discard-Sampling reject KL。Tree Attention kernel 把所有分支批量化到一次 forward/backward。亮点：Day-0 上线打过离线预训练 speculator（Qwen3-Coder-Next FP8 和 MiniMax M2.1 从零开始 1.21–1.45×）；分布漂移后约 10K 请求恢复。定位是 [[das-spec-rl]]（针对 RL 训练 rollouts）的 *生产推理* 对应物。交叉链接 [[speculative-decoding]]、[[das-spec-rl]]、[[sglang]]。EN + CN。索引已更新。

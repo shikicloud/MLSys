@@ -1,9 +1,12 @@
 ---
 title: Change Log
-updated: 2026-05-19
+updated: 2026-05-22
 ---
 
 # Change Log
+
+## 2026-05-22
+- [INGEST] arXiv:2605.22675 "Self-Policy Distillation via Capability-Selective Subspace Projection" (Hao, Shang, Long, Zhao, Liang; Cambridge/HKUST/UChicago; 2026-05-21 preprint) — paper review at [[self-policy-distillation]] in `wiki/rl-infra/`. The teacher-free, no-RL self-distillation lineage: extract a low-rank capability subspace via SVD of gradients of a **correctness-aligned NLL** on a 20-500-example calibration set, build projection matrices $P_K^{(\ell)}, P_V^{(\ell)}$ at middle + last layers, install as inference hooks during self-generation to steer KV activations onto the capability subspace, then standard LoRA SFT on the steered outputs. Headline (Qwen2.5-0.5B): +8.9% avg over Base, +6.4% over SSD; OOD transfer — QA-calibrated subspace lifts GSM8K 11→26% and MBPP 17→21%. Critical ablation: full-sequence loss is WORSE than Base on MBPP (11.9%), correctness-aligned recovers 25.5% — the token-mask choice is load-bearing. My critiques: small-model showcase (gains decay with scale), correctness-token rule hidden in App. A.1, rank $r$ unspecified in main text, "self-policy" name is RL-marketing (no actual policy gradient). Added as a new variant row in [[on-policy-distillation]]'s variant taxonomy table. Both EN and CN.
 
 ## 2026-05-20
 - [NEW] [[aurora]] — Aurora paper review (Together AI, ICML 2026, arXiv:2602.06932). Online speculative-decoding draft training framed as async RL on live SGLang traffic: target+verifier as environment, draft as policy π, accepted/rejected branches stream to a distributed buffer, async training server hot-swaps weights via GPU-aware RPC. Two-term loss = acceptance cross-entropy + Discard-Sampling rejection KL. Tree Attention kernel batches all branches into one forward/backward. Headline: day-0 deployment beats offline-pretrained speculators (1.21–1.45× on Qwen3-Coder-Next FP8 and MiniMax M2.1 from scratch); adapts to distribution shift in ~10K requests. Positioned as the *production-inference* counterpart of [[das-spec-rl]] (which targets RL training rollouts). Cross-links to [[speculative-decoding]], [[das-spec-rl]], [[sglang]]. EN + CN. Indexes updated.

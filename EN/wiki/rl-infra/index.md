@@ -62,3 +62,4 @@ Topical index for the RL / post-training side.
 - [[on-policy-distillation]] — OPD umbrella page (origin paper, math, variants, debate)
 - [[deepseek-v4-opd]] — DeepSeek-V4 OPD paper review (multi-teacher full-vocabulary)
 - [[mopd]] — NVIDIA Nemotron-Cascade 2 MOPD paper review (cascade-internal teachers)
+- [[self-policy-distillation]] — SPD paper review (teacher-free; KV-activation subspace projection from correctness-aligned gradients)

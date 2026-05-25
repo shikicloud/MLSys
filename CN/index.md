@@ -35,6 +35,7 @@ updated: 2026-05-13
 - [[on-policy-distillation]] — On-Policy Distillation (OPD)：用稠密教师信号替代 RL —— GKD/MiniLLM 谱系、Thinking Machines Lab 重新包装、变体、生产部署、OPD-vs-RL 争论
 - [[deepseek-v4-opd]] — DeepSeek-V4（2026-04）：多教师全词表 OPD 完全替代 V3.2 的 mixed-RL post-training 阶段 —— 论文分析
 - [[mopd]] — MOPD（多 Domain On-Policy 蒸馏）：Nemotron-Cascade 2 在 Multi-domain RL 和 RLHF 之间的单阶段稳定器；3 个 cascade 内部 teacher 按 prompt 路由；3B 激活参数拿 IMO/IOI/ICPC 2025 金牌 —— 论文分析
+- [[self-policy-distillation]] — SPD：无老师自蒸馏，用从 correctness-aligned loss 梯度提取的能力子空间对 KV 激活做投影来引导自生成（剑桥/港科/芝大，arXiv 2605.22675）—— 论文精读
 
 ## 机器学习基础设施
 - [[distributed-training]] — 分布式训练：数据/模型/流水线并行

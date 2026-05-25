@@ -62,3 +62,4 @@ RL / post-training 一侧的主题目录。
 - [[on-policy-distillation]] —— OPD 总伞页（起源论文、数学、变体、争论）
 - [[deepseek-v4-opd]] —— DeepSeek-V4 OPD 论文精读（多教师全词表）
 - [[mopd]] —— NVIDIA Nemotron-Cascade 2 MOPD 论文精读（cascade 内部 teacher）
+- [[self-policy-distillation]] —— SPD 论文精读（无老师；用 correctness-aligned 梯度提取的能力子空间对 KV 激活做投影）

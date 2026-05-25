@@ -329,6 +329,7 @@ Verified named variants in 2025-26 use. Each row identifies the *delta* relative
 | **Reward-Extrapolated OPD** ([arXiv:2602.12125](https://arxiv.org/abs/2602.12125)) | 2026 | Adds RL reward head so student can learn beyond teacher. |
 | **Black-Box OPD (GAD)** ([arXiv:2511.10643](https://arxiv.org/abs/2511.10643)) | Ye, Dong et al., Nov 2025 | OPD when only completions (no logits) are available — for OpenAI / Anthropic teachers. Uses adversarial discriminator. |
 | **Multi-teacher full-vocab OPD** ([DeepSeek-V4](https://huggingface.co/deepseek-ai/DeepSeek-V4-Pro)) | DeepSeek, Apr 2026 | $\sum_i w_i D_{\text{KL}}(\pi_\theta\|\pi_{E_i})$ over 10+ specialists, full-vocabulary KL. Flagship-scale demo. See [[deepseek-v4-opd]]. |
+| **SPD** (Self-Policy Distillation) ([arXiv:2605.22675](https://arxiv.org/abs/2605.22675)) | Cambridge/HKUST/UChicago, May 2026 | Teacher-free. Self-distillation where self-generation is steered by a **KV-activation projection** onto a capability subspace from SVD of correctness-aligned gradients on a 20-500-example calibration set. Then standard SFT on the steered outputs. See [[self-policy-distillation]]. |
 
 The variants split into three axes: **what's the teacher** (single / multi-teacher / self / debate / black-box), **what gets added** (extra RL reward, RL exploration term, importance clipping), and **how the KL is computed** (token-level / full-vocab / top-k restricted).
 
