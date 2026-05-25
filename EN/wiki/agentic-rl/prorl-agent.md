@@ -3,7 +3,7 @@ title: "ProRL Agent: Rollout-as-a-Service for Multi-Turn Agentic RL"
 category: agentic-rl
 tags: [prorl-agent, nvidia, rollout-as-a-service, agentic-rl, infrastructure, openhands, swe-bench, paper-review]
 created: 2026-04-13
-updated: 2026-05-20
+updated: 2026-05-26
 status: mature
 paper: arXiv:2603.18815
 code: https://github.com/NVIDIA-NeMo/ProRL-Agent-Server
@@ -415,6 +415,86 @@ Files worth reading next:
 | `openhands/runtime/impl/singularity/singularity_runtime.py` | sandbox lifecycle, loopback IP allocator.                                                            |
 | `scripts/start_server.py`                             | FastAPI parent + multiprocessing child wiring.                                                            |
 | `trainer_integration/verl/`                           | how the rollout server plugs into a verl trainer.                                                          |
+
+## ProRL Agent vs NeMo Gym — same family, different layer
+
+The most common confusion this page gets: how does ProRL Agent relate to [[nemo-gym|NeMo Gym]]? Both are NVIDIA, both are agentic-RL infrastructure shipped in 2026, both adopt the rollout-as-a-service microservice pattern. They are **complementary, not competing**, but they slice the problem on different axes.
+
+### One-sentence positioning
+
+- **NeMo Gym = the environment layer** — "what's the task, how do I verify the answer, how do I spin a sandbox." Its asset is the catalog: **84 benchmarks + 19 harnesses** pre-integrated.
+- **ProRL Agent = the rollout-driver layer** — "how does the trainer ask me for a rollout, and how do tokens cross the HTTP boundary without losing off-policy fidelity." Its asset is the **token-in / token-out wire contract** plus the rootless HPC sandbox.
+
+If you only remember one distinction: **NeMo Gym's model server is an OpenAI-style chat/messages interface (text in/out); ProRL Agent's `POST /process` is token-in/token-out**. That difference is the entire reason ProRL Agent exists — in multi-turn agentic RL, having the trainer re-tokenize the model's outputs introduces drift across turns and breaks off-policy gradients.
+
+### Common ground
+
+Both frameworks share the same architectural argument and the same operational constraints:
+
+| Dimension | Both NeMo Gym and ProRL Agent |
+| --------- | ----------------------------- |
+| Origin | NVIDIA NeMo family, 2026 |
+| Architecture | Microservices + HTTP contract — the 2014 microservices argument applied to the RL inner loop |
+| Problem solved | Tight coupling of rollout + environment + trainer (as in SkyRL-Agent, VeRL-Tool, Agent Lightning, rLLM, GEM) — which breaks trainer-swap, concurrency, and isolation |
+| Sandbox philosophy | Rootless / Apptainer rather than Docker — HPC / Slurm-deployable, no root daemon required |
+| Production users | Both used inside Nemotron training |
+
+The shared thesis: **rollout and training have fundamentally different resource shapes — I/O-bound × seconds-to-minutes vs GPU-bound × ~10 ms — and coupling them is an architectural mistake.**
+
+### Where they differ
+
+| Dimension | NeMo Gym | ProRL Agent |
+| --------- | -------- | ----------- |
+| **Focus** | environment = dataset + harness + verifier + state | rollout = trainer asks for one full trajectory over HTTP |
+| **Service count** | 3 FastAPI servers (agent / model / resources) | 1 FastAPI server, 3-stage internal pipeline (INIT → RUN → EVAL) |
+| **Trainer-facing wire protocol** | **OpenAI-compatible Responses API** (messages / text in/out) | **`POST /process` — token-in / token-out** (returns `token_ids` + `logprobs` + `reward`) |
+| **Off-policy safety in multi-turn** | Weaker — trainer re-tokenizes text, drift accumulates | Stronger — canonical token sequence shared end-to-end, zero re-tokenization |
+| **Core asset (the moat)** | **84-benchmark + 19-harness catalog** (years of integrations) | **HTTP wire contract + rootless HPC sandbox** (deployable design) |
+| **Configuration system** | Hydra + YAML (deeply composable) | Pydantic schemas + Python plugin ABCs |
+| **State management** | Per-server state, distributed Ray actors | In-process asyncio.Queue + multiprocessing children |
+| **Headline validation** | Nemotron-Cascade 2 → IMO/IOI/ICPC 2025 gold medals (multi-domain GRPO + MOPD pipeline) | SWE-Bench Verified Pass@1 — Qwen3 4B/8B/14B +6.4 to +8.4 pp, 8B is 2× SkyRL-Agent |
+| **Integrated trainers** | NeMo RL, VeRL, Unsloth (first-party tutorials) | Anything that can `POST /process` |
+
+### How they would compose
+
+The natural full NVIDIA agentic-RL stack:
+
+```
+Trainer (NeMo RL / VeRL / Unsloth)
+    │
+    │  POST /process            ← ProRL Agent's contract
+    ▼
+ProRL Agent  (rollout driver, token-in/token-out, sandbox lifecycle)
+    │
+    │  AgentHandler dispatch
+    │
+    │  delegates environment calls to ─────────┐
+    ▼                                          │
+[ harness / verifier / state ]                 │
+    │                                          │
+    │  could be registered from ───────────────┘
+    ▼
+NeMo Gym  (84-benchmark catalog, dataset, verifier, resources server)
+```
+
+**This adapter layer doesn't yet exist publicly.** Both repos ship their own lightweight sandboxes and verifier patterns; there's no official "register every NeMo Gym benchmark as a ProRL Agent `AgentHandler`" bridge. That bridge is the obvious 2026-27 NVIDIA-internal consolidation direction.
+
+### Where they overlap (and would conflict if you tried to use both naïvely)
+
+Both have an "agent harness" concept:
+- ProRL Agent's `AgentHandler` ABC (OpenHands-style SWE agent, Mini-SWE, etc.)
+- NeMo Gym's `SimpleResponsesAPIAgent` orchestrating `model ↔ tool` loops
+
+These do **the same thing**: drive an LLM through a multi-step task loop calling tools and returning a trajectory. The difference is in the *packaging around* the agent loop — ProRL Agent wraps it as a "trainer-facing token-in/out HTTP service"; NeMo Gym wraps it as an "environment-facing OpenAI-compatible service." Using both literally requires picking one to own the harness and treating the other as either pure rollout-driver (ProRL Agent owns) or pure environment-catalog (NeMo Gym owns).
+
+### Picking one if you have to
+
+| You care most about | Use |
+| ------------------- | --- |
+| Trainer swap freedom + off-policy correctness on long agentic trajectories | **ProRL Agent** |
+| Fast access to a large benchmark catalog + multi-team environment reuse | **NeMo Gym** |
+| "Battle-tested at flagship scale right now" | **NeMo Gym** — Nemotron-Cascade 2 is in production |
+| The cleanest token-level RL signal | **ProRL Agent** — its whole point is `token_ids + logprobs` over the wire |
 
 ## Related reading
 

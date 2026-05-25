@@ -1,9 +1,12 @@
 ---
 title: 变更日志
-updated: 2026-05-22
+updated: 2026-05-26
 ---
 
 # 变更日志
+
+## 2026-05-26
+- [扩展] [[prorl-agent]] + [[nemo-gym]] —— 给 prorl-agent 页加了新 H2 "ProRL Agent vs NeMo Gym —— 同族、不同层"（在相关阅读之前）。回答 Shiki 关于这两个 NVIDIA 框架关系的混淆。六个子部分：一句话定位（NeMo Gym = 环境层 / ProRL Agent = rollout 驱动层；load-bearing 的差别是 OpenAI 风格 text wire 协议 vs `POST /process` token-in/token-out，后者在多轮里保 off-policy 信号），共同点表（5 个共享维度），轴对轴差异表（9 行：关注焦点、服务数量、wire 协议、off-policy 安全、核心资产、配置体系、状态管理、标志验证、集成 trainer），组合方式（ASCII 栈图：trainer → ProRL Agent → AgentHandler → NeMo Gym benchmark，附注"这层 adapter 公开还没实现" —— 2026-27 内部合并方向），重叠之处（两边都有 agent harness 概念，朴素拼会冲突 —— `AgentHandler` ABC vs `SimpleResponsesAPIAgent`），"必须二选一时" 4 行指引表。nemo-gym 的相关阅读条目也镜像更新，指回新章节。EN + CN。
 
 ## 2026-05-22
 - [摄入] arXiv:2604.15039 "Prefill-as-a-Service: KVCache of Next-Generation Models Could Go Cross-Datacenter"（Qin, He, Wang, Li, Xu, Wu, Zheng, Zhang；Moonshot AI + 清华；v1 2026-04-16 / v2 2026-04-22）—— 论文精读在 [[prfaas]]，位于 `wiki/llm-inference/`。跟 Mooncake 同一位清华主导（Mingxing Zhang）—— PrfaaS 是 Mooncake 的跨数据中心续作。核心论点：hybrid attention 模型（Kimi Linear、MiMo-V2-Flash、Qwen3.5-397B、Ring-2.5-1T）相比 dense GQA 把每实例 KV 吞吐砍了约 13×，把 PD 的可部署网络边界从 RDMA 级 fabric 推到跨 DC 的普通以太网。但单靠 hybrid attention 不够 —— burst、长度分布偏斜、cache 局部性、DC 间带宽抖动都咬人。PrfaaS-PD 加三件系统侧的事：(1) 长度阈值选择性外放（$l > t$ → PrfaaS，否则本地 PD-P），(2) 混合 prefix cache 池统一管理 full-attention block KV 和 linear-attention recurrent state，区分 prefix-cache / transfer-cache 块，(3) 双时间尺度调度器 —— 短期带宽+cache 感知路由，长期 Np/Nd 重分配。吞吐模型 Λ_max = min(Θ_prfaas/p, Θ_pd-p/(1-p), Θ_pd-d)，两个优化旋钮（阈值 t、PD 集群拆分）。1T Kimi-Linear 案例研究（32 H200 PrfaaS + 64 H20 本地 PD vs 96 H20 同构）：吞吐 +54 %，P90 TTFT −64 %，13 Gbps 出口 = 100 Gbps 以太网的 13 %，等成本下 ~15 % 增益。Naive 异构（无调度）只有 1.16× —— 调度器贡献 ~25 % 吞吐增益，这是 load-bearing 对照。我的批评：是案例研究不是部署（所有数字来自稳态解析模型 + profiling，不是真跑）；输出长度死定 1024（长输出推理负载会改变最优）；无公开源码；跨 DC 链路丢包的故障模式没说；隐私 / 多租户完全沉默；对 dense GQA 模型完全无帮助（架构整体押注 hybrid attention 行业方向）；没跟 [[af-disaggregation|AF 分离]] 正面对照。在 [[prefill-decode-disaggregation]] 的"前沿方向"加了"跨数据中心 PD"小节作交叉链接；[[af-disaggregation]] 相关阅读也加了。EN + CN 都做了。

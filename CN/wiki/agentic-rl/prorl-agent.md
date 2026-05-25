@@ -3,7 +3,7 @@ title: "ProRL Agent：面向多轮智能体 RL 的 Rollout-as-a-Service"
 category: agentic-rl
 tags: [prorl-agent, nvidia, rollout即服务, agentic-rl, 基础设施, openhands, swe-bench, 论文精读]
 created: 2026-04-13
-updated: 2026-05-20
+updated: 2026-05-26
 status: mature
 paper: arXiv:2603.18815
 code: https://github.com/NVIDIA-NeMo/ProRL-Agent-Server
@@ -415,6 +415,86 @@ python scripts/start_server.py --port 8006 \
 | `openhands/runtime/impl/singularity/singularity_runtime.py` | 沙箱生命周期、回环 IP 分配器。                                                                       |
 | `scripts/start_server.py`                             | FastAPI 父进程 + multiprocessing 子进程接线。                                                              |
 | `trainer_integration/verl/`                           | rollout server 怎么接入一个 verl trainer。                                                                  |
+
+## ProRL Agent vs NeMo Gym —— 同族、不同层
+
+这一页最常见的混淆：ProRL Agent 跟 [[nemo-gym|NeMo Gym]] 是什么关系？两者都来自 NVIDIA、都在 2026 年随 agentic-RL 基础设施出货、都采纳 rollout-as-a-service 的微服务模式。它们**互补、不竞争**，但切问题的轴不同。
+
+### 一句话定位
+
+- **NeMo Gym = 环境层** —— "我有什么任务、怎么验证答对、沙箱怎么起"。它的资产是 **catalog：84 benchmark + 19 harness** 预集成。
+- **ProRL Agent = rollout 驱动层** —— "trainer 怎么向我要 rollout、token 怎么跨 HTTP 边界且不丢 off-policy 信号"。它的资产是 **token-in / token-out 的 wire 契约 + rootless HPC 沙箱**。
+
+只记一个区别就够了：**NeMo Gym 的 model server 是 OpenAI 风格 chat/messages 接口（text 进出）；ProRL Agent 的 `POST /process` 是 token-in / token-out**。这个差别就是 ProRL Agent 存在的全部理由 —— 多轮 agentic RL 里，让 trainer 重新 tokenize 模型输出会引入跨轮漂移、毁掉 off-policy 梯度。
+
+### 共同点
+
+两个框架共享同一套架构论点和同一套运维约束：
+
+| 维度 | NeMo Gym 和 ProRL Agent 都这样 |
+| ---- | ----------------------------- |
+| 出身 | NVIDIA NeMo 家族，2026 |
+| 架构 | 微服务 + HTTP 契约 —— 2014 微服务论点搬到 RL 内循环 |
+| 解决的问题 | rollout + environment + trainer 紧耦合（SkyRL-Agent、VeRL-Tool、Agent Lightning、rLLM、GEM 这套）—— 切 trainer、并发、隔离全坏 |
+| 沙箱哲学 | Rootless / Apptainer 而非 Docker —— HPC / Slurm 可部署，不需要 root daemon |
+| 生产用户 | 都在 Nemotron 训练里用过 |
+
+共享论点：**rollout 跟 training 资源形状根本不同 —— I/O-bound × 秒到分钟 vs GPU-bound × ~10 ms —— 耦合它们是架构错误**。
+
+### 不同之处
+
+| 维度 | NeMo Gym | ProRL Agent |
+| ---- | -------- | ----------- |
+| **关注焦点** | environment = dataset + harness + verifier + state | rollout = trainer 通过 HTTP 拿一整条轨迹 |
+| **服务数量** | 3 个 FastAPI 服务（agent / model / resources） | 1 个 FastAPI server，内部 3 stage pipeline（INIT → RUN → EVAL） |
+| **Trainer-facing wire 协议** | **OpenAI 兼容 Responses API**（messages / text 进出） | **`POST /process` —— token-in / token-out**（返回 `token_ids` + `logprobs` + `reward`） |
+| **多轮 off-policy 安全** | 较弱 —— trainer 重新 tokenize text，漂移累积 | 较强 —— canonical token 序列端到端共享，零重 tokenize |
+| **核心资产（护城河）** | **84-benchmark + 19-harness catalog**（多年集成） | **HTTP wire 契约 + rootless HPC 沙箱**（可部署设计） |
+| **配置体系** | Hydra + YAML（深度可组合） | Pydantic schema + Python plugin ABC |
+| **状态管理** | per-server state，分布式 Ray actor | 进程内 asyncio.Queue + multiprocessing child |
+| **标志验证** | Nemotron-Cascade 2 → IMO/IOI/ICPC 2025 金牌（multi-domain GRPO + MOPD 管线） | SWE-Bench Verified Pass@1 —— Qwen3 4B/8B/14B +6.4 到 +8.4 pp，8B 是 SkyRL-Agent 的 2× |
+| **集成的 trainer** | NeMo RL、VeRL、Unsloth（first-party tutorial） | 任何会 `POST /process` 的 trainer |
+
+### 它们怎么组合
+
+NVIDIA agentic-RL 完整栈应该长这样：
+
+```
+Trainer (NeMo RL / VeRL / Unsloth)
+    │
+    │  POST /process            ← ProRL Agent 的契约
+    ▼
+ProRL Agent  (rollout 驱动, token-in/token-out, 沙箱生命周期)
+    │
+    │  AgentHandler dispatch
+    │
+    │  把 environment 调用委托给 ─────────────┐
+    ▼                                          │
+[ harness / verifier / state ]                 │
+    │                                          │
+    │  可以从这里注册 ─────────────────────────┘
+    ▼
+NeMo Gym  (84-benchmark catalog, dataset, verifier, resources server)
+```
+
+**这层 adapter 目前还没有公开实现**。两个 repo 各自带轻量沙箱和 verifier 模式；没有官方的"把每个 NeMo Gym benchmark 注册成 ProRL Agent `AgentHandler`"桥接。这是 2026-27 NVIDIA 内部最自然的合并方向。
+
+### 重叠的地方（朴素拼起来会冲突）
+
+两边都有"agent harness"概念：
+- ProRL Agent 的 `AgentHandler` ABC（OpenHands-style SWE agent、Mini-SWE 等）
+- NeMo Gym 的 `SimpleResponsesAPIAgent`，编排 `model ↔ tool` loop
+
+它们做**同一件事**：驱动 LLM 走多步任务循环、调工具、返回轨迹。差别在 agent loop *外面的包装* —— ProRL Agent 把它包成"trainer-facing token-in/out HTTP 服务"，NeMo Gym 把它包成"environment-facing OpenAI 兼容服务"。两个都用的话，需要选一个拥有 harness，另一个退化成纯 rollout-driver（ProRL Agent 拥有）或纯 environment-catalog（NeMo Gym 拥有）。
+
+### 必须二选一时
+
+| 你最在乎 | 选 |
+| ------- | -- |
+| Trainer 切换自由 + 长 agentic 轨迹的 off-policy 正确性 | **ProRL Agent** |
+| 快速接入大量 benchmark + 多团队 environment 复用 | **NeMo Gym** |
+| "现在就在 flagship 规模上 battle-tested" | **NeMo Gym** —— Nemotron-Cascade 2 已生产化 |
+| 最干净的 token 级 RL 信号 | **ProRL Agent** —— 整个 point 就是 wire 上的 `token_ids + logprobs` |
 
 ## 相关阅读
 

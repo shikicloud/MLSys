@@ -460,7 +460,7 @@ Files worth reading first:
 
 ## Related reading
 
-- [[prorl-agent]] — Rollout-as-a-service infrastructure (different but conceptually adjacent NVIDIA project; the agent-loop counterpart on the rollout-driver side).
+- [[prorl-agent]] — Rollout-driver counterpart on the agent-loop side, also from NVIDIA. NeMo Gym is the *environment layer* (84 benchmarks + 19 harnesses, OpenAI-style text wire protocol); ProRL Agent is the *rollout-driver layer* (`POST /process` token-in/token-out for off-policy fidelity). See [[prorl-agent#ProRL Agent vs NeMo Gym — same family, different layer]] for the full comparison — common ground, axis-by-axis differences, how they would compose, where they overlap.
 - [[environment-design]] — What makes a good RL environment for LLMs.
 - [[rl-training-frameworks]] — The trainer side that consumes NeMo Gym's rollouts.
 - [[grpo]] / [[ppo-for-llm]] / [[rlhf-overview]] — The RL algorithms driving demand for environments like NeMo Gym.
