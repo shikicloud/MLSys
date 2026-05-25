@@ -87,6 +87,7 @@ Companion paper-review pages:
   - [[prefill-decode-disaggregation#Composing with chunked prefill|Composing with chunked prefill]]
 
 - [[af-disaggregation]] — Attention-FFN disaggregation (MegaScale-Infer, the next axis)
+- [[prfaas]] — Prefill-as-a-Service: cross-datacenter PD disaggregation over commodity Ethernet (Moonshot/Tsinghua, arXiv 2604.15039) — paper review
 
 ## Model parallelism (legacy stub)
 

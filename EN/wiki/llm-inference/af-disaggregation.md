@@ -317,6 +317,7 @@ To approximate true AF, you'd need to fork an inference engine and add (a) cross
 ## Related reading
 
 - [[prefill-decode-disaggregation]] — Disaggregation across phases (prefill vs decode); the predecessor pattern. Composes with AF into a 2×2 hardware matrix.
+- [[prfaas]] — PD disaggregation extended to cross-datacenter scope via hybrid-attention KVCache reduction; the natural sibling-of-AF on the time axis when intra-DC PD won't compose with the available hardware geography.
 - [[parallelism-strategies-deep-dive#11. DP Attention — Data-Parallel Attention for MoE Inference]] — DP attention is the parallelism shape that makes AF natural inside a single cluster.
 - [[parallelism-strategies-deep-dive#13. DeepSeek-V3 Case Study]] — Production DP-attention + EP-MoE deployment; the logical AF structure on uniform hardware.
 - [[kv-cache-optimization]] — KV cache compression reduces attention's memory-bandwidth cost and shifts the AF cost calculus.

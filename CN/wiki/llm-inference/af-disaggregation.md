@@ -317,6 +317,7 @@ $H = 8192$、$B = 64$、400 Gb/s NVLink（= 50 GB/s）：$t_{\text{transfer}} \a
 ## 相关阅读
 
 - [[prefill-decode-disaggregation]] —— 跨阶段的分离（prefill vs decode）；前置模式。可与 AF 叠加成 2×2 硬件矩阵。
+- [[prfaas]] —— PD 分离借 hybrid attention 的 KVCache 缩减推到跨 DC 范畴；在 DC 内 PD 跟可用硬件地理拼不起来时，是 AF 在时间轴上的自然同族。
 - [[parallelism-strategies-deep-dive#11. DP Attention — 数据并行注意力 (Data-Parallel Attention for MoE Inference)]] —— DP attention 是让 AF 在单集群内变自然的并行形状。
 - [[parallelism-strategies-deep-dive#14. 实战案例：DeepSeek-V3]] —— 生产 DP-attention + EP-MoE 部署；同硬件上的逻辑 AF 结构。
 - [[kv-cache-optimization]] —— KV cache 压缩降低 attention 的内存带宽代价、改变 AF 的成本算式。

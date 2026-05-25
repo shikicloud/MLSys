@@ -24,6 +24,7 @@ updated: 2026-05-13
 - [[aurora]] — Aurora: online speculative-decoding training as async RL on live SGLang traffic, day-0 deployment, Tree Attention kernel (Together AI, ICML 2026, arXiv 2602.06932) — paper review
 - [[ring-attention]] — Ring Attention: persistent Q + rotating KV with FlashAttention streaming softmax; 4M-token training context (Liu/Zaharia/Abbeel, ICLR 2024) — paper review
 - [[deepspeed-ulysses]] — DeepSpeed Ulysses: AllToAll-based sequence parallelism with O(N/P) communication; the Ring Attention alternative (Microsoft, arXiv 2309.14509) — paper review
+- [[prfaas]] — PrfaaS: cross-datacenter PD disaggregation — hybrid-attention KVCache flows over commodity Ethernet from compute-dense prefill clusters to bandwidth-optimized decode clusters (Moonshot/Tsinghua, arXiv 2604.15039) — paper review
 
 ## RL Infrastructure
 - [[rlhf-overview]] — RLHF: Reinforcement Learning from Human Feedback

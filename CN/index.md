@@ -24,6 +24,7 @@ updated: 2026-05-13
 - [[aurora]] — Aurora：在 SGLang 实时流量上把投机解码 draft 训练做成异步 RL，Day-0 上线，Tree Attention kernel（Together AI，ICML 2026，arXiv 2602.06932）— 论文精读
 - [[ring-attention]] — Ring Attention：Q 不动 + KV 旋转 + FlashAttention streaming softmax；4M token 训练上下文（Liu/Zaharia/Abbeel, ICLR 2024）— 论文精读
 - [[deepspeed-ulysses]] — DeepSpeed Ulysses：基于 AllToAll 的序列并行，通信 $O(N/P)$；Ring Attention 的替代方案（Microsoft, arXiv 2309.14509）— 论文精读
+- [[prfaas]] — PrfaaS：跨数据中心 PD 分离 —— hybrid attention 的 KVCache 通过普通以太网从算力密集 prefill 集群流到带宽优化 decode 集群（Moonshot/清华, arXiv 2604.15039）— 论文精读
 
 ## 强化学习基础设施
 - [[rlhf-overview]] — RLHF：基于人类反馈的强化学习

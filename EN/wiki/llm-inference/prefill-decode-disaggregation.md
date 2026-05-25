@@ -1127,6 +1127,10 @@ Especially natural for MoE models — DP attention + EP MoE
 is structurally an AF-disaggregation pattern.
 ```
 
+### Cross-Datacenter PD (Prefill-as-a-Service)
+
+Once hybrid-attention models (Kimi Linear, MiMo-V2-Flash, Qwen3.5-397B, Ring-2.5-1T) cut KVCache size by ~13× vs dense GQA, the per-instance KV throughput drops from ~60 Gbps to ~5 Gbps — and PD's deployable network boundary can move from RDMA-class fabric to **commodity Ethernet across DCs**. **PrfaaS** (Moonshot/Tsinghua, [arXiv:2604.15039](https://arxiv.org/abs/2604.15039)) builds on Mooncake to do exactly this: selectively offload long-context prefill ($l > t$) to a compute-dense PrfaaS cluster (H200 / Rubin CPX), stream KVCache over Ethernet to a local decode cluster (H20 / LPU). Three pieces: length-threshold routing, hybrid prefix cache pool, dual-timescale scheduler. Case study on a 1T hybrid model: +54 % throughput, −64 % P90 TTFT vs homogeneous PD. See [[prfaas]] for the full paper review.
+
 ### Global KV Cache Management
 
 ```

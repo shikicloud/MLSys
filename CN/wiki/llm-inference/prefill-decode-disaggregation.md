@@ -1117,6 +1117,10 @@ Chunked      =  prefill 池内部 / decode 池的    混着混，但每次混一
 对 MoE 模型特别自然（DP attention + EP MoE 就是结构性 AF 分离）。
 ```
 
+### 跨数据中心 PD（Prefill-as-a-Service）
+
+Hybrid attention 模型（Kimi Linear、MiMo-V2-Flash、Qwen3.5-397B、Ring-2.5-1T）把 KVCache 相比 dense GQA 砍了约 13× —— 每实例 KV 吞吐从约 60 Gbps 降到约 5 Gbps，于是 PD 的可部署网络边界从 RDMA 级 fabric **推到跨 DC 的普通以太网**。**PrfaaS**（Moonshot/清华，[arXiv:2604.15039](https://arxiv.org/abs/2604.15039)）基于 Mooncake 做了这件事：选择性把长上下文 prefill（$l > t$）外放到 compute-dense PrfaaS 集群（H200 / Rubin CPX），KVCache 通过以太网流到本地 decode 集群（H20 / LPU）。三件事：长度阈值路由、混合 prefix cache 池、双时间尺度调度。1T hybrid 模型案例研究：vs 同构 PD 吞吐 +54 %、P90 TTFT −64 %。完整论文精读见 [[prfaas]]。
+
 ### 全局 KV 缓存管理
 
 ```

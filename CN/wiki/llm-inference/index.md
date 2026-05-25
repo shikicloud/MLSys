@@ -87,6 +87,7 @@ title: LLM 推理与服务
   - [[prefill-decode-disaggregation#与 chunked prefill 的组合|与 chunked prefill 的组合]]
 
 - [[af-disaggregation]] —— 注意力-FFN 分离（MegaScale-Infer，下一个轴）
+- [[prfaas]] —— Prefill-as-a-Service：通过普通以太网做跨数据中心 PD 分离（Moonshot/清华，arXiv 2604.15039）— 论文精读
 
 ## 模型并行（旧 stub）
 
