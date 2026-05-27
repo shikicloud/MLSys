@@ -59,6 +59,9 @@ updated: 2026-05-13
 - [[environment-design]] — Environment design for agentic RL
 - [[prorl-agent]] — ProRL Agent: Rollout-as-a-Service (NVIDIA, arXiv 2603.18815) — paper review **[superseded by [[polar]] May 2026]**
 - [[polar]] — Polar: Agentic RL on Any Harness at Scale — the ProRL Agent successor; LLM-API proxy lets any unmodified harness (Codex / Claude Code / Qwen Code / Pi) be trained; registered as a NeMo Gym environment (NVIDIA, arXiv 2605.24220) — paper review
+- [[search-r1]] — Search-R1: Training LLMs to Reason and Leverage Search Engines with RL — the canonical entry-point paper for agentic RL; R1-Zero extended to tool use with retrieved-token loss masking (UIUC + UMass + Google, COLM 2025, arXiv 2503.09516) — paper review
+- [[search-r1-codebase-walkthrough]] — Search-R1 file-by-file code tutorial covering the 600 lines of paper-specific code and the ~5000 lines of veRL PPO/GRPO machinery; the cleanest agentic-RL reference implementation walked end-to-end
+- [[agentic-rl-foundations]] — Agentic RL onboarding hub; 4-phase reading path, canonical references, FAQ, open directions
 - [[nemo-gym]] — NeMo Gym: NVIDIA's RL environment framework — 84 benchmarks, 19 agent harnesses, Apptainer-based isolation
 
 ## AI Agents

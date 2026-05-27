@@ -59,6 +59,9 @@ updated: 2026-05-13
 - [[environment-design]] — 智能体 RL 的环境设计
 - [[prorl-agent]] — ProRL Agent：Rollout 即服务（NVIDIA, arXiv 2603.18815）— 论文精读 **[2026-05 被 [[polar]] 取代]**
 - [[polar]] — Polar：任意 harness 上的可扩展 agentic RL —— ProRL Agent 续作；LLM-API proxy 让任何未修改 harness（Codex / Claude Code / Qwen Code / Pi）都能训练；注册为 NeMo Gym 环境（NVIDIA, arXiv 2605.24220）— 论文精读
+- [[search-r1]] — Search-R1：用 RL 训练 LLM 推理 + 调搜索引擎 —— agentic RL 的标准入门论文；R1-Zero 扩展到 tool use，带 retrieved-token loss masking（UIUC + UMass + Google，COLM 2025，arXiv 2503.09516）— 论文精读
+- [[search-r1-codebase-walkthrough]] — Search-R1 逐文件代码教程，覆盖 600 行论文特有代码 + ~5000 行 veRL PPO/GRPO 机器；端到端走完最干净的 agentic-RL 参考实现
+- [[agentic-rl-foundations]] — Agentic RL 入门 hub；4 阶段阅读路径、标志参考、FAQ、开放方向
 - [[nemo-gym]] — NeMo Gym：NVIDIA 的 RL 环境框架 —— 84 个 benchmark、19 个 agent harness、基于 Apptainer 的隔离
 
 ## AI 智能体

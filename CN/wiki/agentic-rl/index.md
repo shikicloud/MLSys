@@ -6,6 +6,10 @@ title: 智能体 RL
 
 面向 LLM agent 的 RL —— 环境设计、工具使用、多步推理，及配套基础设施。
 
+## 入门 hub
+
+- [[agentic-rl-foundations]] —— **新手入门 agentic RL 从这里开始**。4 阶段阅读路径、标志参考、FAQ。
+
 ## 总览
 
 - [[agentic-rl-overview]] —— 智能体 RL 全景
@@ -36,3 +40,5 @@ title: 智能体 RL
 - [[prorl-agent]] —— ProRL Agent：多轮 agentic RL 的 rollout 即服务（NVIDIA）**[2026-05 被 [[polar]] 取代]**
 - [[polar]] —— Polar：ProRL Agent 续作；LLM-API proxy 让任何未修改 harness（Codex、Claude Code、Qwen Code、Pi）都可训练；注册为 NeMo Gym 环境（NVIDIA, 2026-05）
 - [[nemo-gym]] —— NeMo Gym：NVIDIA 的 RL 环境框架（84 个 benchmark、19 个 harness）
+- [[search-r1]] —— Search-R1：agentic RL 标准入门论文；R1-Zero 扩展到 tool use；retrieved-token loss masking（UIUC + UMass + Google，COLM 2025）
+- [[search-r1-codebase-walkthrough]] —— Search-R1 逐文件代码教程，覆盖论文特有代码 + 底下 veRL 机器
