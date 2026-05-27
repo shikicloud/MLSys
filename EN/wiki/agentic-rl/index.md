@@ -33,5 +33,6 @@ RL for LLM agents — environment design, tool use, multi-step reasoning, and th
 
 ## Infrastructure (paper reviews)
 
-- [[prorl-agent]] — ProRL Agent: rollout-as-a-service for multi-turn agentic RL (NVIDIA)
+- [[prorl-agent]] — ProRL Agent: rollout-as-a-service for multi-turn agentic RL (NVIDIA) **[superseded by [[polar]] May 2026]**
+- [[polar]] — Polar: ProRL Agent successor; LLM-API proxy lets any unmodified harness (Codex, Claude Code, Qwen Code, Pi) be trained; registered as NeMo Gym environment (NVIDIA, May 2026)
 - [[nemo-gym]] — NeMo Gym: NVIDIA's RL environment framework (84 benchmarks, 19 harnesses)

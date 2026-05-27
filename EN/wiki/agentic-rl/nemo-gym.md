@@ -460,7 +460,8 @@ Files worth reading first:
 
 ## Related reading
 
-- [[prorl-agent]] — Rollout-driver counterpart on the agent-loop side, also from NVIDIA. NeMo Gym is the *environment layer* (84 benchmarks + 19 harnesses, OpenAI-style text wire protocol); ProRL Agent is the *rollout-driver layer* (`POST /process` token-in/token-out for off-policy fidelity). See [[prorl-agent#ProRL Agent vs NeMo Gym — same family, different layer]] for the full comparison — common ground, axis-by-axis differences, how they would compose, where they overlap.
+- [[polar]] — Polar (NVIDIA, May 2026) is **registered as a NeMo Gym environment** — it's the rollout-driver layer NeMo Gym now consumes. LLM-API proxy + token-faithful prefix merging; trains unmodified Codex / Claude Code / Qwen Code / Pi harnesses. *The bridge that closes the ProRL-vs-NeMo-Gym gap.*
+- [[prorl-agent]] — Rollout-driver counterpart on the agent-loop side, also from NVIDIA. **Superseded by [[polar]] in May 2026** but the architectural arguments (rollout-as-a-service, async pipeline, rootless HPC sandbox) carry forward. See [[prorl-agent#ProRL Agent vs NeMo Gym — same family, different layer]] for historical comparison.
 - [[environment-design]] — What makes a good RL environment for LLMs.
 - [[rl-training-frameworks]] — The trainer side that consumes NeMo Gym's rollouts.
 - [[grpo]] / [[ppo-for-llm]] / [[rlhf-overview]] — The RL algorithms driving demand for environments like NeMo Gym.

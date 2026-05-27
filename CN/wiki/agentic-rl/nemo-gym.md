@@ -460,7 +460,8 @@ ng_reward_profile +input_jsonl_fpath=resources_servers/mcqa/data/example.jsonl \
 
 ## 相关阅读
 
-- [[prorl-agent]] —— Rollout-driver 在 agent 一侧的对应物，同样来自 NVIDIA。NeMo Gym 是*环境层*（84 benchmark + 19 harness、OpenAI 风格 text wire 协议）；ProRL Agent 是 *rollout 驱动层*（`POST /process` token-in/token-out 保证 off-policy 信号正确）。完整对比 —— 共同点、轴对轴差异、组合方式、重叠之处 —— 见 [[prorl-agent#ProRL Agent vs NeMo Gym —— 同族、不同层]]。
+- [[polar]] —— Polar（NVIDIA，2026-05）**已注册为 NeMo Gym 环境** —— 它就是 NeMo Gym 现在消费的 rollout 驱动层。LLM-API proxy + token-faithful 前缀合并；训练未修改的 Codex / Claude Code / Qwen Code / Pi harness。*填上 ProRL-vs-NeMo-Gym 那道沟的桥*。
+- [[prorl-agent]] —— Rollout-driver 在 agent 一侧的对应物，同样来自 NVIDIA。**2026-05 被 [[polar]] 取代**，但架构论点（rollout-as-a-service、异步 pipeline、rootless HPC 沙箱）传承。历史对比见 [[prorl-agent#ProRL Agent vs NeMo Gym —— 同族、不同层]]。
 - [[environment-design]] —— 什么样的 RL 环境对 LLM 来说算好？
 - [[rl-training-frameworks]] —— 消费 NeMo Gym rollout 的 trainer 一侧。
 - [[grpo]] / [[ppo-for-llm]] / [[rlhf-overview]] —— 驱动对环境需求的 RL 算法。

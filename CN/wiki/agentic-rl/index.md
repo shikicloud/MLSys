@@ -33,5 +33,6 @@ title: 智能体 RL
 
 ## 基础设施（论文精读）
 
-- [[prorl-agent]] —— ProRL Agent：多轮 agentic RL 的 rollout 即服务（NVIDIA）
+- [[prorl-agent]] —— ProRL Agent：多轮 agentic RL 的 rollout 即服务（NVIDIA）**[2026-05 被 [[polar]] 取代]**
+- [[polar]] —— Polar：ProRL Agent 续作；LLM-API proxy 让任何未修改 harness（Codex、Claude Code、Qwen Code、Pi）都可训练；注册为 NeMo Gym 环境（NVIDIA, 2026-05）
 - [[nemo-gym]] —— NeMo Gym：NVIDIA 的 RL 环境框架（84 个 benchmark、19 个 harness）

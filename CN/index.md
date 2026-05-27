@@ -57,7 +57,8 @@ updated: 2026-05-13
 - [[tool-use-rl]] — 工具使用与 API 调用的 RL
 - [[multi-step-reasoning-rl]] — 多步推理的 RL
 - [[environment-design]] — 智能体 RL 的环境设计
-- [[prorl-agent]] — ProRL Agent：Rollout 即服务（NVIDIA, arXiv 2603.18815）— 论文精读
+- [[prorl-agent]] — ProRL Agent：Rollout 即服务（NVIDIA, arXiv 2603.18815）— 论文精读 **[2026-05 被 [[polar]] 取代]**
+- [[polar]] — Polar：任意 harness 上的可扩展 agentic RL —— ProRL Agent 续作；LLM-API proxy 让任何未修改 harness（Codex / Claude Code / Qwen Code / Pi）都能训练；注册为 NeMo Gym 环境（NVIDIA, arXiv 2605.24220）— 论文精读
 - [[nemo-gym]] — NeMo Gym：NVIDIA 的 RL 环境框架 —— 84 个 benchmark、19 个 agent harness、基于 Apptainer 的隔离
 
 ## AI 智能体

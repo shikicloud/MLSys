@@ -16,6 +16,9 @@ code: https://github.com/NVIDIA-NeMo/ProRL-Agent-Server
 > - **Code**: [NVIDIA-NeMo/ProRL-Agent-Server](https://github.com/NVIDIA-NeMo/ProRL-Agent-Server) (branch `stable`, Apache-2.0)
 > - **Authors**: Hao Zhang, Mingjie Liu, Shaokun Zhang, Songyang Han, Jian Hu, Zhenghui Jin, Yuchi Zhang, Shizhe Diao, Ximing Lu, Binfeng Xu, Zhiding Yu, Jan Kautz, Yi Dong
 
+> [!warning] Superseded by [[polar|Polar]] (May 2026)
+> The same NVIDIA team published [[polar|Polar]] (arXiv:2605.24220, May 2026) in the **same GitHub repo** — it replaces the `AgentHandler` ABC plugin model documented here with an **LLM-API proxy** that lets any unmodified harness (Codex / Claude Code / Qwen Code / Pi) be trained. Polar is also registered as a [[nemo-gym|NeMo Gym]] environment, closing the gap discussed in the [ProRL Agent vs NeMo Gym](#prorl-agent-vs-nemo-gym--same-family-different-layer) section below. **For current architecture, read [[polar]] first**; this page remains accurate as a record of the ProRL Agent design and the architectural arguments (rollout-as-a-service, async pipeline, rootless HPC sandbox) that Polar inherits.
+
 ---
 
 ## Summary (read this if you have 2 minutes)
@@ -477,7 +480,7 @@ ProRL Agent  (rollout driver, token-in/token-out, sandbox lifecycle)
 NeMo Gym  (84-benchmark catalog, dataset, verifier, resources server)
 ```
 
-**This adapter layer doesn't yet exist publicly.** Both repos ship their own lightweight sandboxes and verifier patterns; there's no official "register every NeMo Gym benchmark as a ProRL Agent `AgentHandler`" bridge. That bridge is the obvious 2026-27 NVIDIA-internal consolidation direction.
+**Update (May 2026): the bridge now exists — it's [[polar|Polar]].** When I wrote the paragraph above, no public adapter linked ProRL Agent to NeMo Gym. Five days later, NVIDIA published [Polar (arXiv:2605.24220)](https://arxiv.org/abs/2605.24220) — same team, same repo — which rewrites ProRL Agent around an **LLM-API proxy** instead of the `AgentHandler` plugin, and **registers as a NeMo Gym environment**. The "must pick one" answer is now: **use both, with Polar as the rollout-driver layer connecting them**. The original analysis below still describes the legacy ProRL Agent architecture; the consolidated stack is on [[polar]].
 
 ### Where they overlap (and would conflict if you tried to use both naïvely)
 

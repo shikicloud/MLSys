@@ -57,7 +57,8 @@ updated: 2026-05-13
 - [[tool-use-rl]] — RL for tool use and API calling
 - [[multi-step-reasoning-rl]] — RL for multi-step reasoning
 - [[environment-design]] — Environment design for agentic RL
-- [[prorl-agent]] — ProRL Agent: Rollout-as-a-Service (NVIDIA, arXiv 2603.18815) — paper review
+- [[prorl-agent]] — ProRL Agent: Rollout-as-a-Service (NVIDIA, arXiv 2603.18815) — paper review **[superseded by [[polar]] May 2026]**
+- [[polar]] — Polar: Agentic RL on Any Harness at Scale — the ProRL Agent successor; LLM-API proxy lets any unmodified harness (Codex / Claude Code / Qwen Code / Pi) be trained; registered as a NeMo Gym environment (NVIDIA, arXiv 2605.24220) — paper review
 - [[nemo-gym]] — NeMo Gym: NVIDIA's RL environment framework — 84 benchmarks, 19 agent harnesses, Apptainer-based isolation
 
 ## AI Agents

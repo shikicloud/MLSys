@@ -16,6 +16,9 @@ code: https://github.com/NVIDIA-NeMo/ProRL-Agent-Server
 > - **代码**：[NVIDIA-NeMo/ProRL-Agent-Server](https://github.com/NVIDIA-NeMo/ProRL-Agent-Server)（分支 `stable`，Apache-2.0）
 > - **作者**：Hao Zhang, Mingjie Liu, Shaokun Zhang, Songyang Han, Jian Hu, Zhenghui Jin, Yuchi Zhang, Shizhe Diao, Ximing Lu, Binfeng Xu, Zhiding Yu, Jan Kautz, Yi Dong
 
+> [!warning] 已被 [[polar|Polar]] 取代（2026-05）
+> 同一个 NVIDIA 团队在**同一个 GitHub repo** 里发布了 [[polar|Polar]]（arXiv:2605.24220, 2026-05）——它把这里记录的 `AgentHandler` ABC plugin 模型换成了 **LLM-API proxy**，让任何未修改的 harness（Codex / Claude Code / Qwen Code / Pi）都能训练。Polar 也已注册成 [[nemo-gym|NeMo Gym]] 环境，填上了下面 [ProRL Agent vs NeMo Gym](#prorl-agent-vs-nemo-gym--同族不同层) 节里讨论的桥。**当前架构请先读 [[polar]]**；本页保留作为 ProRL Agent 设计的记录，以及 Polar 继承的架构论点（rollout-as-a-service、异步 pipeline、rootless HPC 沙箱）。
+
 ---
 
 ## 摘要（2 分钟读完这一节就够）
@@ -477,7 +480,7 @@ ProRL Agent  (rollout 驱动, token-in/token-out, 沙箱生命周期)
 NeMo Gym  (84-benchmark catalog, dataset, verifier, resources server)
 ```
 
-**这层 adapter 目前还没有公开实现**。两个 repo 各自带轻量沙箱和 verifier 模式；没有官方的"把每个 NeMo Gym benchmark 注册成 ProRL Agent `AgentHandler`"桥接。这是 2026-27 NVIDIA 内部最自然的合并方向。
+**更新（2026-05）：桥已经存在 —— 就是 [[polar|Polar]]**。我写上面这段时还没有公开 adapter 连接 ProRL Agent 和 NeMo Gym。5 天后 NVIDIA 发布了 [Polar（arXiv:2605.24220）](https://arxiv.org/abs/2605.24220) —— 同一团队、同一 repo —— 把 ProRL Agent 围绕 **LLM-API proxy** 重写，不再用 `AgentHandler` plugin，并**注册成 NeMo Gym 环境**。"必须二选一时"的答案现在是：**两个都用，Polar 作为连接它们的 rollout 驱动层**。下面的原始分析仍然描述传统 ProRL Agent 架构；合并后的栈见 [[polar]]。
 
 ### 重叠的地方（朴素拼起来会冲突）
 
