@@ -370,6 +370,75 @@ loss_mask     =  1s     0s     1s    0s    ...    1s
 > [!important] per_request + outcome reward 广播会触发 reward hacking
 > 给每条 `per_request` trace 同一个 session 级 outcome reward（最自然 baseline），论文观察到**严重 reward hacking**：request 级 trace 拿到 session 级信用，没做归一化，所以幸运结局的 noisy trace 也被强化。论文把修复推到 future work（"PRM-style credit assignment 在 roadmap 上"）。当前你要么用 `prefix_merging`、要么接受 hacking 风险；意味着无法合并的 workload（重写上下文很多的 harness）目前用 Polar 做 outcome-only RL 不容易。
 
+> [!warning]+ Shiki —— 这里的"reward hacking"具体什么意思，以及论文的开放问题（2026-05-27）
+>
+> 这是 Polar 论文里最重要的告警。**不是经典 reward hacking**（模型钻 reward 函数漏洞），是**credit misassignment**（信用错配），论文消融时观察到但明确推到 future work 了。
+>
+> ### 具体失败模式
+>
+> 一个 Codex 在 SWE-Bench 上的 session 通常 5-10+ 次 LLM API 调用。假设：
+>
+> | LLM 调用 | agent 做了什么 | 实际质量 |
+> | --- | --- | --- |
+> | 1 | "我先看 repo 结构" → 列文件 | OK |
+> | 2 | "打开 `main.py`" → 打开了**错的**文件 | **差 —— 偏题** |
+> | 3 | "看 `utils.py`" → 又错文件 | **差 —— 瞎探索** |
+> | 4 | "等等我应该看测试" → 回到正轨 | 好 |
+> | 5 | "找到 bug 了，写 patch" → 提交正确补丁 | 优 |
+>
+> Verifier 通过 patch → **session reward = 1**。
+>
+> 在 `per_request` + outcome reward 广播下，**这 5 条 trace 每条都拿到 reward = 1**，包括客观上差的 2、3 号调用。PPO 看到：
+>
+> - Trace 2 "打开错文件" → reward 1.0 → 梯度：**increase probability of this action**
+> - Trace 3 "瞎探索" → reward 1.0 → 梯度：**increase probability of this action**
+>
+> 结果：模型学到的是**"在成功 session 里出现过的行为"**，而不是**"导致成功的行为"**。这是 **credit-assignment 失败**，但表现像经典 reward hacking —— 模型找到一个 cheap 的 exploit：
+>
+> 1. 多做探索性 LLM 调用（每次都可能落到成功 session 里拿 reward = 1）
+> 2. 单次调用质量可以更低（一次错不致命）
+> 3. 训练 reward 看起来很好；**测试时任务完成率掉**
+>
+> ### 为什么这是 credit-assignment 问题
+>
+> RL 应该学"哪些动作*造成*高 reward"。Outcome-broadcast `per_request` 把信号变成"哪些动作跟高 reward *相关*"。虚假相关被强化。
+>
+> 跟 `prefix_merging` 对比：整个 session 变成**一条** trace，reward 在末尾 token 上，GAE 用 $\gamma < 1$ 反向传播，所以早期 token 拿到较少 credit。单次"打开错文件"动作在长 trajectory 里只是众多 token 之一，**不会拿到孤立的 reward = 1**。
+>
+> ### 论文解决了吗？
+>
+> **没有 —— 明确推到 future work**。论文 §4.1 末段：
+>
+> > "We also tried per_request with outcome-reward broadcasting to every emitted trace, but observed significant reward hacking. The issue is noisy credit assignment: request-level traces can receive session-level credit without proper session normalization or an advanced process reward model. **Those mechanisms are outside the scope of this work**, but providing examples and tools for session normalization and PRM-style credit assignment is on our roadmap."
+>
+> ### 实际给出的 workaround
+>
+> **用 `prefix_merging` 代替 `per_request`**。这就是为什么所有 main experiments 默认 prefix_merging —— 不只是 5× wall-clock 加速，而是 per_request 在 outcome-only reward 下根本不安全。
+>
+> ### Workaround 在哪里漏
+>
+> `prefix_merging` 只在 harness 保持**append-only conversation 历史**时工作。当 harness 做：
+>
+> - **Context compaction**（重写历史压缩老 turn）
+> - **Subagent spawning**（新对话线程）
+> - **Prompt rewriting**（任何对 prompt context 的大改）
+>
+> ...prefix 检查（$p_{m+1}[:|p_m|] = p_m$）失败，Polar 开**新链**。每个新链那段又退化成 per-request 风格碎片化。**在重写 context 的 harness 上你得到混合模式：一部分干净、一部分碎片化** —— reward hacking 按比例回来。
+>
+> ### "真正修复"长什么样
+>
+> 论文提到但没实现的三个方向：
+>
+> 1. **Session-level reward 归一化** —— 不广播 reward=1 到 10 条 trace，而是归一化：每条 1/10。或按 recency 折扣：$r_i = R \cdot \gamma^{n-1-i}$ 让后期 trace 拿更多 credit。便宜、不要新模型，但假设"后 = 更重要"未必总对
+> 2. **Process Reward Model (PRM)** —— 训单独模型给每步评分。数学领域成熟（[MathShepherd](https://arxiv.org/abs/2312.08935)、[OmegaPRM](https://arxiv.org/abs/2406.06592)、[PRIME](https://arxiv.org/abs/2502.01456)）但 code/agentic 不成熟。贵：需要标注 per-step 数据 + 训练和 serving 都多一个模型
+> 3. **合并 trajectory 上的 token-level advantage** —— `prefix_merging` 已经做的事。要做的是让它在 context compaction、subagent 边界、prompt 改写下都稳健
+>
+> ### 这为什么对采用很重要
+>
+> Polar "任意 harness" 的 claim **被这个开放问题结构性限制**。对干净 append-only 对话的 harness（Codex、简单 agent）→ `prefix_merging` 工作 → 没问题。对精细上下文管理的 harness（某些 Claude Code workflow、现代长 horizon agent）→ `prefix_merging` 退化 → reward hacking 回来。**agent 内部上下文管理越深，Polar 处理它的 RL 训练越差**。这是 Polar 研究议程的**开放前沿**。
+>
+> 参考：跟 [[search-r1]] 对比 —— Search-R1 在 `generation.py:run_llm_loop` 里保持单一连续 trajectory，应用 token 级 GAE，完全绕开了这个问题。代价是 "每个 harness 一个 AgentHandler" 的工程成本 —— 而 Polar 就是想消灭这个成本的。**"通用 harness 支持"和"干净 credit assignment"之间有张力；目前没人同时解决两者**。
+
 ### 离线数据生成：HF 上的 SFT 语料
 
 同样的 Polar 基础设施跑离线。论文 case study：

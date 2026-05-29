@@ -368,6 +368,75 @@ Same model, same hardware, same topology, only the trajectory builder changes. T
 > [!important] Per-request with outcome-reward broadcasting causes reward hacking
 > When you give every `per_request` trace the same session-level outcome reward (the natural baseline), the paper observes **significant reward hacking**: request-level traces get session-level credit without proper normalization, so noisy traces get reinforced by lucky-final-patch sessions. They punt on the fix ("PRM-style credit assignment is on our roadmap"). For now, `prefix_merging` is the only safe option for outcome-reward RL.
 
+> [!warning]+ Shiki — What "reward hacking" specifically means here, and the paper's open problem (2026-05-27)
+>
+> This is the most important caveat in the Polar paper. **Not classical reward hacking** (model exploits reward function loopholes) — this is **credit misassignment** that the paper observed in ablation but explicitly punted on.
+>
+> ### The concrete failure mode
+>
+> A Codex session on SWE-Bench typically makes 5-10+ LLM API calls. Suppose one session goes:
+>
+> | LLM call | What the agent did | Actual quality |
+> | --- | --- | --- |
+> | 1 | "Let me explore the repo structure" → lists files | OK |
+> | 2 | "I'll open `main.py`" → opens **wrong** file | **bad — off-task** |
+> | 3 | "Let me look at `utils.py`" → another wrong file | **bad — random exploration** |
+> | 4 | "Wait, I should check the tests" → gets back on track | good |
+> | 5 | "Found the bug, here's the patch" → submits correct patch | excellent |
+>
+> Verifier passes the patch → **session reward = 1**.
+>
+> Under `per_request` + outcome reward broadcasting, **every one of those 5 traces gets reward = 1**, including calls 2 and 3 which were objectively bad exploration. PPO sees:
+>
+> - Trace 2 "open wrong file" → reward 1.0 → gradient: **increase probability of this action**
+> - Trace 3 "random exploration" → reward 1.0 → gradient: **increase probability of this action**
+>
+> Result: the model learns **"actions that appeared in successful sessions"** rather than **"actions that caused success"**. This is a **credit-assignment failure**, but it manifests as classic reward hacking — the model finds a cheap exploit:
+>
+> 1. Make more exploratory LLM calls (each one might land in a successful session and get reward = 1)
+> 2. Each individual call quality can be lower (one bad call won't ruin the session)
+> 3. Training reward looks great; **test-time task completion drops**
+>
+> ### Why this is a credit-assignment issue
+>
+> RL should learn "actions that *cause* high reward". Outcome-broadcast `per_request` makes the signal "actions that *correlate* with high reward". Spurious correlations get reinforced.
+>
+> Compare with `prefix_merging`: the entire session becomes **one** trace, reward sits at the end token, GAE backpropagates it with $\gamma < 1$, so early tokens get less credit. A single "open wrong file" action inside a longer trajectory doesn't get an isolated reward = 1.
+>
+> ### Did the paper solve it?
+>
+> **No — explicitly punted to future work**. Paper §4.1 final paragraph:
+>
+> > "We also tried per_request with outcome-reward broadcasting to every emitted trace, but observed significant reward hacking. The issue is noisy credit assignment: request-level traces can receive session-level credit without proper session normalization or an advanced process reward model. **Those mechanisms are outside the scope of this work**, but providing examples and tools for session normalization and PRM-style credit assignment is on our roadmap."
+>
+> ### Workaround they actually ship
+>
+> **Use `prefix_merging` instead of `per_request`**. This is why prefix_merging is the default in all main experiments — not just for the 5× wall-clock speedup, but because per_request isn't safe to train with on outcome-only reward.
+>
+> ### Where the workaround leaks
+>
+> `prefix_merging` only works when the harness maintains **append-only conversation history** within a chain. When the harness does:
+>
+> - **Context compaction** (rewrite history to summarize old turns)
+> - **Subagent spawning** (new conversation thread)
+> - **Prompt rewriting** (any heavy mutation of the prompt context)
+>
+> ...the prefix check ($p_{m+1}[:|p_m|] = p_m$) fails, and Polar starts a **new chain**. Each new chain reverts to per-request-like fragmentation for that section. **In context-rewriting harnesses, you get a hybrid mode where parts of the session are clean and parts are fragmented** — reward hacking creeps back in proportionally.
+>
+> ### What the "real fix" would look like
+>
+> Three directions the paper gestures at but doesn't implement:
+>
+> 1. **Session-level reward normalization** — instead of broadcasting reward=1 to all 10 traces, normalize: each gets 1/10. Or discount by recency: $r_i = R \cdot \gamma^{n-1-i}$ so later traces get more credit. Cheap, no new models, but assumes "later = more important" which isn't always true.
+> 2. **Process Reward Models (PRM)** — train a separate model to score each step. Mature in math ([MathShepherd](https://arxiv.org/abs/2312.08935), [OmegaPRM](https://arxiv.org/abs/2406.06592), [PRIME](https://arxiv.org/abs/2502.01456)) but immature for code/agentic. Expensive: needs labeled per-step data + adds an extra model to training and serving.
+> 3. **Token-level advantage on merged trajectories** — what `prefix_merging` already does well. The job is making this robust to context compaction, subagent boundaries, and prompt rewriting.
+>
+> ### Why this matters for adoption
+>
+> Polar's "any harness" claim is **structurally limited by this open problem**. For harnesses with clean append-only conversation (Codex, simple agents) → `prefix_merging` works → no issue. For sophisticated context-managing harnesses (some Claude Code workflows, modern long-horizon agents) → `prefix_merging` degrades → reward hacking returns. The deeper an agent's internal context management, the worse Polar handles its RL training. This is the **open frontier** of Polar's research agenda.
+>
+> Reference: contrast with [[search-r1]], which side-stepped this entirely by maintaining one continuous trajectory in `generation.py:run_llm_loop` and applying GAE token-level — but it pays for this with the "AgentHandler-per-harness" cost that Polar specifically tried to eliminate. **There is a tension between "universal harness support" and "clean credit assignment"; nobody has solved both yet.**
+
 ### Offline data generation: SFT corpus on HF
 
 The same Polar infrastructure runs offline. The paper case study:
