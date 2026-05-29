@@ -354,6 +354,62 @@ Training curves show steady reward improvement across all four. First-10-step vs
 > [!success] What the Codex number actually means
 > Qwen3.5-4B at **3.8 % pass@1 under Codex** is a model that essentially doesn't know how to use Codex's protocol — wrong patch format, wrong tool schemas, wrong stopping conditions. Polar's contribution is that the **reward attaches to the actual sampled tokens flowing through Codex's execution path** — so GRPO optimizes the behavior the model needs at evaluation time, not the behavior a reimplemented harness in `AgentHandler` would produce. Under the Qwen-native harness (Qwen Code), the base model already knows the protocol; the +0.6 pp says "Polar didn't break what was working." Together these two endpoints are the right shape for a "harness-native RL" claim.
 
+> [!question]+ Shiki — Why is the Codex gain (+22.6 pp) so much larger than the others? (2026-05-27)
+>
+> The 4-harness gain asymmetry is striking: Codex +22.6, Pi +6.2, Claude Code +4.8, Qwen Code +0.6. **A 38× range from highest to lowest**. This isn't accidental — it tells you something important about what Polar is actually doing.
+>
+> ### Reason 1: Codex's protocol is "foreign" to Qwen2.5-4B
+>
+> Codex is OpenAI's CLI, designed for the GPT-4/5 family. Its internal protocol is **calibrated to GPT-family behavior**:
+>
+> - **Tool-calling format**: OpenAI function-calling JSON schema. GPT models saw millions of training examples in this format.
+> - **Patch submission format**: specific unified-diff markers, specific newline rules.
+> - **System prompts**: phrasing and structure calibrated for GPT-style assistants.
+> - **Multi-turn patterns**: when to function-call vs reason vs submit — aligned with GPT training distribution.
+>
+> **Qwen2.5-4B has essentially never seen this protocol in pretraining.** Qwen's instruction tuning uses Alibaba's own formats. So when the base model tries to use Codex:
+> - It tries to call a tool but the JSON format is malformed → Codex parser fails → wasted turn
+> - It generates a patch but the diff marker is wrong → Codex rejects → wasted turn
+> - It doesn't recognize Codex's "stop here" signal → keeps generating or stops early
+>
+> **The 3.8 % base ≈ "model gets lucky occasionally"**, not "model knows how to use Codex." There's massive headroom for protocol learning.
+>
+> ### Reason 2: Qwen Code is the opposite extreme
+>
+> Qwen Code is built **by Alibaba for Qwen models**. Its prompts, tool schemas, and response formats are tuned to Qwen2.5's natural output style. The model picks up Qwen Code like a native speaker — 34.6 % base is the model's real coding ability shining through.
+>
+> Remaining +0.6 % gain reflects "fine-polishing an already-fluent protocol." **No protocol learning room left**, so the gain is tiny.
+>
+> ### Reason 3: Claude Code and Pi are in between
+>
+> Claude Code (Anthropic, calibrated for Claude) is closer to general LLM patterns than Codex is, so Qwen can semi-follow (29.8 % base) but with mismatch costs that RL fixes (+4.8 %). Pi is open-source with broad LLM compatibility in mind — works on Qwen (34.2 %) with some protocol overhead RL polishes (+6.2 %).
+>
+> ### The unstated insight: Codex's +22.6 is largely "protocol learning", not "coding skill"
+>
+> This is what the paper doesn't explicitly say but you should read between the lines:
+>
+> The +22.6 gain is mostly the model learning **how to talk to Codex**:
+> 1. JSON tool-call formatting
+> 2. Patch submission marker conventions
+> 3. When to function-call vs reason
+> 4. Wasting fewer turns
+>
+> Compare with Qwen Code's +0.6 % — on a harness the model is already fluent with, RL has to optimize the **actual coding decisions** (which file to edit, what bug to fix). That's the harder problem, and the gains reflect it.
+>
+> **So +22.6 pp does NOT mean "Polar made Qwen a much better coder" — it means "Polar taught Qwen to talk to a foreign agent."** Important distinction.
+>
+> ### What this means for adoption
+>
+> The Codex result demonstrates Polar's strongest claim: **you can RL-train a model to use a harness it was never designed for**. This is real and valuable. But:
+>
+> 1. **At 70B+ scale**, the base model has likely seen Codex / Claude Code outputs in pretraining data. Base rates won't be 3.8 % — they'll be 20-30 %+. The +22.6 dramatic gain is a **small-model phenomenon**. Expect 70B Codex gains around +5-8 pp, similar to Pi.
+>
+> 2. **The asymmetry IS the point** of Polar's "any harness" claim: training works on the harness the base model knows worst. But it also means the headline number oversells general capability — most of the gain is unlocking a specific protocol, not making the model fundamentally better.
+>
+> ### Where the paper acknowledges this
+>
+> §4.2: "The largest absolute gain appears in Codex, likely due to unfamiliar tool schemas. ... Codex presents an unfamiliar action protocol, context policy, and patch-submission style to a Qwen model that was not originally trained as a Codex-native policy." The paper says "unfamiliar tool schemas" but doesn't unpack the implication that **most of +22.6 is protocol adaptation, not coding improvement**.
+
 ### Critical ablation: prefix_merging vs per_request
 
 Same model, same hardware, same topology, only the trajectory builder changes. Three training steps:
@@ -364,6 +420,62 @@ Same model, same hardware, same topology, only the trajectory builder changes. T
 | **`prefix_merging`** | **218** | **35.2 min** | **87.7 %** |
 
 `per_request` produces ~5× more trainer updates than `prefix_merging` does for the same physical work. The wall-clock 5.39× comes from the trainer's batched gradient computation dominating: 1185 separate trainer iterations is ~5× slower than 218 even if each iteration is cheaper per-trace.
+
+> [!question]+ Shiki — Why do BOTH trainer-updates and wall-clock improve? Are these independent metrics? (2026-05-27)
+>
+> They're **highly correlated, not independent** — three numbers measuring the same underlying physics from different angles. The root cause is **5× fewer trainer triggers**, and everything else follows.
+>
+> ### Time-line view
+>
+> ```
+> per_request mode (rollout GPU's view):
+>   [gen trace1] [wait trainer ack] [wait weight sync] [gen trace2] [wait...] ...
+>        ↑busy        ↑idle              ↑idle              ↑busy
+>   1185 active-idle alternations  →  average util 20.4%
+>
+> prefix_merging mode:
+>   [gen 5 completions back-to-back into 1 session] [wait trainer ack] [next session] ...
+>        ↑long busy stretch                              ↑short idle         ↑long busy
+>   218 long-active / short-idle cycles  →  average util 87.7%
+> ```
+>
+> ### Why fewer trainer updates → faster wall-clock
+>
+> Each trainer update has **fixed overhead independent of batch size**:
+> - Network: ship the trace from rollout worker to trainer worker
+> - NCCL synchronization across data-parallel ranks
+> - Optimizer state load + step
+> - Weight sync back to vLLM (hybrid engine swap)
+>
+> All of these cost ~constant time per update, regardless of whether the update is on 1 trace or 5 traces. So **1185 updates pay 1185× the fixed overhead; 218 updates pay 218×**.
+>
+> Each `prefix_merging` trace IS ~5× longer (since it contains 5 completions worth of tokens). But GPU forward/backward is **sublinear** in sequence length (within reason — tensor parallelism + flash attention amortize the cost). So one update on a 5×-longer trace is much less than 5× the cost of one update on a short trace.
+>
+> Net: 218 long-trace updates is ~5× faster total wall-clock than 1185 short-trace updates, despite roughly equivalent total token throughput.
+>
+> ### Why fewer updates → higher rollout GPU utilization
+>
+> Each trainer update is a **synchronization point**: rollout has to wait for the trainer to finish updating weights before generating the next trace (otherwise the new trace would use stale policy, which is off-policy noise).
+>
+> - per_request: 1185 sync points → rollout GPU sits idle 1185 times waiting for trainer
+> - prefix_merging: 218 sync points → rollout GPU sits idle 218 times
+>
+> 80 % idle on rollout side in per_request = the GPU is just waiting for trainer to keep up.
+>
+> ### The unified story
+>
+> Three metrics, one root cause:
+>
+> ```
+>  5× fewer trainer triggers (218 vs 1185)
+>         │
+>         ├──► 5× less fixed overhead → wall-clock 189.5 → 35.2 min (5.39×)
+>         ├──► 5× less network traffic between rollout / trainer
+>         ├──► 5× fewer weight-sync cycles
+>         └──► 5× less rollout-GPU idle time → 20.4 → 87.7 % util (4.3×)
+> ```
+>
+> This is also why `prefix_merging` is the **default** in all Polar production runs, not just because of reward-hacking safety (next callout) but because it's straightforwardly faster.
 
 > [!important] Per-request with outcome-reward broadcasting causes reward hacking
 > When you give every `per_request` trace the same session-level outcome reward (the natural baseline), the paper observes **significant reward hacking**: request-level traces get session-level credit without proper normalization, so noisy traces get reinforced by lucky-final-patch sessions. They punt on the fix ("PRM-style credit assignment is on our roadmap"). For now, `prefix_merging` is the only safe option for outcome-reward RL.

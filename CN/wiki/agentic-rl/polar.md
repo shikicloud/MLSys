@@ -356,6 +356,62 @@ loss_mask     =  1s     0s     1s    0s    ...    1s
 > [!success] Codex 那个数字到底说明什么
 > Qwen3.5-4B 在 Codex 下 **3.8 % pass@1** 是一个根本不会用 Codex 协议的模型 —— patch 格式错、tool schema 错、停止条件错。Polar 的贡献是**奖励挂到 Codex 执行路径上实际采样到的 token 上** —— GRPO 优化的是模型在评估时必须用的行为，不是 `AgentHandler` 里重实现版本的行为。在 Qwen 原生 harness（Qwen Code）下，base 已经懂协议；+0.6 pp 说"Polar 没破坏本来在 work 的东西"。两个端点合在一起才是"harness-native RL"声明的正确形状。
 
+> [!question]+ Shiki —— 为什么 Codex 增益（+22.6 pp）比其它 harness 高这么多？(2026-05-27)
+>
+> 4 harness 增益不对称很显眼：Codex +22.6、Pi +6.2、Claude Code +4.8、Qwen Code +0.6。**最高到最低差 38×**。这不是巧合，它告诉你 Polar 实际在做什么。
+>
+> ### 原因 1：Codex 协议对 Qwen2.5-4B 是"外语"
+>
+> Codex 是 OpenAI 的 CLI，为 GPT-4/5 家族定制。它的内部协议**按 GPT 家族行为校准**：
+>
+> - **Tool-calling 格式**：OpenAI function-calling JSON schema。GPT 模型预训练时见过百万级这种格式
+> - **Patch 提交格式**：特定 unified-diff marker、特定换行规则
+> - **System prompt**：措辞和结构按 GPT 风格 assistant 来
+> - **多轮模式**：何时 function-call vs reasoning vs 提交 —— 跟 GPT 训练分布对齐
+>
+> **Qwen2.5-4B 在预训练里几乎没见过这套协议**。Qwen 的指令调优用阿里自己的格式。所以 base 模型试图用 Codex 时：
+> - 试着 tool call，但 JSON 格式不对 → Codex 解析失败 → 浪费一轮
+> - 生成 patch，但 diff marker 错 → Codex 拒绝 → 浪费一轮
+> - 不认得 Codex 的"停止信号" → 一直生成、或者过早结束
+>
+> **3.8 % 基线 ≈ "模型偶尔蒙对"**，不是真的会用 Codex。协议学习的空间巨大。
+>
+> ### 原因 2：Qwen Code 是另一个极端
+>
+> Qwen Code 是**阿里为 Qwen 模型定制的**。它的 prompt、tool schema、response format 都按 Qwen2.5 自然输出风格调好。模型拿到 Qwen Code 像母语 —— 34.6 % 基线是真正编程能力的体现。
+>
+> 剩下 +0.6 % 反映"在已经流利的协议上再优化一点"。**没有协议学习空间了**，所以增益极小。
+>
+> ### 原因 3：Claude Code 和 Pi 在中间
+>
+> Claude Code（Anthropic 为 Claude 调）比 Codex 更接近通用 LLM 模式，Qwen 能勉强 follow（29.8 % base）但有失配成本，RL 修一些（+4.8 %）。Pi 是开源的，从设计上就考虑通用 LLM 兼容性 —— Qwen 上能跑（34.2 %），有协议 overhead 让 RL 优化（+6.2 %）。
+>
+> ### 没说出口的洞察：Codex 的 +22.6 主要是"协议学习"不是"编程能力"
+>
+> 这是论文没明说但你应该读出来的关键：
+>
+> +22.6 增益主要是模型学会**怎么跟 Codex 说话**：
+> 1. JSON tool call 格式
+> 2. Patch 提交 marker 规范
+> 3. 何时 function call vs reasoning
+> 4. 少浪费轮次
+>
+> 对比 Qwen Code 的 +0.6 % —— 在模型已经流利的 harness 上，RL 只能优化**真正的编程决策**（改哪个文件、修什么 bug）。那才是更难的问题，所以增益反映的是这个。
+>
+> **所以 +22.6 pp 不等于 "Polar 让 Qwen 变成更好的程序员" —— 是 "Polar 教会 Qwen 跟一个陌生 agent 说话"**。这个区分重要。
+>
+> ### 这对采用意味着什么
+>
+> Codex 结果展示了 Polar 最强的 claim：**你能用 RL 训练一个模型用它从没见过的 harness**。这是真的、有价值。但是：
+>
+> 1. **70B+ 规模**，base 模型在预训练里大概率见过 Codex / Claude Code 的输出。基线不会是 3.8 % —— 会是 20-30 %+。+22.6 dramatic 增益是**小模型现象**。70B Codex 增益估计 +5-8 pp，跟 Pi 接近
+>
+> 2. **不对称本身就是 Polar 的 point**：训练对 base 最不懂的 harness 最有效。但这意味着头条数字夸大了通用能力 —— 大部分增益是解锁特定协议，不是让模型本质更强
+>
+> ### 论文哪里承认这个
+>
+> §4.2："The largest absolute gain appears in Codex, likely due to unfamiliar tool schemas. ... Codex presents an unfamiliar action protocol, context policy, and patch-submission style to a Qwen model that was not originally trained as a Codex-native policy." 论文说"unfamiliar tool schemas"但没展开 **+22.6 的大部分是协议适应不是编程改善** 这个推论。
+
 ### 关键消融：prefix_merging vs per_request
 
 同模型、同硬件、同拓扑，只换轨迹构建器。3 个训练步：
@@ -366,6 +422,62 @@ loss_mask     =  1s     0s     1s    0s    ...    1s
 | **`prefix_merging`** | **218** | **35.2 min** | **87.7 %** |
 
 `per_request` 在同物理 work 下产生 ~5× 多的 trainer 更新。Wall-clock 5.39× 加速来自 trainer 批量梯度计算主导：1185 个独立的 trainer iteration 比 218 个慢 ~5×，即使每个单独更便宜。
+
+> [!question]+ Shiki —— 为什么 trainer 更新次数和 wall-clock 都优化了？这两个是独立指标吗？(2026-05-27)
+>
+> **高度相关、不独立** —— 三个数字是从不同角度测量同一物理现象。根因是 **5× 少的 trainer 触发**，其它都是它的下游表现。
+>
+> ### 时间线视角
+>
+> ```
+> per_request 模式（rollout GPU 视角）：
+>   [生成 trace1] [等 trainer ack] [等权重同步] [生成 trace2] [等...] ...
+>        ↑活跃        ↑idle           ↑idle           ↑活跃
+>   1185 次活跃-空闲交替  →  平均利用率 20.4%
+>
+> prefix_merging 模式：
+>   [连续生成 5 个 completion 拼成 1 session] [等 trainer ack] [下一 session] ...
+>        ↑长时间活跃                              ↑短 idle           ↑长时间活跃
+>   218 次"长活跃 / 短空闲"周期  →  平均利用率 87.7%
+> ```
+>
+> ### 为什么 trainer 更新次数少 → wall-clock 快
+>
+> 每次 trainer update 有**跟 batch 大小无关的固定 overhead**：
+> - 网络：把 trace 从 rollout worker 送到 trainer worker
+> - 跨 data-parallel rank 的 NCCL 同步
+> - Optimizer state 加载 + step
+> - 把权重同步回 vLLM（hybrid engine swap）
+>
+> 这些都是 **per-update 固定时间**，不管这次 update 是 1 条 trace 还是 5 条。所以 **1185 次 update 付 1185× 固定 overhead；218 次付 218×**。
+>
+> 每条 `prefix_merging` trace 大约是 5× 长（含 5 个 completion 的 token）。但 GPU forward/backward 对序列长度**亚线性**（tensor parallelism + flash attention 摊平成本）。所以一次 5× 长 trace 的 update 远小于 5× 短 trace update 的代价。
+>
+> 净效果：218 次长 trace update 比 1185 次短 trace update **wall-clock 总共快 ~5×**，尽管 token 吞吐总量大致相同。
+>
+> ### 为什么 trainer 更新次数少 → rollout GPU 利用率高
+>
+> 每次 trainer update 是个**同步点**：rollout 必须等 trainer 更新完权重才能生成下一条 trace（否则新 trace 用 stale policy 采样，是 off-policy 噪声）。
+>
+> - per_request：1185 个同步点 → rollout GPU 空闲 1185 次等 trainer
+> - prefix_merging：218 个同步点 → rollout GPU 空闲 218 次
+>
+> per_request 那 80 % rollout 空闲 = GPU 一直在等 trainer 跟上。
+>
+> ### 统一故事
+>
+> 三个指标，一个根因：
+>
+> ```
+>  5× 少 trainer 触发 (218 vs 1185)
+>         │
+>         ├──► 5× 少固定 overhead → wall-clock 189.5 → 35.2 min (5.39×)
+>         ├──► 5× 少 rollout/trainer 间网络流量
+>         ├──► 5× 少 weight-sync 周期
+>         └──► 5× 少 rollout-GPU 空闲时间 → 20.4 → 87.7 % 利用率 (4.3×)
+> ```
+>
+> 这也是为什么 `prefix_merging` 在所有 Polar 生产 run 里是**默认**，不只是因为 reward hacking 安全性（下一个 callout），也是因为它直接更快。
 
 > [!important] per_request + outcome reward 广播会触发 reward hacking
 > 给每条 `per_request` trace 同一个 session 级 outcome reward（最自然 baseline），论文观察到**严重 reward hacking**：request 级 trace 拿到 session 级信用，没做归一化，所以幸运结局的 noisy trace 也被强化。论文把修复推到 future work（"PRM-style credit assignment 在 roadmap 上"）。当前你要么用 `prefix_merging`、要么接受 hacking 风险；意味着无法合并的 workload（重写上下文很多的 harness）目前用 Polar 做 outcome-only RL 不容易。
