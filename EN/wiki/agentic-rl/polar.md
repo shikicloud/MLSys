@@ -3,7 +3,7 @@ title: "Polar: Agentic RL on Any Harness at Scale (the ProRL Agent successor)"
 category: agentic-rl
 tags: [polar, prorl-agent, nvidia, rollout-as-a-service, agentic-rl, llm-api-proxy, nemo-gym, swe-bench, paper-review]
 created: 2026-05-26
-updated: 2026-05-26
+updated: 2026-05-27
 status: mature
 paper: arXiv:2605.24220
 code: https://github.com/NVIDIA-NeMo/ProRL-Agent-Server
@@ -106,6 +106,14 @@ The shift is conceptually small but architecturally enormous: instead of integra
 | rLLM — decorated functions, tracked clients | Provider-API protocol detection (Anthropic / OpenAI / Google) |
 | ProRL Agent — `AgentHandler` ABC plugin per harness | Tiny *adapter* that writes config + returns shell command |
 
+> [!question]+ Shiki — Is ProRL Agent just an HTTP layer wrapping an external rollout engine? (2026-05-27)
+>
+> No — common misconception. **ProRL Agent IS the rollout engine, not a wrapper for one.** It contains vLLM (LLM inference), the AgentHandler Python plugin (agent loop), and the rootless Apptainer sandbox, all in one process. The HTTP layer is the *trainer-facing* contract — it lets the trainer (veRL / NeMo-RL / slime) decouple from rollout. The trainer sends `POST /process` and ProRL Agent **actively controls** the whole rollout: starts the sandbox, runs the AgentHandler loop (deciding to search vs answer at each turn), drives vLLM, calls tools, evaluates, returns the trajectory.
+>
+> The same is true of Polar — it IS the rollout engine, just with a different integration boundary (LLM-API proxy instead of in-process AgentHandler plugin).
+>
+> "Rollout engine" ≠ "LLM engine". A rollout engine runs a *complete trajectory* (LLM forward + agent loop + tool calling + sandbox + scoring). vLLM is just the LLM forward piece inside.
+
 ## The proxy-as-boundary architecture
 
 ![Polar's proxy boundary (paper Fig. 2)](EN/wiki/agentic-rl/polar-figs/polar-proxy-boundary.png)
@@ -151,9 +159,52 @@ That's it. The adapter is configuration + shell command, not an agent reimplemen
 
 Same isolation choice as ProRL Agent: **rootless Apptainer** for HPC / Slurm clusters where Docker daemons aren't available. Initial release also supports Docker. The interface (`start, stop, exec, upload, download, cancel`) means swapping isolation backends is friction-free.
 
+> [!question]+ Shiki — Does Polar see tool calls? Where do tools fit? (2026-05-27)
+>
+> **Polar does NOT directly see tool calls.** Tools happen *entirely inside the unmodified harness* — Codex CLI's bash invocations, Claude Code's file edits, Pi's repository reads. Polar only sees what flows through the **LLM API boundary**.
+>
+> What this means concretely:
+>
+> 1. Harness (e.g. Codex) decides "I should read this file" — calls `bash` tool **internally** → Polar doesn't see this
+> 2. Harness sends the file content to LLM as the next API call → Polar's proxy **intercepts**, captures token IDs, forwards to vLLM
+> 3. LLM (vLLM) responds with "I should edit this line" → proxy captures token IDs, returns text response to harness
+> 4. Harness executes the edit (more tool calls) → Polar doesn't see
+> 5. Next API call to LLM with new state → Polar captures again
+>
+> Tool inputs and outputs **appear inside LLM API calls** as part of the prompt (e.g. `{"role": "tool", "content": "file contents..."}`). When Polar's `prefix_merging` reconstructs the trajectory:
+>
+> - Tokens the policy actually sampled → `loss_mask = 1` (trainable)
+> - Tokens the harness/system injected (tool results, prompt rendering, etc.) → `loss_mask = 0` (interstitial)
+>
+> So tool outputs ARE masked out — but Polar derives the mask by *diffing* successive API calls (what was the previous response vs what's new in this prompt), not by being told "this is a tool call."
+>
+> This is structurally similar to [[search-r1#Retrieved-token loss masking — the load-bearing trick|Search-R1's retrieved-token loss masking]] but at the LLM-API layer instead of within an in-process Python plugin. Both achieve the same goal (gradients only flow through policy-sampled tokens) by very different mechanisms.
+
 ## Token-faithful trajectory reconstruction
 
 This is the technical contribution of the paper. Polar provides two strategies in a registry; the prefix-merging one is the load-bearing one.
+
+> [!question]+ Shiki — Is "token-faithful" the same as ProRL Agent's avoid-retokenization? (2026-05-27)
+>
+> **Same problem, very different implementation.** Both ProRL Agent and Polar care about preserving the exact token IDs the policy sampled, never re-tokenizing text.
+>
+> **ProRL Agent's solution: avoid the problem.** AgentHandler runs in the same Python process as vLLM. It calls vLLM directly, getting token IDs in and out without ever crossing a text boundary. No protocol layer means no retokenization opportunity.
+>
+> ```python
+> # ProRL Agent's AgentHandler (in-process)
+> output_token_ids = await vllm_engine.generate(input_token_ids)
+> # token IDs are the native exchange format
+> ```
+>
+> **Polar's solution: solve the problem.** The harness is a *separate process* (Codex is a binary, Claude Code is TypeScript), communicating via text-based LLM APIs. Token IDs aren't exposed in those APIs. Polar's proxy sits between:
+>
+> 1. Harness sends request (text) → proxy intercepts
+> 2. Proxy forwards to local vLLM **with `logprobs=true`** → gets back text + token IDs + logprobs
+> 3. Proxy stores token IDs in session log
+> 4. Proxy returns text to harness (preserving API compatibility)
+> 5. Harness has no idea token IDs were captured
+>
+> The harness sees **standard LLM API text responses** while Polar quietly accumulates token-faithful trajectory data. This is harder than ProRL Agent's approach but lets the harness be **anything that talks to an LLM API** — closed-source binaries, TypeScript CLIs, Go agents. That generalization is the whole point.
 
 ### The token-fidelity problem
 
@@ -237,6 +288,29 @@ loss_mask     =  1s     0s     1s    0s    ...    1s
 ```
 
 Every trainable token is one the model actually sampled. Every masked token is part of context the harness or server *gave* the model. The gradient is on-policy by construction.
+
+> [!question]+ Shiki — Is gateway-level async staging related to LLM prefill? (2026-05-27)
+>
+> **No, unrelated.** "Prefill" in LLM inference is vLLM's internal concept: ingesting a long prompt's tokens in one forward pass to populate the KV cache before decoding begins. Polar's "async staging" is at a completely different layer — it's the **orchestration of rollout pipeline stages within a gateway node**, not about LLM forward shape.
+>
+> The motivation: a typical SWE-Bench rollout has three cost-distinct phases:
+>
+> | Phase | Time | Resource |
+> | ----- | ---- | -------- |
+> | **INIT** — start Apptainer container, install harness, configure git repo | 30-90 s | CPU + disk |
+> | **RUNNING** — harness executes the agent loop (LLM calls + tool execution) | 1-5 min | GPU (LLM) + CPU (tools) |
+> | **POSTRUN** — run verifier (SWE-Bench test suite), tear down container | 30-180 s | CPU |
+>
+> **Serial execution would idle the GPU during INIT and POSTRUN**, wasting ~30-50% of total time. Polar's gateway runs 4 pools concurrently:
+>
+> - **INIT pool** initializes new sessions in the background
+> - **READY buffer** holds initialized sessions waiting for a run slot
+> - **RUNNING pool** executes harnesses (the GPU-active phase)
+> - **POSTRUN pool** scores and tears down completed sessions
+>
+> Effect: GPU stays busy on LLM inference (87.7% utilization) while CPU does container management and verification in the background. **This is what gets Polar from 20.4% to 87.7% rollout GPU utilization** — pipeline-stage parallelism, not better LLM kernels.
+>
+> Analogy: vLLM prefill is "the chef chopping vegetables" (one dish's internal step); gateway staging is "the kitchen running prep / cooking / dishwashing stations in parallel" (whole-pipeline orchestration).
 
 ## Asynchronous rollout staging
 
@@ -352,35 +426,179 @@ Three claims worth tracking:
 
 What this is *not*: a general-purpose RL trainer (the paper says so — Polar is a rollout substrate, not a trainer; it feeds Slime, NeMo RL, veRL). And it's not yet a fix for the per-request reward-hacking problem — that remains an open systems question.
 
-## How this changes the ProRL Agent vs NeMo Gym picture
+## The three-layer agentic-RL stack — Polar / ProRL Agent / NeMo Gym
 
-[Yesterday's wiki section](#related-reading) compared [[prorl-agent|ProRL Agent]] and [[nemo-gym|NeMo Gym]] as "same family, different layer" with no public adapter bridging them. **Polar IS that bridge**, and shipped before the ink dried on that section. The updated picture:
+This is the question people get most confused about. Three NVIDIA projects (ProRL Agent, Polar, NeMo Gym) plus the trainer (veRL / NeMo-RL / slime) work together in a **3-layer architecture**. Each layer answers a different question.
+
+### One-sentence positioning
+
+| Layer | System | Answers the question |
+| ----- | ------ | -------------------- |
+| **Trainer** | veRL / NeMo-RL / slime | "How do I use a trajectory to update the policy?" |
+| **Rollout-driver** | ProRL Agent → Polar | "How do I run the agent against a task and capture a trajectory?" |
+| **Environment catalog** | NeMo Gym | "What's the task and how do I score it?" |
+
+ProRL Agent and Polar are **the same layer, new and old versions** (Polar supersedes ProRL Agent, same NVIDIA team, same repo). NeMo Gym is **a different layer**, providing inputs to the rollout-driver.
+
+### The stack diagram
 
 ```
-Trainer (NeMo RL / VeRL / Slime / Unsloth)
-    │
-    │  async rollout-as-a-service contract     ← Polar's gateway endpoints
-    ▼
-Polar (rollout server + gateway nodes)
-    │
-    │  small harness adapter (config + shell command)
-    │  + provider-API proxy (Anthropic / OpenAI / Google)
-    │
-    ▼
-Unmodified agent harness (Codex / Claude Code / Qwen Code / Pi / ...)
-    │
-    │  registered as one of  ──────────────────┐
-    ▼                                          │
-NeMo Gym environment                           │
-    (Polar as the rollout backend) ────────────┘
+┌──────────────────────────────────────────────────────────┐
+│        Trainer (veRL / slime / NeMo-RL / OpenRLHF)        │
+│   ─ PPO/GRPO ─ gradient update ─ distributed training    │
+└──────────────────────────┬───────────────────────────────┘
+                           │
+                           │  HTTP rollout request:
+                           │  "run task T with policy π"
+                           │
+                           ▼
+┌──────────────────────────────────────────────────────────┐
+│      Rollout-driver (ProRL Agent → Polar, May 2026)        │
+│  ─ spin sandbox ─ run harness ─ capture LLM API ─        │
+│  ─ build trajectory ─ run verifier ─ compute reward       │
+└────┬────────────────────┬───────────────────────────────┘
+     │                    │
+     │ needs task         │ harness invokes LLM
+     │ needs runtime      │ (proxy intercepts)
+     │ needs verifier     │
+     ▼                    ▼
+┌─────────────────┐  ┌────────────────────────────────┐
+│   NeMo Gym      │  │  vLLM (training policy π)         │
+│  ─ 84 benchmarks│  │  + reference policy                │
+│  ─ runtimes     │  │  + critic (PPO only)               │
+│  ─ verifiers    │  │  ─ hybrid engine with FSDP actor  │
+│  ─ data splits  │  │                                    │
+└─────────────────┘  └────────────────────────────────┘
 ```
 
-So:
-- **ProRL Agent** is now legacy — the same NVIDIA-NeMo/ProRL-Agent-Server repo, but the codebase has been rewritten.
-- **Polar** is the production rollout-driver layer.
-- **NeMo Gym** still owns the environment catalog (84 benchmarks, 19 harnesses) — Polar registers as one of its environments.
+**Note**: NeMo Gym sits *alongside* the rollout-driver, providing inputs — not above or below. The trainer doesn't talk to NeMo Gym directly; Polar reads NeMo Gym's task/runtime/verifier specs as inputs to do its job.
 
-The "must pick one" guidance in [[prorl-agent#ProRL Agent vs NeMo Gym — same family, different layer|the ProRL Agent comparison section]] is now: **use both**, with Polar as the rollout layer.
+### History
+
+```
+2026-03  ProRL Agent       ┐
+                            ├─ Independent NVIDIA projects, no public adapter
+2026-03  NeMo Gym          ┘     (the original "must pick one" gap)
+
+2026-05  Polar              ─ Supersedes ProRL Agent (same NVIDIA repo)
+         + registered as a NeMo Gym environment  ─ The bridge ships
+```
+
+**The key event**: in March 2026 ProRL Agent and NeMo Gym shipped as parallel projects with no formal connection. In May 2026 Polar replaced ProRL Agent **and** registered as a NeMo Gym environment, formally connecting the two layers. This is the moment NVIDIA's agentic-RL stack consolidated.
+
+### What each does, standalone
+
+| Used alone | Can do | Can't do |
+| ---------- | ------ | -------- |
+| **NeMo Gym only** | Benchmark eval (run existing models against 84 tasks); provide tasks to other RL frameworks | Can't train (no trainer); harness integration left to user |
+| **ProRL Agent / Polar only** | Rollout service (given a task, run harness + capture trajectory); offline SFT data generation | Can't define tasks (you bring them); can't train |
+| **Trainer only** | PPO/GRPO on simple RL tasks; classic RLHF | Can't do agentic (no multi-turn rollout); no env catalog |
+
+**Only all three together = a complete production agentic-RL training pipeline.**
+
+### A concrete training run — who does what at each step
+
+Suppose you want to "train Qwen2.5-7B on SWE-Bench Verified with GRPO":
+
+```
+1. User: ./train_swebench.sh
+              │
+              ▼
+2. Trainer (slime) starts:
+   ─ loads SWE-Bench Verified task list ←── from NeMo Gym
+   ─ loads Apptainer runtime spec      ←── from NeMo Gym
+   ─ knows verifier is swebench_harness ←── from NeMo Gym
+              │
+              ▼ each RL step:
+3. Trainer picks a batch of task instances
+              │
+              ▼ HTTP POST /process(task_batch)
+4. Polar gateway receives the request:
+   ─ INIT pool: spin N Apptainer containers (using NeMo Gym's image spec)
+   ─ install Codex CLI / Claude Code / Pi in each container
+   ─ inject task's git repo + problem statement
+              │
+              ▼
+5. Polar RUN pool: launch Codex CLI process in each container
+              │
+              ▼
+6. Codex CLI runs its OWN agent loop:
+   ─ reads files (bash tool)       ←── Polar can't see this
+   ─ calls LLM API ────────────────┐
+                                   │
+                                   ▼ Polar's API proxy intercepts
+                               ┌────────────────────────────┐
+                               │ proxy forwards to local vLLM │
+                               │ captures token IDs + logprobs│
+                               │ returns text response in     │
+                               │ OpenAI/Anthropic format       │
+                               └────────────────────────────┘
+   ─ edits files (edit tool)       ←── Polar can't see this
+   ─ ... multiple turns ...
+   ─ submits patch
+              │
+              ▼
+7. Polar POSTRUN pool:
+   ─ runs swebench_harness (NeMo Gym's verifier)
+   ─ obtains reward (0 or 1)
+   ─ runs prefix_merging to reconstruct trajectory (token IDs + loss_mask)
+              │
+              ▼ HTTP response: (token_ids, logprobs, loss_mask, reward)
+8. Trainer collects all trajectories, builds batch
+              │
+              ▼
+9. Trainer computes GRPO advantages, PPO loss, updates Qwen weights
+              │
+              ▼
+10. New Qwen weights sync to vLLM (hybrid engine swap)
+              │
+              ▼
+(back to step 3 for the next RL step)
+```
+
+**Who does what at each step**:
+
+| Step | NeMo Gym | Polar | Trainer | vLLM |
+| ---- | -------- | ----- | ------- | ---- |
+| 1-2 setup | task list + runtime spec + verifier | – | loads from NeMo Gym | – |
+| 3 batch | – | – | ✓ | – |
+| 4 sandbox | runtime spec | ✓ spin container | – | – |
+| 5 harness | – | ✓ | – | – |
+| 6 agent loop | – | proxy captures LLM API | – | ✓ LLM forward |
+| 7 score | provides verifier | ✓ runs verifier | – | – |
+| 8-9 update | – | – | ✓ | – |
+| 10 sync | – | – | – | ✓ |
+
+Three independent systems, three clean concerns.
+
+### "Same family, different layer" — concretely
+
+- **ProRL Agent ↔ Polar**: **Same layer, version upgrade**. Same NVIDIA team, same GitHub repo (`NVIDIA-NeMo/ProRL-Agent-Server`), same architectural philosophy (rollout-as-a-service). Polar replaces ProRL Agent's Python `AgentHandler` plugin with an LLM-API proxy — that's the only fundamental change.
+
+- **Polar ↔ NeMo Gym**: **Different layers, collaborating**. One is a rollout-driver, the other is an environment catalog. Polar registering as a NeMo Gym environment is what makes "trainer accesses Polar through NeMo Gym" a standard path.
+
+A web-stack analogy:
+- ProRL Agent → Polar is like **Apache → nginx** (same-layer web server, new-vs-old generation)
+- Polar ↔ NeMo Gym is like **nginx ↔ PostgreSQL** (web server ↔ database, different layers, mutually dependent)
+
+### Common misconception: "NeMo Gym is an agent framework like SWE-agent"
+
+It's not. NeMo Gym is the *catalog*; SWE-agent / Codex / Claude Code are *agents* (harnesses). NeMo Gym **references** agent harnesses in its 19-harness inventory but doesn't itself implement an agent's reasoning loop.
+
+| Confused with | Actually | Lives at layer |
+| ------------- | -------- | -------------- |
+| NeMo Gym = SWE-agent? | No — SWE-agent is a *harness* (one of NeMo Gym's 19 referenced harnesses). NeMo Gym is the catalog | Harness ≠ Environment |
+| NeMo Gym = Codex / Claude Code? | No — those are *harnesses* (potentially registered with NeMo Gym, definitely usable inside Polar) | Harness layer |
+| NeMo Gym = trainer? | No — NeMo-RL is a trainer (different name, same NVIDIA family) | Trainer ≠ Environment |
+| NeMo Gym = vLLM? | No — vLLM is LLM inference | LLM-engine layer |
+
+NeMo Gym is **none of the above** — it's the connective tissue that says "here are 84 tasks with their Apptainer images and verifiers, ready to be consumed by any rollout-driver or trainer."
+
+### "Must pick one" guidance — updated
+
+Old answer (from when ProRL Agent and NeMo Gym were unconnected, [[prorl-agent#ProRL Agent vs NeMo Gym — same family, different layer|see prorl-agent]]): pick based on what you valued more — token-level off-policy fidelity vs benchmark catalog breadth.
+
+**New answer (May 2026 onward)**: **use both**. Polar fills the rollout-driver layer, NeMo Gym fills the environment-catalog layer, and Polar is registered as a NeMo Gym environment so they connect naturally.
 
 ## Source code & reproduction
 
