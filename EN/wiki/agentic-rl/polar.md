@@ -3,7 +3,7 @@ title: "Polar: Agentic RL on Any Harness at Scale (the ProRL Agent successor)"
 category: agentic-rl
 tags: [polar, prorl-agent, nvidia, rollout-as-a-service, agentic-rl, llm-api-proxy, nemo-gym, swe-bench, paper-review]
 created: 2026-05-26
-updated: 2026-05-27
+updated: 2026-06-01
 status: mature
 paper: arXiv:2605.24220
 code: https://github.com/NVIDIA-NeMo/ProRL-Agent-Server
@@ -143,6 +143,237 @@ For each incoming model request the harness makes, the gateway proxy:
 4. **Returns the provider shape.** Transforms back to the schema the harness expects. **Streaming**: the proxy obtains a non-streaming upstream response and emits a synthetic provider-shaped event stream — simplifies token capture while staying compatible with SSE-consuming harnesses.
 
 The proxy doesn't understand the agent's planning, tool selection, or stopping logic. It only preserves API compatibility and records enough to reconstruct trainable samples.
+
+> [!question]+ Shiki — If the harness is a black box, how does Polar actually capture input/output? And how does vLLM fit in? (2026-06-01)
+>
+> The "black box" framing can confuse — it sounds like Polar magically extracts data from an opaque process. The actual mechanism is much simpler: **just change one environment variable to redirect the harness's HTTP traffic**.
+>
+> ### "Black box" ≠ "opaque to all observation"
+>
+> | Polar **doesn't** see | Polar **does** see |
+> | --------------------- | ------------------ |
+> | Harness internal logic (when to call bash, how to organize prompts, how to parse responses) | Every LLM API call the harness makes (full HTTP request + response) |
+> | Tool calls themselves (bash, edit, read) | Tool *results* — they appear in the next LLM call's prompt as `{"role": "tool", "content": "..."}` |
+> | The harness's source code | The harness's HTTP traffic on the LLM API endpoint |
+>
+> "Black box" means **Polar doesn't read source code, doesn't hook internal functions, doesn't require the harness to implement any interface**. But the harness must talk to an LLM somehow, and that means HTTP requests — those Polar captures by construction.
+>
+> ### The trick: change `OPENAI_BASE_URL` (or equivalent)
+>
+> Normally Codex CLI talks to real OpenAI:
+>
+> ```bash
+> # Codex's default
+> export OPENAI_BASE_URL="https://api.openai.com/v1"
+> export OPENAI_API_KEY="sk-proj-real-key..."
+>
+> # Codex sends:
+> POST https://api.openai.com/v1/chat/completions
+> Authorization: Bearer sk-proj-real-key...
+> { "model": "gpt-5", "messages": [...], "tools": [...] }
+> ```
+>
+> Polar launches Codex with **a swapped env var pointing at its own gateway**:
+>
+> ```yaml
+> # harness.yaml (Polar's adapter config)
+> harness: codex
+> adapter:
+>   env:
+>     OPENAI_BASE_URL: http://localhost:8000      # ← swapped! Polar gateway, not OpenAI
+>     OPENAI_API_KEY: dummy                       # ← Codex doesn't check
+>   command: ["codex", "exec", "--task", "${TASK}"]
+> ```
+>
+> Now Codex sends the same HTTP request but to a different destination:
+>
+> ```
+> POST http://localhost:8000/v1/chat/completions    ← Polar gateway, not OpenAI
+> { "model": "gpt-5", "messages": [...], "tools": [...] }
+> ```
+>
+> **Codex has no idea anything changed.** It sends the request, waits for the response, parses it — exactly like talking to real OpenAI.
+>
+> ### Inside Polar gateway: how the proxy uses vLLM
+>
+> vLLM is **Polar's own inference server**, running the training policy (e.g. Qwen2.5-4B) in the same gateway node. The proxy is a small FastAPI server that bridges harness ↔ vLLM:
+>
+> ```python
+> from fastapi import FastAPI, Request
+> import httpx
+>
+> app = FastAPI()
+> vllm_client = httpx.AsyncClient(base_url="http://localhost:9000")  # local vLLM
+> session_log = {}
+>
+> @app.post("/v1/chat/completions")               # ← Codex hits here
+> @app.post("/v1/messages")                       # ← Claude Code hits here
+> @app.post("/v1beta/models/{m}:generateContent") # ← Gemini CLI hits here
+> async def proxy_handler(request: Request):
+>     # STEP 1: receive harness's request (any provider format)
+>     body = await request.json()
+>     provider = detect_provider(request.url, request.headers)
+>     session_id = request.headers.get("X-Polar-Session")
+>
+>     # STEP 2: normalize to OpenAI Chat Completions format (vLLM's native shape)
+>     normalized = provider_transformers[provider].to_openai(body)
+>
+>     # STEP 3: force logprobs=true so vLLM returns token-level data
+>     normalized["logprobs"] = True
+>     normalized["top_logprobs"] = 1
+>
+>     # STEP 4: forward to local vLLM
+>     vllm_resp = await vllm_client.post("/v1/chat/completions", json=normalized)
+>     vllm_data = vllm_resp.json()
+>     # vllm_data["choices"][0]["logprobs"]["content"] now contains:
+>     #   [{"token": " I", "bytes": [73], "logprob": -0.23}, ...]
+>
+>     # STEP 5: ★★★ capture token-level data into session log ★★★
+>     session_log[session_id].append({
+>         "request_messages":   normalized["messages"],
+>         "prompt_token_ids":   tokenize(normalized["messages"]),
+>         "response_text":      vllm_data["choices"][0]["message"]["content"],
+>         "response_token_ids": [t["bytes"] for t in vllm_data["choices"][0]["logprobs"]["content"]],
+>         "response_logprobs":  [t["logprob"] for t in vllm_data["choices"][0]["logprobs"]["content"]],
+>     })
+>
+>     # STEP 6: translate response back to harness's expected provider format
+>     provider_resp = provider_transformers[provider].from_openai(vllm_data)
+>
+>     # STEP 7: return to harness (it sees standard provider response)
+>     return provider_resp
+> ```
+>
+> ### Topology — everything fits in one node
+>
+> ```
+> ┌─────────────────────────────────────────────────────────┐
+> │ Polar gateway node                                        │
+> │                                                          │
+> │  ┌────────────────────────┐   ┌──────────────────────┐   │
+> │  │ Apptainer container       │   │ FastAPI proxy           │   │
+> │  │ ├─ Codex CLI process      │──HTTP──►   :8000        │   │
+> │  │ │   (black box, runs      │   │  intercept, normalize,│   │
+> │  │ │    its own loop)        │   │  capture, translate   │   │
+> │  │ ├─ bash, edit, etc.       │   └─────────┬────────────┘   │
+> │  │ │   (Polar can't see)     │             │                │
+> │  │ └─ git repo workspace     │             │ HTTP           │
+> │  └────────────────────────┘             ▼                │
+> │                                  ┌──────────────────────┐ │
+> │                                  │ vLLM server           │ │
+> │                                  │  :9000                │ │
+> │                                  │ ─ runs training π     │ │
+> │                                  │ ─ returns token+logprob│ │
+> │                                  └──────────────────────┘ │
+> │                                                          │
+> └─────────────────────────────────────────────────────────┘
+> ```
+>
+> Codex's `OPENAI_BASE_URL=http://localhost:8000` means it thinks it's talking to OpenAI. Actually it hits the local proxy. Proxy forwards to local vLLM. vLLM uses Polar's training policy to generate tokens.
+>
+> ### What about tool calls? — they show up in the next prompt
+>
+> Polar doesn't see when Codex runs bash, BUT the bash result **goes into the next LLM API call's prompt** as `{"role": "tool", "content": "..."}`. So Polar's proxy sees the tool output indirectly when it captures completion N+1's prompt:
+>
+> ```
+> ─── Completion 1 ───
+> Codex → Polar gateway:
+>   POST /v1/chat/completions
+>   {"messages": [{"role": "user", "content": "Fix bug in main.py"}], "tools": [...]}
+>
+> Polar → vLLM → response:
+>   {"choices": [{"message": {"tool_calls": [
+>     {"function": {"name": "bash", "arguments": "{\"cmd\": \"cat main.py\"}"}}
+>   ]}}]}
+>
+> Polar logs: prompt token + sampled tool_call token (POLICY action)
+>
+> ─── Codex internal (Polar invisible) ───
+> Codex parses tool_call, runs $ cat main.py → "def foo(): ..."
+> Codex builds the next prompt including this output
+>
+> ─── Completion 2 ───
+> Codex → Polar gateway:
+>   POST /v1/chat/completions
+>   {"messages": [
+>     {"role": "user", "content": "Fix bug in main.py"},
+>     {"role": "assistant", "tool_calls": [...]},          ← previous LLM output
+>     {"role": "tool", "content": "def foo(): ..."},        ← ★ tool result lands here
+>     {"role": "user", "content": "(if any new content)"}
+>   ], "tools": [...]}
+>
+> Polar logs: prompt (NOW including tool result) + next sampled tokens
+> ```
+>
+> In `prefix_merging`, the diff between completion N's prompt and completion N+1's prompt isolates the tool-result tokens as **interstitial** (`loss_mask = 0`), while the LLM's sampled tokens stay **trainable** (`loss_mask = 1`).
+>
+> ### Full end-to-end timeline
+>
+> ```
+> t=0   Polar gateway boots:
+>         - FastAPI proxy on :8000
+>         - vLLM on :9000 loading training Qwen2.5-4B
+>
+> t=1   Polar receives POST /process(task) from trainer:
+>         - INIT pool spins Apptainer container
+>         - Sets OPENAI_BASE_URL=http://host:8000 inside container
+>         - Installs Codex CLI
+>         - Writes task git repo
+>
+> t=2   Polar launches Codex subprocess:
+>         $ codex exec --task "fix bug in main.py"
+>
+> t=3   Codex decides to list files internally:
+>         Codex → POST http://host:8000/v1/chat/completions
+>                (Codex thinks it's talking to OpenAI)
+>
+> t=4   Polar proxy receives:
+>         - identifies openai_chat protocol
+>         - normalizes for vLLM
+>         - adds logprobs=true
+>         - forwards to http://host:9000
+>
+> t=5   vLLM forward + sampling with Qwen2.5-4B:
+>         - generates "I'll list files <tool>bash(ls)</tool>"
+>         - returns token IDs + logprobs + text
+>
+> t=6   Polar proxy:
+>         - stores token IDs + logprobs in session_log[task_id]
+>         - translates response back to OpenAI format
+>         - returns to Codex
+>
+> t=7   Codex receives:
+>         - parses tool_call: bash(ls)
+>         - runs $ ls inside container → "main.py utils.py README.md"
+>         - builds next prompt with this output
+>
+> t=8   Codex → POST http://host:8000/v1/chat/completions (call #2)
+>         messages now includes the ls output
+>
+> t=9   Polar proxy: same flow — intercept, vLLM, log tokens, return
+>         (this prompt has the "ls output" section; Polar sees it)
+>
+> t=10  ... repeats ... Codex makes more LLM calls + tool calls ...
+>
+> t=20  Codex outputs final patch and exits
+>
+> t=21  Polar POSTRUN pool:
+>         - runs swebench_harness to verify patch
+>         - obtains reward (0 or 1)
+>         - prefix_merging assembles all session_log completions into 1 trajectory
+>         - computes loss_mask (LLM tokens = 1, tool results = 0)
+>
+> t=22  Polar gateway → trainer:
+>         {token_ids, logprobs, loss_mask, reward}
+>
+> t=23  Trainer computes GRPO loss, updates Qwen
+> t=24  Trainer syncs new weights back to Polar's vLLM (hybrid engine)
+> t=25  Next task batch starts → back to t=1
+> ```
+>
+> ### One-sentence summary
+>
+> **Polar's "black box" handling isn't network interception magic — it's just swapping `OPENAI_BASE_URL` (or equivalent env var) so the harness sends its LLM API calls to Polar's own fake-OpenAI proxy.** The proxy forwards to the local vLLM running the training policy, captures token IDs + logprobs from vLLM's response, and translates the response back to whatever provider format the harness expects. The harness is fully unmodified and unaware; Polar gets perfect token-level data by sitting at the API boundary.
 
 ### Harness adapter (the small part)
 

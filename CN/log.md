@@ -1,9 +1,12 @@
 ---
 title: 变更日志
-updated: 2026-05-27
+updated: 2026-06-01
 ---
 
 # 变更日志
+
+## 2026-06-01
+- [扩展] [[polar]] —— 在 "Proxy 四步协议" 节里加了一个权威的 Shiki Q&A callout，把"黑箱 harness"机制彻底讲清楚。困惑点：Polar 说 harness 是黑箱，但又说能抓到完美的 token 级输入输出。怎么做到的？答案：**不是网络拦截黑魔法** —— 就是改 `OPENAI_BASE_URL`（或 `ANTHROPIC_API_URL` / Google 等价）env var 让 harness 把 LLM API 调用发到 Polar 自己跑的 FastAPI proxy（`localhost:8000`）而不是真实 OpenAI/Anthropic/Google endpoint。Harness 完全不改、不知情；它发标准 HTTP 请求以为在跟真 provider 说话。Polar proxy 接请求、归一化到 OpenAI Chat Completions 格式、转发给本地 vLLM（`localhost:9000`）并加 `logprobs=true` 强制返回 token IDs，把 token IDs + logprobs 录到 session_log，把响应翻译回 harness 期待的 provider 格式，返回。Q&A 包含：(a) "黑箱 ≠ 完全无法观察" 对照表显示 Polar 能看什么不能看什么，(b) env-var swap trick 真实 bash 命令显示默认 vs Polar 配置对比，(c) 完整 FastAPI proxy 伪代码（~50 行）展示 7 步 handler 实现，(d) gateway-node 拓扑图显示 Apptainer 容器 + proxy + vLLM 都在一个节点，(e) 解释 tool 调用（Polar 直接看不见）怎么以 `{"role": "tool", "content": "..."}` 出现在后续 prompt 里被 Polar 间接捕获，(f) 完整端到端 t=0 到 t=25 时序走通一次 task 从 gateway boot、harness 启动、多轮 LLM API 抓取、postrun 验证、trajectory 重建、trainer update、hybrid engine 权重同步。解决一个常见混淆。EN + CN。
 
 ## 2026-05-27
 - [扩展] [[polar]] —— 再加两个 Shiki Q&A callout。**(1)** "为什么 Codex 增益 +22.6 pp 比其它 harness 高这么多？" —— 解释 4-harness 训练结果中 38× 不对称（Codex +22.6 vs Qwen Code +0.6）。关键洞察：Codex 协议（OpenAI function-calling、GPT 风格 patch、GPT-tuned system prompt）对 Qwen2.5-4B 是"外语"，预训练里没见过；3.8% 基线是"偶尔蒙对"不是"会用 Codex"。Qwen Code 是另一极端 —— 阿里为 Qwen 造的，34.6% 是真编程能力，没协议学习空间剩。没说出口的洞察：**Codex 的 +22.6 主要是"协议学习"（JSON tool-call 格式、patch marker、何时 function-call）不是"编程能力"**。对比 Qwen Code 的 +0.6 —— 协议已经流利时，RL 必须优化真实编程决策，那才是更难的问题。所以头条 +22.6 夸大了通用能力。预测 70B+ 规模上这个 gap 会大幅缩水，因为 base 模型在预训练数据里见过这些 harness。**(2)** "为什么 trainer 更新次数和 wall-clock 都优化了？这两个独立吗？" —— 解释 218 vs 1185 trainer 更新 + 35.2 vs 189.5 min wall-clock + 87.7% vs 20.4% GPU 利用率是**同一物理的三种测量**：5× 少的 trainer 触发 → 5× 少的 per-update 固定 overhead（NCCL sync、optimizer step、weight sync 到 vLLM）→ wall-clock 快 5× → rollout GPU sync-point 空闲少 5× → 利用率飙升。给出统一图显示根因和下游效应。两个 Q&A 都加到 "Headline evidence" 节。EN + CN。

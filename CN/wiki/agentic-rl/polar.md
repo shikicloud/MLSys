@@ -3,7 +3,7 @@ title: "Polar：任意 harness 上的可扩展智能体 RL（ProRL Agent 的续�
 category: agentic-rl
 tags: [polar, prorl-agent, nvidia, rollout即服务, agentic-rl, llm-api-proxy, nemo-gym, swe-bench, 论文精读]
 created: 2026-05-26
-updated: 2026-05-27
+updated: 2026-06-01
 status: mature
 paper: arXiv:2605.24220
 code: https://github.com/NVIDIA-NeMo/ProRL-Agent-Server
@@ -143,6 +143,237 @@ Harness 每发一次 model 请求，gateway proxy 都做：
 4. **以 provider 形状返回**。把响应转回 harness 期望的 schema。**streaming**：proxy 拿非流式上游响应，再合成 provider 形状的事件流 —— 简化 token 抓取、不破坏吃 SSE 的 harness
 
 proxy 不需要懂 agent 的 planning、tool 选择、终止逻辑。它只要保 API 兼容、记够重建训练样本的信息就行。
+
+> [!question]+ Shiki —— 既然 harness 是黑箱，到底怎么拿到输入输出？vLLM 又是自己的，怎么搞？(2026-06-01)
+>
+> "黑箱"这个 framing 容易让人误解 —— 听起来像 Polar 神奇地从不透明进程里抠数据。实际机制简单得多：**就改一个环境变量，把 harness 的 HTTP 流量重定向到自己**。
+>
+> ### "黑箱" ≠ "完全无法观察"
+>
+> | Polar **看不见** | Polar **看得见** |
+> | ---------------- | ---------------- |
+> | Harness 内部逻辑（何时调 bash、怎么组织 prompt、怎么解析响应） | Harness 发的每一次 LLM API 调用（完整 HTTP 请求 + 响应） |
+> | Tool 调用本身（bash、edit、read） | Tool *结果* —— 它会以 `{"role": "tool", "content": "..."}` 出现在下一次 LLM 调用的 prompt 里 |
+> | Harness 的源码 | Harness 在 LLM API endpoint 上的 HTTP 流量 |
+>
+> "黑箱"意思是 **Polar 不读源码、不 hook 内部函数、不要求 harness 实现什么接口**。但 harness 总得跟 LLM 通话，那就要发 HTTP 请求 —— 那部分 Polar 按构造就抓得到。
+>
+> ### Trick：改 `OPENAI_BASE_URL`（或等价的环境变量）
+>
+> 正常情况 Codex CLI 直接打真实 OpenAI：
+>
+> ```bash
+> # Codex 默认
+> export OPENAI_BASE_URL="https://api.openai.com/v1"
+> export OPENAI_API_KEY="sk-proj-real-key..."
+>
+> # Codex 发：
+> POST https://api.openai.com/v1/chat/completions
+> Authorization: Bearer sk-proj-real-key...
+> { "model": "gpt-5", "messages": [...], "tools": [...] }
+> ```
+>
+> Polar 启动 Codex 时**改 env var 指向自己的 gateway**：
+>
+> ```yaml
+> # harness.yaml (Polar 的 adapter 配置)
+> harness: codex
+> adapter:
+>   env:
+>     OPENAI_BASE_URL: http://localhost:8000      # ← 换了！Polar gateway，不是 OpenAI
+>     OPENAI_API_KEY: dummy                       # ← Codex 不检查
+>   command: ["codex", "exec", "--task", "${TASK}"]
+> ```
+>
+> 现在 Codex 还是发同样的 HTTP 请求，但**目的地变了**：
+>
+> ```
+> POST http://localhost:8000/v1/chat/completions    ← Polar gateway，不是 OpenAI
+> { "model": "gpt-5", "messages": [...], "tools": [...] }
+> ```
+>
+> **Codex 完全不知道有变化**。它发请求、等响应、解析 —— 跟打真实 OpenAI 一模一样。
+>
+> ### Polar gateway 内部：proxy 怎么用 vLLM
+>
+> vLLM 是 **Polar 自己跑的 inference server**，在同一个 gateway 节点上跑训练 policy（比如 Qwen2.5-4B）。Proxy 是个小 FastAPI server，桥接 harness ↔ vLLM：
+>
+> ```python
+> from fastapi import FastAPI, Request
+> import httpx
+>
+> app = FastAPI()
+> vllm_client = httpx.AsyncClient(base_url="http://localhost:9000")  # 本地 vLLM
+> session_log = {}
+>
+> @app.post("/v1/chat/completions")               # ← Codex 打这个
+> @app.post("/v1/messages")                       # ← Claude Code 打这个
+> @app.post("/v1beta/models/{m}:generateContent") # ← Gemini CLI 打这个
+> async def proxy_handler(request: Request):
+>     # STEP 1: 接 harness 的请求（任何 provider 格式）
+>     body = await request.json()
+>     provider = detect_provider(request.url, request.headers)
+>     session_id = request.headers.get("X-Polar-Session")
+>
+>     # STEP 2: 归一化到 OpenAI Chat Completions（vLLM 原生格式）
+>     normalized = provider_transformers[provider].to_openai(body)
+>
+>     # STEP 3: 强制 logprobs=true 让 vLLM 返回 token 级数据
+>     normalized["logprobs"] = True
+>     normalized["top_logprobs"] = 1
+>
+>     # STEP 4: 转发给本地 vLLM
+>     vllm_resp = await vllm_client.post("/v1/chat/completions", json=normalized)
+>     vllm_data = vllm_resp.json()
+>     # vllm_data["choices"][0]["logprobs"]["content"] 现在含：
+>     #   [{"token": " I", "bytes": [73], "logprob": -0.23}, ...]
+>
+>     # STEP 5: ★★★ 把 token 级数据录到 session log ★★★
+>     session_log[session_id].append({
+>         "request_messages":   normalized["messages"],
+>         "prompt_token_ids":   tokenize(normalized["messages"]),
+>         "response_text":      vllm_data["choices"][0]["message"]["content"],
+>         "response_token_ids": [t["bytes"] for t in vllm_data["choices"][0]["logprobs"]["content"]],
+>         "response_logprobs":  [t["logprob"] for t in vllm_data["choices"][0]["logprobs"]["content"]],
+>     })
+>
+>     # STEP 6: 把响应翻译回 harness 期望的 provider 格式
+>     provider_resp = provider_transformers[provider].from_openai(vllm_data)
+>
+>     # STEP 7: 返回给 harness（它以为是标准 provider 响应）
+>     return provider_resp
+> ```
+>
+> ### 拓扑 —— 一切在一个节点里
+>
+> ```
+> ┌─────────────────────────────────────────────────────────┐
+> │ Polar gateway 节点                                          │
+> │                                                          │
+> │  ┌────────────────────────┐   ┌──────────────────────┐   │
+> │  │ Apptainer 容器             │   │ FastAPI proxy           │   │
+> │  │ ├─ Codex CLI 进程          │──HTTP──►   :8000        │   │
+> │  │ │   (黑箱、按自己逻辑跑)   │   │  拦截、归一化、抓数据│   │
+> │  │ ├─ bash、edit 等           │   │  翻译响应              │   │
+> │  │ │   (Polar 看不见)         │   └─────────┬────────────┘   │
+> │  │ └─ git repo 工作区          │             │                │
+> │  └────────────────────────┘             │ HTTP           │
+> │                                             ▼                │
+> │                                  ┌──────────────────────┐ │
+> │                                  │ vLLM server            │ │
+> │                                  │  :9000                 │ │
+> │                                  │ ─ 跑训练 policy π       │ │
+> │                                  │ ─ 返回 token + logprob │ │
+> │                                  └──────────────────────┘ │
+> │                                                          │
+> └─────────────────────────────────────────────────────────┘
+> ```
+>
+> Codex 的 `OPENAI_BASE_URL=http://localhost:8000` 让它以为在跟 OpenAI 说话。实际打的是本地 proxy。Proxy 转给本地 vLLM。vLLM 用 Polar 的训练 policy 生成 token。
+>
+> ### tool 调用怎么办 —— 它们出现在下一次 prompt 里
+>
+> Polar 看不见 Codex 跑 bash，但 bash 的结果**进入下一次 LLM API 调用的 prompt** 作为 `{"role": "tool", "content": "..."}`。所以 Polar proxy 在抓第 N+1 次 completion 的 prompt 时**间接看到了 tool 输出**：
+>
+> ```
+> ─── Completion 1 ───
+> Codex → Polar gateway:
+>   POST /v1/chat/completions
+>   {"messages": [{"role": "user", "content": "Fix bug in main.py"}], "tools": [...]}
+>
+> Polar → vLLM → 响应:
+>   {"choices": [{"message": {"tool_calls": [
+>     {"function": {"name": "bash", "arguments": "{\"cmd\": \"cat main.py\"}"}}
+>   ]}}]}
+>
+> Polar 录：prompt token + sampled tool_call token (POLICY 动作)
+>
+> ─── Codex 内部 (Polar 看不见) ───
+> Codex 解析 tool_call，跑 $ cat main.py → "def foo(): ..."
+> Codex 把这个输出整理进下一次 prompt
+>
+> ─── Completion 2 ───
+> Codex → Polar gateway:
+>   POST /v1/chat/completions
+>   {"messages": [
+>     {"role": "user", "content": "Fix bug in main.py"},
+>     {"role": "assistant", "tool_calls": [...]},          ← 上次 LLM 输出
+>     {"role": "tool", "content": "def foo(): ..."},        ← ★ tool 结果落这里
+>     {"role": "user", "content": "(如果有新内容)"}
+>   ], "tools": [...]}
+>
+> Polar 录：prompt（**现在含 tool 结果**） + 下次 sampled tokens
+> ```
+>
+> 在 `prefix_merging` 里，第 N 次 prompt 跟第 N+1 次 prompt 的 diff 分离出 tool 结果 token 作为 **interstitial**（`loss_mask = 0`），而 LLM 采样的 token 保持 **trainable**（`loss_mask = 1`）。
+>
+> ### 完整端到端时序
+>
+> ```
+> t=0   Polar gateway 启动：
+>         - FastAPI proxy on :8000
+>         - vLLM on :9000 加载训练中的 Qwen2.5-4B
+>
+> t=1   Polar 收到 trainer 的 POST /process(task)：
+>         - INIT pool 起 Apptainer 容器
+>         - 容器里设 OPENAI_BASE_URL=http://host:8000
+>         - 装 Codex CLI
+>         - 写入 task git repo
+>
+> t=2   Polar 启动 Codex 子进程：
+>         $ codex exec --task "fix bug in main.py"
+>
+> t=3   Codex 内部决定列文件：
+>         Codex → POST http://host:8000/v1/chat/completions
+>                (Codex 以为在打 OpenAI)
+>
+> t=4   Polar proxy 收到：
+>         - 识别 openai_chat 协议
+>         - 归一化给 vLLM
+>         - 加 logprobs=true
+>         - 转发到 http://host:9000
+>
+> t=5   vLLM 用 Qwen2.5-4B forward + 采样：
+>         - 生成 "I'll list files <tool>bash(ls)</tool>"
+>         - 返回 token IDs + logprobs + text
+>
+> t=6   Polar proxy：
+>         - 把 token IDs + logprobs 存到 session_log[task_id]
+>         - 把响应翻译回 OpenAI 格式
+>         - 返回给 Codex
+>
+> t=7   Codex 收到：
+>         - 解析 tool_call: bash(ls)
+>         - 容器内跑 $ ls → "main.py utils.py README.md"
+>         - 把输出整理进下次 prompt
+>
+> t=8   Codex → POST http://host:8000/v1/chat/completions（第 2 次）
+>         messages 里现在含 ls 输出
+>
+> t=9   Polar proxy 同样流程 —— 拦截、vLLM、录 token、返回
+>         （这次 prompt 含 "ls 输出"，Polar 看到了）
+>
+> t=10  ... 重复 ... Codex 多次调 LLM + tool ...
+>
+> t=20  Codex 输出最终 patch 并退出
+>
+> t=21  Polar POSTRUN pool：
+>         - 跑 swebench_harness 验证 patch
+>         - 拿到 reward (0 或 1)
+>         - prefix_merging 把所有 session_log completion 合并成 1 条 trajectory
+>         - 算 loss_mask（LLM token = 1，tool 结果 = 0）
+>
+> t=22  Polar gateway → trainer：
+>         {token_ids, logprobs, loss_mask, reward}
+>
+> t=23  Trainer 算 GRPO loss、update Qwen
+> t=24  Trainer 把新权重 sync 回 Polar 的 vLLM（hybrid engine）
+> t=25  下一个 task batch 开始 → 回到 t=1
+> ```
+>
+> ### 一句话总结
+>
+> **Polar 的 "黑箱" 不是网络拦截黑魔法 —— 就是改 `OPENAI_BASE_URL`（或等价环境变量）让 harness 把 LLM API 调用发到 Polar 自己跑的 fake-OpenAI proxy 上**。Proxy 转给本地 vLLM 跑训练 policy，从 vLLM 响应里抓 token IDs + logprobs，再把响应翻译回 harness 期待的 provider 格式。Harness 完全没改、不知情；Polar 通过坐在 API 边界上拿到完美的 token 级数据。
 
 ### Harness adapter（很小的部分）
 
