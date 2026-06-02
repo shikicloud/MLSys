@@ -26,6 +26,10 @@ title: 面向 AI 智能体的 LLM 服务
   - [[multi-turn-optimization#提示缓存 (Prompt Caching)|Prompt 缓存]]
   - [[multi-turn-optimization#会话管理与路由|会话管理与路由]]
 
+## 论文精读
+
+- [[continuum]] —— Continuum：基于 TTL 的 KV cache pinning + program 级 FCFS 给多轮 agent serving；第一个建模 per-turn queueing delay（不只是 reload cost）；延迟降低 1.12–3.66×，真实 SWE-agent 分布式 setting 上多达 8.18×（UC Berkeley/Stanford/Tensormesh, arXiv 2511.02230, 2025-11）
+
 ## 复合 AI 系统
 
 - [[compound-ai-systems]] —— 智能体服务作为复合系统

@@ -26,6 +26,10 @@ Inference-side optimizations specific to AI agent workloads — multi-turn conve
   - [[multi-turn-optimization#Prompt Caching|Prompt caching]]
   - [[multi-turn-optimization#Session Management and Routing|Session management & routing]]
 
+## Paper reviews
+
+- [[continuum]] — Continuum: TTL-based KV cache pinning + program-level FCFS for multi-turn agent serving; first to model per-turn queueing delay (not just reload cost); 1.12–3.66× delay reduction, up to 8.18× on real SWE-agent in distributed setting (UC Berkeley/Stanford/Tensormesh, arXiv 2511.02230, Nov 2025)
+
 ## Compound AI systems
 
 - [[compound-ai-systems]] — agent serving as a compound system

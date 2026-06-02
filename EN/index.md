@@ -81,3 +81,4 @@ updated: 2026-06-02
 - [[function-calling-optimization]] — Function calling optimization
 - [[compound-ai-systems]] — Compound AI systems architecture
 - [[multi-turn-optimization]] — Multi-turn conversation serving optimization
+- [[continuum]] — Continuum: TTL-based KV cache pinning + program-level FCFS for multi-turn agent serving; first to model per-turn queueing delay (not just reload cost); 1.12–3.66× delay reduction, up to 8.18× on real SWE-agent (UC Berkeley/Stanford/Tensormesh, arXiv 2511.02230) — paper review

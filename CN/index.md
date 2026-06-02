@@ -81,3 +81,4 @@ updated: 2026-06-02
 - [[function-calling-optimization]] — 函数调用优化
 - [[compound-ai-systems]] — 复合 AI 系统架构
 - [[multi-turn-optimization]] — 多轮对话服务优化
+- [[continuum]] — Continuum：基于 TTL 的 KV cache pinning + program 级 FCFS 给多轮 agent serving；第一个建模 per-turn queueing delay（不只是 reload cost）；延迟降低 1.12–3.66×，真实 SWE-agent 上多达 8.18×（UC Berkeley/Stanford/Tensormesh, arXiv 2511.02230）—— 论文精读
