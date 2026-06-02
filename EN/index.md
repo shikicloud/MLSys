@@ -61,6 +61,7 @@ updated: 2026-06-02
 - [[prorl-agent]] — ProRL Agent: Rollout-as-a-Service (NVIDIA, arXiv 2603.18815) — paper review **[superseded by [[polar]] May 2026]**
 - [[polar]] — Polar: Agentic RL on Any Harness at Scale — the ProRL Agent successor; LLM-API proxy lets any unmodified harness (Codex / Claude Code / Qwen Code / Pi) be trained; registered as a NeMo Gym environment (NVIDIA, arXiv 2605.24220) — paper review
 - [[agent-lightning]] — Agent Lightning: train ANY AI agent via Training-Agent Disaggregation + LightningRL + OpenTelemetry-native trace capture; the original (Aug 2025) decoupling-paradigm paper that ProRL Agent and Polar extend (Microsoft, arXiv 2508.03680) — paper review
+- [[rose]] — ROSE: cooperative elasticity that harvests idle production serving GPUs (avg 18.9% util) for RL rollouts via VMM-based KVC sharing + dual-SLO admission + sparsity-aware (>95%) weight transfer; 1.3–3.3× e2e throughput, allocation overhead 50-80× better than spot/serverless (HKUST/Alibaba, arXiv 2605.06534) — paper review
 - [[search-r1]] — Search-R1: Training LLMs to Reason and Leverage Search Engines with RL — the canonical entry-point paper for agentic RL; R1-Zero extended to tool use with retrieved-token loss masking (UIUC + UMass + Google, COLM 2025, arXiv 2503.09516) — paper review
 - [[search-r1-codebase-walkthrough]] — Search-R1 file-by-file code tutorial covering the 600 lines of paper-specific code and the ~5000 lines of veRL PPO/GRPO machinery; the cleanest agentic-RL reference implementation walked end-to-end
 - [[agentic-rl-foundations]] — Agentic RL onboarding hub; 4-phase reading path, canonical references, FAQ, open directions
@@ -82,3 +83,4 @@ updated: 2026-06-02
 - [[compound-ai-systems]] — Compound AI systems architecture
 - [[multi-turn-optimization]] — Multi-turn conversation serving optimization
 - [[continuum]] — Continuum: TTL-based KV cache pinning + program-level FCFS for multi-turn agent serving; first to model per-turn queueing delay (not just reload cost); 1.12–3.66× delay reduction, up to 8.18× on real SWE-agent (UC Berkeley/Stanford/Tensormesh, arXiv 2511.02230) — paper review
+- [[cpu-centric-agentic-ai]] — CPU-Centric Perspective on Agentic AI: characterization (tool time up to 88% on tool-dominated workloads) + COMB (CPU-aware overlapped micro-batching, 1.7× P50 / 3.9× service latency) + MAS (mixed agentic scheduling, 2.37× P50 for minority requests) (Georgia Tech/Intel, arXiv 2511.00739) — paper review

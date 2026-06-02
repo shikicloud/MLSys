@@ -61,6 +61,7 @@ updated: 2026-06-02
 - [[prorl-agent]] — ProRL Agent：Rollout 即服务（NVIDIA, arXiv 2603.18815）— 论文精读 **[2026-05 被 [[polar]] 取代]**
 - [[polar]] — Polar：任意 harness 上的可扩展 agentic RL —— ProRL Agent 续作；LLM-API proxy 让任何未修改 harness（Codex / Claude Code / Qwen Code / Pi）都能训练；注册为 NeMo Gym 环境（NVIDIA, arXiv 2605.24220）— 论文精读
 - [[agent-lightning]] — Agent Lightning：通过 Training-Agent Disaggregation + LightningRL + OpenTelemetry 原生 trace 捕获训练任何 AI agent；最初的（2025-08）解耦范式论文，ProRL Agent 和 Polar 都是它的延伸（Microsoft, arXiv 2508.03680）— 论文精读
+- [[rose]] — ROSE：通过 cooperative elasticity harvest 空闲生产 serving GPU（平均 18.9% 利用率）做 RL rollout，通过 VMM 基础 KVC 共享 + dual-SLO 接纳 + 稀疏感知（>95%）weight transfer；端到端吞吐 1.3-3.3×，分配 overhead 比 spot/serverless 好 50-80×（HKUST/阿里, arXiv 2605.06534）—— 论文精读
 - [[search-r1]] — Search-R1：用 RL 训练 LLM 推理 + 调搜索引擎 —— agentic RL 的标准入门论文；R1-Zero 扩展到 tool use，带 retrieved-token loss masking（UIUC + UMass + Google，COLM 2025，arXiv 2503.09516）— 论文精读
 - [[search-r1-codebase-walkthrough]] — Search-R1 逐文件代码教程，覆盖 600 行论文特有代码 + ~5000 行 veRL PPO/GRPO 机器；端到端走完最干净的 agentic-RL 参考实现
 - [[agentic-rl-foundations]] — Agentic RL 入门 hub；4 阶段阅读路径、标志参考、FAQ、开放方向
@@ -82,3 +83,4 @@ updated: 2026-06-02
 - [[compound-ai-systems]] — 复合 AI 系统架构
 - [[multi-turn-optimization]] — 多轮对话服务优化
 - [[continuum]] — Continuum：基于 TTL 的 KV cache pinning + program 级 FCFS 给多轮 agent serving；第一个建模 per-turn queueing delay（不只是 reload cost）；延迟降低 1.12–3.66×，真实 SWE-agent 上多达 8.18×（UC Berkeley/Stanford/Tensormesh, arXiv 2511.02230）—— 论文精读
+- [[cpu-centric-agentic-ai]] — Agentic AI 的 CPU 中心视角：characterization（tool 时间在 tool 主导 workload 上多达 88%）+ COMB（CPU 感知 overlapped micro-batching，P50 1.7× / 服务延迟 3.9×）+ MAS（混合 agentic 调度，少数请求 P50 2.37×）（Georgia Tech/Intel, arXiv 2511.00739）—— 论文精读

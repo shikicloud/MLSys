@@ -40,6 +40,7 @@ title: 智能体 RL
 - [[prorl-agent]] —— ProRL Agent：多轮 agentic RL 的 rollout 即服务（NVIDIA）**[2026-05 被 [[polar]] 取代]**
 - [[polar]] —— Polar：ProRL Agent 续作；LLM-API proxy 让任何未修改 harness（Codex、Claude Code、Qwen Code、Pi）都可训练；注册为 NeMo Gym 环境（NVIDIA, 2026-05）
 - [[agent-lightning]] —— Agent Lightning：原始的（Microsoft, 2025-08）trainer-agent 解耦论文；LightningRL 分层 credit assignment + OpenTelemetry 原生 trace 捕获 + 多 agent 选择性优化；比 ProRL Agent 早 7 个月，是 ProRL Agent 和 Polar 都延伸的架构模板
+- [[rose]] —— ROSE：通过 cooperative elasticity harvest 空闲生产 serving GPU（平均 18.9% 利用率）做 RL rollout；三组件 —— VMM 基础跨模型 KVC 共享 + dual-SLO 接纳、通过 Mooncake Store 稀疏感知（>95%）weight transfer、turn 级带 cache-affinity 的弹性 scheduler；端到端吞吐 1.3-3.3× vs ROLL，**分配 overhead 比 spot/serverless RL baseline 低 50-80×**（HKUST/阿里, 2026-05）
 - [[nemo-gym]] —— NeMo Gym：NVIDIA 的 RL 环境框架（84 个 benchmark、19 个 harness）
 - [[search-r1]] —— Search-R1：agentic RL 标准入门论文；R1-Zero 扩展到 tool use；retrieved-token loss masking（UIUC + UMass + Google，COLM 2025）
 - [[search-r1-codebase-walkthrough]] —— Search-R1 逐文件代码教程，覆盖论文特有代码 + 底下 veRL 机器

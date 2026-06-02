@@ -29,6 +29,7 @@ title: 面向 AI 智能体的 LLM 服务
 ## 论文精读
 
 - [[continuum]] —— Continuum：基于 TTL 的 KV cache pinning + program 级 FCFS 给多轮 agent serving；第一个建模 per-turn queueing delay（不只是 reload cost）；延迟降低 1.12–3.66×，真实 SWE-agent 分布式 setting 上多达 8.18×（UC Berkeley/Stanford/Tensormesh, arXiv 2511.02230, 2025-11）
+- [[cpu-centric-agentic-ai]] —— Agentic AI 的 CPU 中心视角：characterization（tool 时间在非对称 CPU-GPU 硬件上 tool 主导 workload 多达 88%）+ **COMB**（CPU 感知 overlapped micro-batching，P50 1.7× / 服务延迟 3.9×）+ **MAS**（chat+agent 混合 workload 的 mixed agentic 调度，少数请求 P50 2.37×）（Georgia Tech/Intel, arXiv 2511.00739, 2025-11）
 
 ## 复合 AI 系统
 

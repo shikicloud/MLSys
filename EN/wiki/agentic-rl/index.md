@@ -40,6 +40,7 @@ RL for LLM agents — environment design, tool use, multi-step reasoning, and th
 - [[prorl-agent]] — ProRL Agent: rollout-as-a-service for multi-turn agentic RL (NVIDIA) **[superseded by [[polar]] May 2026]**
 - [[polar]] — Polar: ProRL Agent successor; LLM-API proxy lets any unmodified harness (Codex, Claude Code, Qwen Code, Pi) be trained; registered as NeMo Gym environment (NVIDIA, May 2026)
 - [[agent-lightning]] — Agent Lightning: the original (Microsoft, Aug 2025) trainer-agent disaggregation paper; LightningRL hierarchical credit assignment + OpenTelemetry-native trace capture + selective multi-agent optimization; predates ProRL Agent by 7 months and the architectural template both ProRL Agent and Polar extend
+- [[rose]] — ROSE: cooperative elasticity that harvests idle production serving GPUs (avg 18.9% util) for RL rollouts; three components — VMM-based cross-model KVC sharing + dual-SLO admission, sparsity-aware (>95%) weight transfer via Mooncake Store, turn-wise elastic scheduler with cache-affinity; 1.3–3.3× e2e throughput vs ROLL, **50-80× lower allocation overhead** than spot/serverless RL baselines (HKUST/Alibaba, May 2026)
 - [[nemo-gym]] — NeMo Gym: NVIDIA's RL environment framework (84 benchmarks, 19 harnesses)
 - [[search-r1]] — Search-R1: the canonical agentic-RL entry-point paper; R1-Zero extended to tool use; retrieved-token loss masking (UIUC + UMass + Google, COLM 2025)
 - [[search-r1-codebase-walkthrough]] — Search-R1 file-by-file code tutorial covering both paper-specific code and the underlying veRL machinery

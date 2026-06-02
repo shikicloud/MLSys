@@ -29,6 +29,7 @@ Inference-side optimizations specific to AI agent workloads — multi-turn conve
 ## Paper reviews
 
 - [[continuum]] — Continuum: TTL-based KV cache pinning + program-level FCFS for multi-turn agent serving; first to model per-turn queueing delay (not just reload cost); 1.12–3.66× delay reduction, up to 8.18× on real SWE-agent in distributed setting (UC Berkeley/Stanford/Tensormesh, arXiv 2511.02230, Nov 2025)
+- [[cpu-centric-agentic-ai]] — CPU-Centric Perspective on Agentic AI: characterization (tool time up to 88% on tool-dominated workloads on asymmetric CPU-GPU hardware) + **COMB** (CPU-aware overlapped micro-batching, 1.7× P50 / 3.9× service latency) + **MAS** (mixed agentic scheduling for chat+agent mix workloads, 2.37× P50 for minority requests) (Georgia Tech/Intel, arXiv 2511.00739, Nov 2025)
 
 ## Compound AI systems
 
