@@ -1,6 +1,6 @@
 ---
 title: Index
-updated: 2026-05-13
+updated: 2026-06-02
 ---
 
 # Wiki Index
@@ -25,6 +25,7 @@ updated: 2026-05-13
 - [[ring-attention]] — Ring Attention: persistent Q + rotating KV with FlashAttention streaming softmax; 4M-token training context (Liu/Zaharia/Abbeel, ICLR 2024) — paper review
 - [[deepspeed-ulysses]] — DeepSpeed Ulysses: AllToAll-based sequence parallelism with O(N/P) communication; the Ring Attention alternative (Microsoft, arXiv 2309.14509) — paper review
 - [[prfaas]] — PrfaaS: cross-datacenter PD disaggregation — hybrid-attention KVCache flows over commodity Ethernet from compute-dense prefill clusters to bandwidth-optimized decode clusters (Moonshot/Tsinghua, arXiv 2604.15039) — paper review
+- [[mamba]] — Mamba: linear-time sequence modeling with Selective SSM + hardware-aware parallel scan; first SSM to match Transformer++ on language at 3B scale; the foundational architecture for every 2026 hybrid-attention production LLM (Gu/Dao, arXiv 2312.00752, NeurIPS 2024) — paper review
 
 ## RL Infrastructure
 - [[rlhf-overview]] — RLHF: Reinforcement Learning from Human Feedback
@@ -59,6 +60,7 @@ updated: 2026-05-13
 - [[environment-design]] — Environment design for agentic RL
 - [[prorl-agent]] — ProRL Agent: Rollout-as-a-Service (NVIDIA, arXiv 2603.18815) — paper review **[superseded by [[polar]] May 2026]**
 - [[polar]] — Polar: Agentic RL on Any Harness at Scale — the ProRL Agent successor; LLM-API proxy lets any unmodified harness (Codex / Claude Code / Qwen Code / Pi) be trained; registered as a NeMo Gym environment (NVIDIA, arXiv 2605.24220) — paper review
+- [[agent-lightning]] — Agent Lightning: train ANY AI agent via Training-Agent Disaggregation + LightningRL + OpenTelemetry-native trace capture; the original (Aug 2025) decoupling-paradigm paper that ProRL Agent and Polar extend (Microsoft, arXiv 2508.03680) — paper review
 - [[search-r1]] — Search-R1: Training LLMs to Reason and Leverage Search Engines with RL — the canonical entry-point paper for agentic RL; R1-Zero extended to tool use with retrieved-token loss masking (UIUC + UMass + Google, COLM 2025, arXiv 2503.09516) — paper review
 - [[search-r1-codebase-walkthrough]] — Search-R1 file-by-file code tutorial covering the 600 lines of paper-specific code and the ~5000 lines of veRL PPO/GRPO machinery; the cleanest agentic-RL reference implementation walked end-to-end
 - [[agentic-rl-foundations]] — Agentic RL onboarding hub; 4-phase reading path, canonical references, FAQ, open directions

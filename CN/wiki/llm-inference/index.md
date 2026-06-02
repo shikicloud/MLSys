@@ -89,6 +89,10 @@ title: LLM 推理与服务
 - [[af-disaggregation]] —— 注意力-FFN 分离（MegaScale-Infer，下一个轴）
 - [[prfaas]] —— Prefill-as-a-Service：通过普通以太网做跨数据中心 PD 分离（Moonshot/清华，arXiv 2604.15039）— 论文精读
 
+## 基础架构
+
+- [[mamba]] —— Mamba：基于 Selective SSM + 硬件感知并行扫描的线性时间序列建模（Gu/Dao, NeurIPS 2024, arXiv 2312.00752）—— 论文精读；2026 年所有 hybrid attention 生产 LLM（Qwen3-Next、Qwen3.5/3.6、Nemotron-H、Kimi Linear）的基础架构
+
 ## 模型并行（旧 stub）
 
 - [[model-parallelism]] —— 已重定向到 [[parallelism-strategies-deep-dive]]

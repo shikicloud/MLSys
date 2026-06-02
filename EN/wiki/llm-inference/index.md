@@ -89,6 +89,10 @@ Companion paper-review pages:
 - [[af-disaggregation]] — Attention-FFN disaggregation (MegaScale-Infer, the next axis)
 - [[prfaas]] — Prefill-as-a-Service: cross-datacenter PD disaggregation over commodity Ethernet (Moonshot/Tsinghua, arXiv 2604.15039) — paper review
 
+## Foundation architectures
+
+- [[mamba]] — Mamba: linear-time sequence modeling with Selective SSM + hardware-aware parallel scan (Gu/Dao, NeurIPS 2024, arXiv 2312.00752) — paper review; the foundational architecture underlying every 2026 hybrid-attention production LLM (Qwen3-Next, Qwen3.5/3.6, Nemotron-H, Kimi Linear)
+
 ## Model parallelism (legacy stub)
 
 - [[model-parallelism]] — redirects to [[parallelism-strategies-deep-dive]]

@@ -1,6 +1,6 @@
 ---
 title: 目录索引
-updated: 2026-05-13
+updated: 2026-06-02
 ---
 
 # Wiki 目录索引
@@ -25,6 +25,7 @@ updated: 2026-05-13
 - [[ring-attention]] — Ring Attention：Q 不动 + KV 旋转 + FlashAttention streaming softmax；4M token 训练上下文（Liu/Zaharia/Abbeel, ICLR 2024）— 论文精读
 - [[deepspeed-ulysses]] — DeepSpeed Ulysses：基于 AllToAll 的序列并行，通信 $O(N/P)$；Ring Attention 的替代方案（Microsoft, arXiv 2309.14509）— 论文精读
 - [[prfaas]] — PrfaaS：跨数据中心 PD 分离 —— hybrid attention 的 KVCache 通过普通以太网从算力密集 prefill 集群流到带宽优化 decode 集群（Moonshot/清华, arXiv 2604.15039）— 论文精读
+- [[mamba]] — Mamba：基于 Selective SSM + 硬件感知并行扫描的线性时间序列建模；第一个在 3B 规模语言建模上匹敌 Transformer++ 的 SSM；2026 年所有 hybrid attention 生产 LLM 的基础架构（Gu/Dao, arXiv 2312.00752, NeurIPS 2024）— 论文精读
 
 ## 强化学习基础设施
 - [[rlhf-overview]] — RLHF：基于人类反馈的强化学习
@@ -59,6 +60,7 @@ updated: 2026-05-13
 - [[environment-design]] — 智能体 RL 的环境设计
 - [[prorl-agent]] — ProRL Agent：Rollout 即服务（NVIDIA, arXiv 2603.18815）— 论文精读 **[2026-05 被 [[polar]] 取代]**
 - [[polar]] — Polar：任意 harness 上的可扩展 agentic RL —— ProRL Agent 续作；LLM-API proxy 让任何未修改 harness（Codex / Claude Code / Qwen Code / Pi）都能训练；注册为 NeMo Gym 环境（NVIDIA, arXiv 2605.24220）— 论文精读
+- [[agent-lightning]] — Agent Lightning：通过 Training-Agent Disaggregation + LightningRL + OpenTelemetry 原生 trace 捕获训练任何 AI agent；最初的（2025-08）解耦范式论文，ProRL Agent 和 Polar 都是它的延伸（Microsoft, arXiv 2508.03680）— 论文精读
 - [[search-r1]] — Search-R1：用 RL 训练 LLM 推理 + 调搜索引擎 —— agentic RL 的标准入门论文；R1-Zero 扩展到 tool use，带 retrieved-token loss masking（UIUC + UMass + Google，COLM 2025，arXiv 2503.09516）— 论文精读
 - [[search-r1-codebase-walkthrough]] — Search-R1 逐文件代码教程，覆盖 600 行论文特有代码 + ~5000 行 veRL PPO/GRPO 机器；端到端走完最干净的 agentic-RL 参考实现
 - [[agentic-rl-foundations]] — Agentic RL 入门 hub；4 阶段阅读路径、标志参考、FAQ、开放方向
