@@ -31,6 +31,8 @@ title: 面向 AI 智能体的 LLM 服务
 - [[continuum]] —— Continuum：基于 TTL 的 KV cache pinning + program 级 FCFS 给多轮 agent serving；第一个建模 per-turn queueing delay（不只是 reload cost）；延迟降低 1.12–3.66×，真实 SWE-agent 分布式 setting 上多达 8.18×（UC Berkeley/Stanford/Tensormesh, arXiv 2511.02230, 2025-11）
 - [[cpu-centric-agentic-ai]] —— Agentic AI 的 CPU 中心视角：characterization（tool 时间在非对称 CPU-GPU 硬件上 tool 主导 workload 多达 88%）+ **COMB**（CPU 感知 overlapped micro-batching，P50 1.7× / 服务延迟 3.9×）+ **MAS**（chat+agent 混合 workload 的 mixed agentic 调度，少数请求 P50 2.37×）（Georgia Tech/Intel, arXiv 2511.00739, 2025-11）
 - [[agentic-ai-workload-characteristics]] —— Agentic AI Workload Characteristics：标杆端到端 agent workload 测量论文；Claude Code + Qwen3.6-27B/Gemma4-31B on 5 个真实 benchmark with OpenTelemetry 级 tracing；**LLM=71-98% / tool=2-29% 分解的权威来源**，decode 主导 91-98.6%，cache 命中 84.6-99.5%，推理的 6× 轨迹紧凑化效应（UIUC/Intel, arXiv 2605.26297, 2026-05）
+- [[speculative-actions]] —— Speculative Actions：把 speculate-verify 从 token 级提升到 **跨整个 agentic 环境的 API-call 级** 的无损框架；通过 k-way breadth speculation 把慢 Actor（GPT-5 高推理）跟快 Speculator（更小模型）配对；闭式 cost-latency 定理；4 个环境（chess 节省 19.5% 时间、e-commerce ~1/3 轮立即响应、HotpotQA 46% top-3 prediction、OS tuning P95 37.93ms vs 102.97ms）（哥伦比亚, arXiv 2510.04371, 2025-10）
+- [[speceyes]] —— SpecEyes：**多模态 LLM**（DeepEyes、Thyme）的 agentic 级 speculative 加速；4 阶段 pipeline 路由 tool-free 查询到小非 agentic MLLM（Qwen3-VL-2B）；新颖 **answer separability score** $S_{sep}$ 取代 softmax 做 cognitive gating（Δ 比 softmax 大 14×）；异质并行 funnel 给吞吐；在 V*/HR-Bench/POPE 上 1.42-1.73× 平均加速 with 多达 +6.7% 准确率（厦大/罗切斯特/OSU, arXiv 2603.23483, 2026-03）
 
 ## 复合 AI 系统
 
