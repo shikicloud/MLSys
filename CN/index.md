@@ -84,3 +84,4 @@ updated: 2026-06-02
 - [[multi-turn-optimization]] — 多轮对话服务优化
 - [[continuum]] — Continuum：基于 TTL 的 KV cache pinning + program 级 FCFS 给多轮 agent serving；第一个建模 per-turn queueing delay（不只是 reload cost）；延迟降低 1.12–3.66×，真实 SWE-agent 上多达 8.18×（UC Berkeley/Stanford/Tensormesh, arXiv 2511.02230）—— 论文精读
 - [[cpu-centric-agentic-ai]] — Agentic AI 的 CPU 中心视角：characterization（tool 时间在 tool 主导 workload 上多达 88%）+ COMB（CPU 感知 overlapped micro-batching，P50 1.7× / 服务延迟 3.9×）+ MAS（混合 agentic 调度，少数请求 P50 2.37×）（Georgia Tech/Intel, arXiv 2511.00739）—— 论文精读
+- [[agentic-ai-workload-characteristics]] — Agentic AI Workload Characteristics：标杆端到端 agent workload 测量论文；Claude Code + Qwen3.6-27B/Gemma4-31B on SWE-Bench Pro/GAIA/Terminal-Bench；LLM=71-98%、tool=2-29%、decode=91-98.6%、cache 命中=84.6-99.5%；推理紧凑化轨迹 6×（UIUC/Intel, arXiv 2605.26297）—— 论文精读
