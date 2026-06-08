@@ -7,7 +7,7 @@ created: 2026-06-02
 # Continuum: Efficient and Robust Multi-Turn LLM Agent Scheduling with KV Cache Time-to-Live
 
 - **arXiv**: [2511.02230](https://arxiv.org/abs/2511.02230)
-- **Code**: To be open-sourced upon publication (paper states: "we will open-source our traces, code, and the agent serving testbed")
+- **Code**: [Hanchenli/vllm-continuum](https://github.com/Hanchenli/vllm-continuum) — released by first author Hanchen Li as a vLLM fork
 - **Authors**: Hanchen Li\* (UC Berkeley), Runyuan He\* (UC Berkeley), Qiuyang Mang (UC Berkeley), Qizheng Zhang (Stanford), Huanzhi Mao (UC Berkeley), Xiaokun Chen (Tensormesh), Hangrui Zhou (Tsinghua), Alvin Cheung (UC Berkeley), Joseph Gonzalez (UC Berkeley), Ion Stoica (UC Berkeley)
 - **Affiliations**: UC Berkeley (1), Stanford (2), Tensormesh (3), Tsinghua (4)
 - **Date**: 2025-11-04 (v1); 2026-05-25 (v6)

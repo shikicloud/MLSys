@@ -6,14 +6,14 @@ created: 2026-06-02
 updated: 2026-06-02
 status: mature
 paper: arXiv:2511.02230
-code: https://github.com/Tensormesh/continuum
+code: https://github.com/Hanchenli/vllm-continuum
 ---
 
 # Continuum：基于 KV Cache Time-to-Live 的高效鲁棒多轮 LLM Agent 调度
 
 > [!info] 论文元数据
 > - **论文**：[arXiv:2511.02230](https://arxiv.org/abs/2511.02230) —— *Continuum: Efficient and Robust Multi-Turn LLM Agent Scheduling with KV Cache Time-to-Live*，2025-11-04（v6: 2026-05-25）
-> - **代码**：发表时开源（论文称："we will open-source our traces, code, and the agent serving testbed"）
+> - **代码**：[Hanchenli/vllm-continuum](https://github.com/Hanchenli/vllm-continuum) —— 第一作者 Hanchen Li 已开源（vLLM fork）
 > - **作者**：Hanchen Li\*（UC Berkeley）、Runyuan He\*（UC Berkeley）、Qiuyang Mang（UC Berkeley）、Qizheng Zhang（Stanford）、Huanzhi Mao（UC Berkeley）、Xiaokun Chen（Tensormesh）、Hangrui Zhou（清华）、Alvin Cheung（UC Berkeley）、Joseph Gonzalez（UC Berkeley）、Ion Stoica（UC Berkeley）
 > - **机构**：UC Berkeley、Stanford、Tensormesh、清华
 > - **实现**：vLLM 0.10.2 fork，~1k 行 Python
@@ -57,27 +57,18 @@ code: https://github.com/Tensormesh/continuum
 
 ## 背景：之前系统未解决的两种失败模式
 
-论文 Fig. 1 命名了两种失败模式（我的转述）：
+论文 Fig. 1 命名了两种失败模式：
 
-```
-失败模式 A：End-of-turn 驱逐
-─────────────────────────────────────────────
-Job 1: [LLM Request] [Tool] [Extra Prefill][LLM Request] ...
-                            ↑
-                            KV 在 LLM 请求结束时被驱逐；
-                            tool 返回 → 必须从头重新 prefill
+![先前 agent-serving 系统的两种主要失败模式（论文 Fig. 1）](CN/wiki/llm-serving-for-agents/continuum-figs/fig1-failure-modes.png)
 
-失败模式 B：Per-turn queueing delay（即使有 CPU offload）
-───────────────────────────────────────────────────────────────
-Job 1: [LLM Request] [Tool] [Per-Turn Queueing Delay] [LLM Request] ...
-                            ↑
-                            KV 卸到 CPU，瞬间可重载，
-                            但 GPU 在忙其它接纳的请求 ——
-                            这个 job 必须排队等它们释放内存。
-Job 2:                       [Offload Job 1 KV→CPU] [LLM Request] [Load Job 1 KV from CPU]
-```
+**vLLM / SGLang 默认策略**是 Continuum 论文叫的 *end-of-turn 驱逐* —— 这跟纯 LRU **不是一回事**，尽管听起来像。
 
-**vLLM / SGLang 默认策略**是 *end-of-turn 驱逐*：请求一旦完成 decoding，它的 KV 立刻成为 LRU 驱逐目标，让任何等待的请求能用上释放的内存。对聊天机器人 serving 这是对的 —— 下一个人类轮次要在数秒到数分钟的打字后才到来，无论什么合理策略 KV 都会被驱逐。
+> [!warning] "End-of-turn 驱逐" vs 纯 LRU —— 一个微妙但重要的区别
+> 纯 LRU 按 *最近访问时间* 排序，驱逐最旧的。一个刚完成的请求 KV 实际上*最近被访问过*，在 LRU 排名里靠前，**不会**优先被驱逐。
+>
+> vLLM/SGLang 实际做的是 **release-on-completion**：请求 decoding 完成的瞬间，KV block 立刻被移到 "free pool"（标记为可被覆盖），隐式假设*请求结束了不会再回来*。新请求到达时优先从 free pool 取 —— 所以刚完成请求的 KV 在繁忙服务器上几毫秒内就被覆盖。
+>
+> 实际效果**跟 LRU 相反**：完成的 KV 是*第一个*被覆盖的候选，不是*最后一个*。Continuum 论文用 "end-of-turn 驱逐" 这个术语让区别明确。对聊天机器人 serving 这是对的 —— 下一个人类轮次要数秒到数分钟后才到，那时 KV 早没了。对下轮 ~1 秒内就到的 agent 是灾难性错误。
 
 **但对 agent，这正好是错的。** 论文数据（Table 2）：
 
@@ -87,6 +78,10 @@ Job 2:                       [Offload Job 1 KV→CPU] [LLM Request] [Load Job 1 
 | **BFCL v4** | 6.3 ± 2.3 | 1923 ± 2133 | 93,256 ± 68,687 |
 
 平均 tool 延迟远低于 2 秒 —— 比人类打字短得多 —— 所以下一个 LLM 请求会在 KV 还热的时候到达。驱逐它强制每轮重新 prefill ~70K tokens。跨 10.9 轮，每个 SWE-Bench job 多 770K tokens 的 prefill。
+
+具体 SWE-Agent 例子（论文 Fig. 2）展示一个 program 长什么样 —— 短 LLM reasoning 步交替 `grep` / `cat` / `sed` / `pytest` 等 tool 调用，每次 agent 都能受益于亚秒级跨 tool 调用的 KV 保留：
+
+![带 LLM 推理跟 tool 调用交替的 SWE-Agent 示例（论文 Fig. 2）](CN/wiki/llm-serving-for-agents/continuum-figs/fig2-swe-agent.png)
 
 **InferCept**（Abhyankar et al., 2024）是第一个解决这点的：tool 调用期间，如果估计的 reload cost 超过 GPU 占用 cost 就 pin KV。但它**纯粹基于 reload cost** 做保留决定，忽略 per-turn queueing delay。有了 LMCache 风格的快 CPU offload，reload 变便宜 InferCept 就不 pin —— 但返回的请求仍要排队等 KV 卸出去时被接纳的其它请求。**论文测量（Fig. 4）显示 InferCept 跨轮累积的等待时间跟 vanilla vLLM 相当，尽管它有 reload 省下来的开销**。
 
@@ -100,6 +95,8 @@ Job 2:                       [Offload Job 1 KV→CPU] [LLM Request] [Load Job 1 
 
 第三列重要，因为 **tool 调用长尾**（论文 Fig. 5）：最慢 10% 的 `BFCL/fetch_url` 调用 = 总延迟 52.5%；最慢 10% 的 `SWE-Bench/cd` 调用 = 94.1%。静态"永远保留"策略在稳定延迟下 work 但**当一个异常 tool 调用阻塞 GPU 内存几十秒时灾难性失败**。Continuum 的 TTL 上界让 pinning 安全。
 
+![Tool 执行时间 CDF 显示长尾分布：fetch_url 最慢 10% 占延迟 52.5%、cd 最慢 10% 占 94.1%（论文 Fig. 5）](CN/wiki/llm-serving-for-agents/continuum-figs/fig5-long-tail.png)
+
 ## 三个核心组件详解
 
 ### 组件 1 —— TTL 效用模型
@@ -111,7 +108,7 @@ $$
 \text{Cost}(\tau, r) = \frac{\text{MemUsage}(r)}{\mathcal{M}} \times \tau
 $$
 
-其中 `MemUsage(r)` 是请求 `r` 的 KV cache 大小（字节），`\mathcal{M}` 是当前活跃请求的平均 GPU 内存占用。比值 `MemUsage(r) / M` 近似 *会有多少平均大小请求被阻塞* 如果 `r` 被 pin 住 —— 所以 pin `r` τ 秒会给那么多其它请求各加 τ 秒等待。
+其中 `MemUsage(r)` 是请求 `r` 的 KV cache 大小（字节），$\mathcal{M}$ 是当前活跃请求的平均 GPU 内存占用。比值 $\text{MemUsage}(r) / \mathcal{M}$ 近似 *会有多少平均大小请求被阻塞* 如果 `r` 被 pin 住 —— 所以 pin `r` τ 秒会给那么多其它请求各加 τ 秒等待。
 
 **Benefit**（pinning `r` 到其程序下一轮返回的收益）：
 $$
@@ -130,7 +127,7 @@ $$
 $$
 \text{OutOfOrderCost}(r) = \frac{\mathcal{T}}{\mathcal{M}} \times \text{MemUsage}(r) \times \eta
 $$
-其中 `\mathcal{T}` 是工作负载中 per 单位上下文大小的平均等待时间，`η` 是 **memoryfulness factor**，定义为 $\eta = -\text{Corr}(k, N - k)$，已完成轮次 `k` 跟剩余轮次 `N − k` 之间的负相关。
+其中 $\mathcal{T}$ 是工作负载中 per 单位上下文大小的平均等待时间，$\eta$ 是 **memoryfulness factor**，定义为 $\eta = -\text{Corr}(k, N - k)$，已完成轮次 $k$ 跟剩余轮次 $N - k$ 之间的负相关。
 
 **Memoryfulness factor `η` 是这里承重的 novelty**。直觉：
 
@@ -144,9 +141,31 @@ $$
 $$
 \tau^* = \arg\max_\tau \; \mathcal{P}(\tau, f) \times \big(\mathcal{T} \cdot \eta + \text{Prefill-Reload}(r)\big) - \tau
 $$
-其中 `\mathcal{P}(\tau, f)` 是 tool `f` 历史调用时长的经验 CDF，从滑动窗口历史记录估算。
+其中 $\mathcal{P}(\tau, f)$ 是 tool $f$ 历史调用时长的经验 CDF，从滑动窗口历史记录估算。
 
-**冷启动处理**：当特定 tool `f` 的历史记录稀疏（`|S[f]| ≤ K`，他们实现里 `K = 100`），Continuum 退到（1）所有 tool 的全局 tool 调用 CDF，或（2）从同一 cost 模型推出的指数分布默认。实现初始化 `\mathcal{T} = 0` 然后从生产流量 bootstrap。
+> [!tip] TTL 公式直观理解
+> 假设一个 tool call 马上要开始，要决定**这个 program 的 KV 在 GPU 内存里 pin 多久（τ）**。
+>
+> - **Pin 太久** → 阻塞其他请求、浪费 GPU 内存
+> - **Pin 太短** → KV 被驱逐，tool 返回时付昂贵的重新加载
+>
+> 对每个候选 τ：
+>
+> - **Benefit** = $\mathcal{P}(\tau, f)$ × (reload-cost + queueing-delay-saved)
+>     - $\mathcal{P}(\tau, f)$ = tool 在 τ 秒内完成的概率（从历史 CDF）
+>     - 如果在 τ 内完成，省下：`Prefill-Reload(r)`（重载成本） + $\mathcal{T} \cdot \eta$（排队延迟）
+> - **Cost** = $\tau$（每秒 pin 阻塞其他请求）
+>
+> 选 Benefit − Cost 最大的 τ。算法在历史 tool 调用时长 $S[f]$ 里枚举 τ（包括 τ = 0 = 不 pin）选赢家。
+>
+> **举例**：tool `cat` 历史调用全部 50–200ms。则：
+> - τ = 100ms → $\mathcal{P}$ ≈ 0.5（一半在内完成），收益中等、成本小 → 净中等
+> - τ = 200ms → $\mathcal{P}$ ≈ 0.99（99% 在内），收益高、成本翻倍但仍小 → **净赢家**
+> - τ = 1000ms → $\mathcal{P}$ = 1.0 但成本太大
+>
+> 最优 τ ≈ 200ms（命中率高、成本能接受）。
+
+**冷启动处理**：当特定 tool $f$ 的历史记录稀疏（$|S[f]| \le K$，他们实现里 $K = 100$），Continuum 退到（1）所有 tool 的全局 tool 调用 CDF，或（2）从同一 cost 模型推出的指数分布默认。实现初始化 $\mathcal{T} = 0$ 然后从生产流量 bootstrap。
 
 ### 组件 2 —— Program 级 FCFS 调度
 
@@ -198,7 +217,11 @@ Continuum 的缓解：调度器因内存压力调度新请求失败时，扫 `pi
 
 ## 系统架构（vLLM 之上的 Continuum）
 
-Continuum 系统总览（论文 Fig. 7，我的 Mermaid 重构）：
+Continuum 系统总览（论文 Fig. 7）：
+
+![Continuum 系统总览：Tool Call Handler + Scheduler & TTL Logic + 带 TTL-active/expired block 的 GPU 内存（论文 Fig. 7）](CN/wiki/llm-serving-for-agents/continuum-figs/fig7-system-overview.png)
+
+我的 Mermaid 重构带额外细节：
 
 ```mermaid
 %%{init: {"flowchart": {"nodeSpacing": 30, "rankSpacing": 40}, "themeVariables": {"fontSize": "12px"}}}%%
@@ -260,6 +283,8 @@ flowchart TB
 
 每张图形状一样：Continuum 的线在递增 job-per-second 到达率下保持低平，vLLM 和 Autellix 急剧退化。在击穿点（高 JPS），Continuum **延迟低 1.12×–3.66×**、**吞吐高 1.10×–3.22×**。最大 gap 在 Llama-70B / SWE-Bench（最长序列，最多 cache 要保留）。
 
+![Continuum 跨不同模型大小、硬件配置、数据集超过 baseline 调度器（论文 Fig. 8）](CN/wiki/llm-serving-for-agents/continuum-figs/fig8-main-results.png)
+
 > [!success] 头条 8.18× 数字
 > 广为引用的 Continuum 8.18× 数字来自一个**分布式 setting 实验**（论文 §6.2，Fig. 12）：500 个 SWE-Bench-Verified 任务的真实 SWE-agent，在 Tensormesh H100 testbed 上用 Poisson 分布 job 分发器跑，对比 **SGLang 0.5.5.post3（原生 cache-aware 路由）** 和 **NVIDIA Dynamo 0.7.0.post1（1P1D PD 解耦）**。**Continuum 把 per-job 延迟降低多达 8.18×，同时取得更高 pass-rate**（因为更慢的 baseline 触发 SWE-Bench wall-clock 上限失败）。这是生产相关数字 —— baseline 包含 session-aware 路由，不只是朴素 vLLM。
 
@@ -270,6 +295,8 @@ flowchart TB
 ### 随轮次缩放（论文 Fig. 14）
 
 通过重复 trace（1× 到 5×）模拟更多轮场景，同时反比缩放 token 长度（让总 token 数适配上下文窗口）。Baseline（vLLM、Autellix、InferCept）随轮次增加**线性退化**。Continuum 的 per-program 延迟从 1×（10.9 轮）到 5×（50.6 轮）**保持大致稳定**在 ~1000 秒。这是"agentic 工作负载 scaling"实践中的样子。
+
+![Continuum 随轮次增加改善更高；延迟保持稳定而 baseline 线性 scaling（论文 Fig. 14）](CN/wiki/llm-serving-for-agents/continuum-figs/fig14-turn-scaling.png)
 
 ### OpenHands RL 训练 rollout（论文 Table 5）
 
@@ -317,7 +344,7 @@ vs vLLM +55%、vs ThunderAgent +27% —— 跟 [[prorl-agent]] / [[polar]] 的 a
 - **单 program memoryfulness `η`** —— 假设每 serving 集群一种工作负载。混合工作负载（一些 program 长尾、一些短）会受益于 per-program `η` 估算；未处理。
 - **跨 program 无 cache 共享** —— 不同 program 即使 prefix 重叠（如 system prompt）也不能共享 KV cache。跟 [[multi-turn-optimization|prefix caching / RadixAttention]] 正交但可分别解决。
 - **分布式 setting 只简短验证** —— 8.18× 数字来自一个工作负载（真实 SWE-agent / SWE-Bench-Verified / Tensormesh testbed）。多租户云部署带多样 agent 群体的泛化未测。
-- **截至 2026-06 代码未发布。** 论文说发表时开源；当前状态未知。
+- **代码已发布** at [Hanchenli/vllm-continuum](https://github.com/Hanchenli/vllm-continuum)（第一作者 Hanchen Li 的 GitHub），是 vLLM fork。可公开复现。
 
 > [!bug] 死锁 unpin 策略是启发式
 > 内存压力阻止调度新请求时，Continuum unpin **到达时间最晚** 的 program。这是 FCFS-fairness 的反面（最新 program 先丢），在 shortest-job-first 直觉下合理但不是硬保证。一个长跑的新 program 需要它早期 KV 的对抗工作负载可能遭殃。
@@ -340,10 +367,11 @@ Continuum **不**解决：
 
 ## 源代码与复现
 
+**已发布** at [Hanchenli/vllm-continuum](https://github.com/Hanchenli/vllm-continuum) —— 第一作者 Hanchen Li 的 GitHub。实现是 vLLM 0.10.2 fork。
+
 ```bash
-# 发布时（截至 2026-06 待发表）：
-git clone https://github.com/Tensormesh/continuum   # 占位 repo 名
-cd continuum
+git clone https://github.com/Hanchenli/vllm-continuum
+cd vllm-continuum
 pip install -e .   # 扩展 vLLM 0.10.2
 ```
 

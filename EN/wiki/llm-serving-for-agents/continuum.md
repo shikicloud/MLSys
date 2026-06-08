@@ -6,14 +6,14 @@ created: 2026-06-02
 updated: 2026-06-02
 status: mature
 paper: arXiv:2511.02230
-code: https://github.com/Tensormesh/continuum
+code: https://github.com/Hanchenli/vllm-continuum
 ---
 
 # Continuum: Efficient and Robust Multi-Turn LLM Agent Scheduling with KV Cache Time-to-Live
 
 > [!info] Paper metadata
 > - **Paper**: [arXiv:2511.02230](https://arxiv.org/abs/2511.02230) — *Continuum: Efficient and Robust Multi-Turn LLM Agent Scheduling with KV Cache Time-to-Live*, 2025-11-04 (v6: 2026-05-25)
-> - **Code**: To be open-sourced on publication (paper states: "we will open-source our traces, code, and the agent serving testbed")
+> - **Code**: [Hanchenli/vllm-continuum](https://github.com/Hanchenli/vllm-continuum) — released by first author Hanchen Li (vLLM fork)
 > - **Authors**: Hanchen Li\* (UC Berkeley), Runyuan He\* (UC Berkeley), Qiuyang Mang (UC Berkeley), Qizheng Zhang (Stanford), Huanzhi Mao (UC Berkeley), Xiaokun Chen (Tensormesh), Hangrui Zhou (Tsinghua), Alvin Cheung (UC Berkeley), Joseph Gonzalez (UC Berkeley), Ion Stoica (UC Berkeley)
 > - **Affiliations**: UC Berkeley, Stanford, Tensormesh, Tsinghua University
 > - **Implementation**: vLLM 0.10.2 fork, ~1k lines Python
@@ -57,27 +57,18 @@ Remove the TTL bound and one slow tool call can deadlock the GPU; remove the pro
 
 ## Background: two failure modes prior systems leave unsolved
 
-The paper's Figure 1 names the two failure modes (paraphrased; mine):
+The paper's Figure 1 names the two failure modes:
 
-```
-Failure mode A: End-of-turn eviction
-─────────────────────────────────────────────
-Job 1: [LLM Request] [Tool] [Extra Prefill][LLM Request] ...
-                            ↑
-                            KV evicted at end of LLM request;
-                            tool returns → must re-prefill from scratch
+![Two main failure modes of prior agent-serving systems (paper Fig. 1)](EN/wiki/llm-serving-for-agents/continuum-figs/fig1-failure-modes.png)
 
-Failure mode B: Per-turn queueing delay (even with CPU offload)
-───────────────────────────────────────────────────────────────
-Job 1: [LLM Request] [Tool] [Per-Turn Queueing Delay] [LLM Request] ...
-                            ↑
-                            KV offloaded to CPU, instantly reload-able,
-                            but GPU is busy with other admitted requests —
-                            this job waits behind them for memory.
-Job 2:                       [Offload Job 1's KV→CPU] [LLM Request] [Load Job 1's KV from CPU]
-```
+**vLLM / SGLang default policy** is what Continuum calls *end-of-turn eviction* — and this is **not the same as pure LRU**, despite what the name might suggest.
 
-**vLLM / SGLang default policy** is *end-of-turn eviction*: as soon as a request finishes decoding, its KV becomes the LRU eviction target so that any waiting request can use the freed memory. For chatbot serving this is correct — the next human turn arrives after seconds-to-minutes of typing, by which time the KV would have been evicted under any reasonable policy anyway.
+> [!warning] "End-of-turn eviction" vs. pure LRU — a subtle but important distinction
+> Pure LRU would rank cache blocks by *last access time* and evict the oldest. A request that just finished would actually be *near the top* of the LRU list (recently accessed), so it wouldn't be the first to be evicted.
+>
+> What vLLM/SGLang actually do is **release-on-completion**: as soon as a request finishes decoding, its KV blocks are immediately moved to a "free pool" (marked available for reuse), implicitly assuming the request is *complete and won't return*. When new requests arrive, they consume the free pool first — so the just-completed request's KV gets overwritten within milliseconds in a busy server.
+>
+> So the practical effect is **the opposite of LRU** for completed requests: completed KV is the *first* candidate for overwriting, not the *last*. The Continuum paper names this pattern "end-of-turn eviction" to make the distinction sharp. For chatbot serving this is correct — the next human turn arrives seconds-to-minutes later, by which time the KV would be gone anyway. For agents whose next turn arrives in ~1 second, it's catastrophically wrong.
 
 **For agents, this is exactly wrong.** Per the paper's data (Table 2):
 
@@ -87,6 +78,10 @@ Job 2:                       [Offload Job 1's KV→CPU] [LLM Request] [Load Job 
 | **BFCL v4** | 6.3 ± 2.3 | 1923 ± 2133 | 93,256 ± 68,687 |
 
 Mean tool latency is well under 2 seconds — far shorter than human typing — so the next LLM request arrives while the KV is still warm. Evicting it forces a full re-prefill of ~70K tokens at every turn. Across 10.9 turns, that's the order of 770K extra tokens of prefill per SWE-Bench job.
+
+A concrete SWE-Agent example (paper Fig. 2) shows what one program looks like — alternating short LLM reasoning steps with `grep` / `cat` / `sed` / `pytest` tool calls, each of which the agent would benefit from sub-second KV retention across:
+
+![Illustrative SWE-Agent example with interleaved LLM reasoning and tool calls (paper Fig. 2)](EN/wiki/llm-serving-for-agents/continuum-figs/fig2-swe-agent.png)
 
 **InferCept (Abhyankar et al., 2024)** was the first to address this: pin the KV during a tool call if the estimated reload cost exceeds the GPU-occupancy cost. But it makes the preserve decision based **purely on reload cost**, ignoring per-turn queueing delay. With LMCache-style fast CPU offload, reload becomes cheap and InferCept stops pinning — but the returning request still has to wait in queue behind whatever was admitted while the KV was offloaded. **Per the paper's measurements (Fig. 4), InferCept's accumulated waiting time across turns is comparable to vanilla vLLM despite its reload savings**.
 
@@ -100,6 +95,8 @@ Mean tool latency is well under 2 seconds — far shorter than human typing — 
 
 The third column matters because of the **tool-call long tail** (paper Fig. 5): slowest 10% of `BFCL/fetch_url` calls account for 52.5% of total delay; slowest 10% of `SWE-Bench/cd` calls account for 94.1%. A static "preserve forever" policy works under stable latencies but **fails catastrophically when one outlier tool call blocks GPU memory for tens of seconds**. Continuum's TTL bound is what makes the pinning safe.
 
+![Tool execution time CDFs showing long-tail distribution: 10% of fetch_url calls account for 52.5% of delay, 10% of cd calls 94.1% (paper Fig. 5)](EN/wiki/llm-serving-for-agents/continuum-figs/fig5-long-tail.png)
+
 ## Three components in detail
 
 ### Component 1 — The TTL utility model
@@ -111,7 +108,7 @@ $$
 \text{Cost}(\tau, r) = \frac{\text{MemUsage}(r)}{\mathcal{M}} \times \tau
 $$
 
-where `MemUsage(r)` is the KV cache size of request `r` (bytes) and `\mathcal{M}` is the average GPU memory footprint of currently-active requests. The ratio `MemUsage(r) / M` approximates *how many average-sized requests get blocked* if `r` is pinned — so pinning `r` for τ seconds adds about τ seconds of waiting to that many other requests.
+where `MemUsage(r)` is the KV cache size of request `r` (bytes) and $\mathcal{M}$ is the average GPU memory footprint of currently-active requests. The ratio $\text{MemUsage}(r) / \mathcal{M}$ approximates *how many average-sized requests get blocked* if `r` is pinned — so pinning `r` for τ seconds adds about τ seconds of waiting to that many other requests.
 
 **Benefit** of pinning `r` until its next turn returns:
 $$
@@ -130,7 +127,7 @@ where `Prefill-Reload(r)` is the time to either re-prefill (no CPU offload) or t
 $$
 \text{OutOfOrderCost}(r) = \frac{\mathcal{T}}{\mathcal{M}} \times \text{MemUsage}(r) \times \eta
 $$
-where `\mathcal{T}` is the average waiting time per unit context size in the workload, and `η` is the **memoryfulness factor**, defined as $\eta = -\text{Corr}(k, N - k)$, the negative correlation between the number of completed turns `k` and the number of remaining turns `N − k`.
+where $\mathcal{T}$ is the average waiting time per unit context size in the workload, and $\eta$ is the **memoryfulness factor**, defined as $\eta = -\text{Corr}(k, N - k)$, the negative correlation between the number of completed turns $k$ and the number of remaining turns $N - k$.
 
 **The memoryfulness factor `η` is the load-bearing novelty here.** Intuition:
 
@@ -144,9 +141,31 @@ The intuition: `η` measures **how predictable program progress is**, which dete
 $$
 \tau^* = \arg\max_\tau \; \mathcal{P}(\tau, f) \times \big(\mathcal{T} \cdot \eta + \text{Prefill-Reload}(r)\big) - \tau
 $$
-where `\mathcal{P}(\tau, f)` is the empirical CDF of historical tool-call durations for tool `f`, estimated from sliding-window historical records.
+where $\mathcal{P}(\tau, f)$ is the empirical CDF of historical tool-call durations for tool $f$, estimated from sliding-window historical records.
 
-**Cold-start handling**: when historical records for a specific tool `f` are sparse (`|S[f]| ≤ K`, with `K = 100` in their implementation), Continuum falls back to (1) a global tool-call CDF across all tools, or (2) an exponentially-distributed default with mean derived from the same cost model. The implementation initializes `\mathcal{T} = 0` and bootstraps from production traffic.
+> [!tip] What the TTL formula means in plain language
+> Imagine a tool call is about to start. We need to decide **how many seconds (τ) to pin this program's KV in GPU memory**.
+>
+> - **Pin too long** → block other requests, waste GPU memory
+> - **Pin too short** → KV evicted, pay heavy reload when tool returns
+>
+> For each candidate τ:
+>
+> - **Benefit** = $\mathcal{P}(\tau, f)$ × (reload-cost + queueing-delay-saved)
+>     - $\mathcal{P}(\tau, f)$ = probability the tool finishes within τ (from historical CDF)
+>     - If it does finish in time, we save: `Prefill-Reload(r)` (the reload cost) + $\mathcal{T} \cdot \eta$ (the queueing delay we'd otherwise pay)
+> - **Cost** = $\tau$ (each second of pinning blocks other requests)
+>
+> Pick the τ where Benefit − Cost is largest. The algorithm enumerates τ over historical tool-call durations $S[f]$ (including τ = 0 = no pin) and picks the winner.
+>
+> **Worked example**: tool `cat` historical durations all 50–200ms. Then:
+> - τ = 100ms → $\mathcal{P}$ ≈ 0.5 (half finish in time), benefit moderate, cost small → net moderate
+> - τ = 200ms → $\mathcal{P}$ ≈ 0.99 (99% finish), benefit high, cost 2× bigger but still small → **net winner**
+> - τ = 1000ms → $\mathcal{P}$ = 1.0 but cost too high
+>
+> Optimal τ ≈ 200ms (high hit probability, acceptable cost).
+
+**Cold-start handling**: when historical records for a specific tool $f$ are sparse ($|S[f]| \le K$, with $K = 100$ in their implementation), Continuum falls back to (1) a global tool-call CDF across all tools, or (2) an exponentially-distributed default with mean derived from the same cost model. The implementation initializes $\mathcal{T} = 0$ and bootstraps from production traffic.
 
 ### Component 2 — Program-level FCFS scheduling
 
@@ -198,7 +217,11 @@ Continuum's mitigation: when the scheduler fails to schedule a new request due t
 
 ## System architecture (Continuum on top of vLLM)
 
-Continuum's system overview (paper Figure 7, my Mermaid reconstruction):
+Continuum's system overview (paper Figure 7):
+
+![Continuum system overview: Tool Call Handler + Scheduler & TTL Logic + GPU Memory with TTL-active/expired blocks (paper Fig. 7)](EN/wiki/llm-serving-for-agents/continuum-figs/fig7-system-overview.png)
+
+My Mermaid reconstruction with extra detail:
 
 ```mermaid
 %%{init: {"flowchart": {"nodeSpacing": 30, "rankSpacing": 40}, "themeVariables": {"fontSize": "12px"}}}%%
@@ -260,6 +283,8 @@ Workloads: SWE-Bench, BFCL v4 Web Search. Models: Llama-3.1-8B (1×B200 or 1×A1
 
 The shape of every plot is the same: Continuum's line stays flat-and-low while vLLM and Autellix degrade rapidly under increasing job-per-second arrival rate. At the breakdown point (high JPS), Continuum is **1.12×–3.66× lower delay** with **1.10×–3.22× higher throughput**. The biggest gaps are on Llama-70B / SWE-Bench (longest sequences, most cache to retain).
 
+![Continuum outperforms baseline schedulers across different model sizes, hardware configurations, and datasets (paper Fig. 8)](EN/wiki/llm-serving-for-agents/continuum-figs/fig8-main-results.png)
+
 > [!success] The headline 8.18× number
 > The 8.18× figure widely cited for Continuum comes from a **distributed-setting experiment** (paper §6.2, Figure 12): real SWE-agent on 500 SWE-Bench-Verified tasks, run on Tensormesh's H100 testbed with a Poisson-distributed job distributor, compared against **SGLang 0.5.5.post3 (native cache-aware routing)** and **NVIDIA Dynamo 0.7.0.post1 (1P1D PD-disaggregation)**. **Continuum reduces per-job delay by up to 8.18× while also achieving higher pass-rate** (because slower baselines hit SWE-Bench's wall-clock limit and fail tasks). This is the production-relevant number — it includes session-aware routing in baselines, not just naïve vLLM.
 
@@ -270,6 +295,8 @@ When LMCache CPU DRAM offloading is enabled, you'd expect InferCept's selective-
 ### Scales with turn count (paper Figure 14)
 
 Simulated more-turn scenarios on SWE-Bench by repeating the trace (1× to 5×) while inversely scaling token lengths (so total token count fits the context window). Baselines (vLLM, Autellix, InferCept) **degrade linearly** as turns increase. Continuum's per-program delay stays roughly **stable** at ~1000 s across 1× (10.9 turns) to 5× (50.6 turns). This is what "agentic workload scaling" looks like in practice.
+
+![Continuum shows higher improvement as turn count grows; delay stays stable while baselines scale linearly (paper Fig. 14)](EN/wiki/llm-serving-for-agents/continuum-figs/fig14-turn-scaling.png)
 
 ### OpenHands rollout for RL training (paper Table 5)
 
@@ -317,7 +344,7 @@ A side-experiment that's interesting in its own right: Continuum applied to **ro
 - **Single-program memoryfulness `η`** — assumes one workload type per serving cluster. Mixed workloads (some programs long-tailed, some short) would benefit from per-program `η` estimation; not addressed.
 - **No cross-program cache sharing** — different programs can't share KV cache even if their prefixes overlap (e.g., system prompts). Orthogonal to but separately addressable by [[multi-turn-optimization|prefix caching / RadixAttention]].
 - **Distributed setting only briefly validated** — the 8.18× number comes from one workload (real SWE-agent / SWE-Bench-Verified / Tensormesh testbed). Generalization to multi-tenant cloud deployment with diverse agent populations isn't measured.
-- **Code not yet released as of June 2026.** Paper states open-source will happen on publication; current status unknown.
+- **Code released** at [Hanchenli/vllm-continuum](https://github.com/Hanchenli/vllm-continuum) (first author Hanchen Li's GitHub) as a vLLM fork. Public reproduction is feasible.
 
 > [!bug] Deadlock unpin policy is a heuristic
 > When memory pressure prevents scheduling a new request and pinned KV needs eviction, Continuum unpins programs with the *latest* arrival time. This is the opposite of FCFS-fairness (newest programs lose first), which is sensible under shortest-job-first intuition but isn't a hard guarantee. Adversarial workloads where a long-running new program needs its early KV might suffer.
@@ -340,10 +367,11 @@ Continuum does **not** solve:
 
 ## Source code & reproduction
 
+**Released** at [Hanchenli/vllm-continuum](https://github.com/Hanchenli/vllm-continuum) — first author Hanchen Li's GitHub. The implementation is a vLLM 0.10.2 fork.
+
 ```bash
-# When released (status: pending publication as of June 2026):
-git clone https://github.com/Tensormesh/continuum   # placeholder repo name
-cd continuum
+git clone https://github.com/Hanchenli/vllm-continuum
+cd vllm-continuum
 pip install -e .   # extends vLLM 0.10.2
 ```
 
