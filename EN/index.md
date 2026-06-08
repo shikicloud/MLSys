@@ -1,6 +1,6 @@
 ---
 title: Index
-updated: 2026-06-02
+updated: 2026-06-08
 ---
 
 # Wiki Index
@@ -89,3 +89,4 @@ updated: 2026-06-02
 - [[speceyes]] — SpecEyes: agentic-level speculative acceleration for multimodal LLMs via 4-phase pipeline + answer-separability cognitive gating + heterogeneous parallel funnel; 1.42-1.73× avg speedup with up to +6.7% accuracy on V*/HR-Bench/POPE (Xiamen U/Rochester/OSU, arXiv 2603.23483) — paper review
 - [[speccache]] — SpecCache + What Limits Agentic Systems Efficiency?: 5-day/5-provider/9-model LLM API latency study (69.21× variance) + 53.7% web-env latency finding + SpecCache (action-observation cache with draft-LLM model-based prefetching); 58× cache hit rate improvement vs random, 3.2× web env latency reduction (UW-Madison/Toronto/NVIDIA, arXiv 2510.16276) — paper review
 - [[mori]] — MORI: Memory Offloader with Relative Idleness — direct successor to Continuum (same first author Hanchen Li); two-tier (GPU + CPU) KV offloading with continuous idleness metric + sticky rebalancing + typed eviction; 20-71% higher throughput, 18-43% lower TTFT, up to 2.8× TTFT reduction on real Claude Code SWE-bench Pro traces; first program-aware two-tier scheduler that handles dynamic agent workloads (UC Berkeley/Renmin/Stanford/Georgia Tech, arXiv 2606.00866) — paper review
+- [[infercept]] — InferCept: the first LLM inference framework designed for augmented LLMs with interceptions; establishes the Discard/Preserve/Swap taxonomy + four closed-form waste equations + min-waste scheduling; swap pipelining (96% Swap waste eliminated) + recomputation chunking (halves Discard waste) + dynamic interception-duration estimator (93% of oracle); 1.6×–2× throughput, 1.3×–12× lower normalized latency on Llama3-70B, GPU memory waste from ~25% → 0.69%; the canonical baseline that Continuum and MORI both extend (UCSD WukLab, ICML 2024, arXiv 2402.01869) — paper review
