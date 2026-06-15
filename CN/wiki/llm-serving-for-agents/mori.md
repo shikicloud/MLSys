@@ -15,7 +15,7 @@ paper: arXiv:2606.00866
 > - **代码**：截至 2026-06 未发布
 > - **作者**：Tian Xia¹、Hanchen Li¹、Zhifei Li²、Xiaokun Chen³、Hao Kang⁴、Yifan Qiao¹、Yi Xu¹、Ion Stoica¹
 > - **机构**：¹UC Berkeley、²中国人民大学、³斯坦福大学、⁴Georgia Institute of Technology
-> - **实现**：~3,300 行 Python 在 ThunderAgent + 500 行在 SGLang v0.5.10 HiCache 上
+> - **实现**：~3,300 行 Python 在 [[thunderagent|ThunderAgent]] + 500 行在 SGLang v0.5.10 HiCache 上
 
 > [!important] [[continuum|Continuum]] 的直接后继
 > 同一第一作者（Hanchen Li, UC Berkeley）同一问题域（program-aware agent serving）。**Continuum** 是单层（仅 GPU HBM）带 TTL pinning，**MORI** 是**两层（GPU + CPU DRAM）**带连续 *idleness* metric 排所有 program 跨内存层动态分区。进化是：Continuum 决定"pin 还是不 pin"，MORI 沿相对空闲度谱决定"哪一层"。**MORI 是未来 12 个月 agent serving 系统应该收敛到的目标** —— 把这当 Continuum 之上的新 state of the art 读。
@@ -209,8 +209,8 @@ flowchart TB
 
 **Baseline**：
 - **SGLang Model Gateway (SMG)**：prefix-aware 请求调度器，无 offload
-- **ThunderAgent (TA)**：program-aware，无 CPU offload
-- **ThunderAgent + Offloading (TA+O)**：program-aware + HiCache CPU offload，但**驱逐是 context-length 基础的，不 phase-aware**（这是最强可比 baseline）
+- **[[thunderagent|ThunderAgent]] (TA)**：program-aware，无 CPU offload
+- **[[thunderagent|ThunderAgent]] + Offloading (TA+O)**：program-aware + HiCache CPU offload，但**驱逐是 context-length 基础的，不 phase-aware**（这是最强可比 baseline）
 
 ### 单副本吞吐（Figure 7-9，Section 6.2.1）
 
@@ -361,7 +361,7 @@ git clone https://github.com/sgl-project/sglang   # v0.5.10
 ## 参考文献
 
 - Tian Xia, Hanchen Li, Zhifei Li, Xiaokun Chen, Hao Kang, Yifan Qiao, Yi Xu, Ion Stoica. *Idleness is Relative: Exploiting Tool-Call Idle Windows for Offloading in Agentic Systems with MORI.* arXiv:2606.00866, 2026 年 5 月。 https://arxiv.org/abs/2606.00866
-- ThunderAgent [24]：MORI 建立其上的 program-aware 调度器。
+- [[thunderagent|ThunderAgent]] [24]：MORI 建立其上的 program-aware 调度器（ICML 2026 Spotlight，top 2.2%）。
 - SGLang v0.5.10 [68]：推理引擎。
 - HiCache [59]：CPU offload backend。
 - Continuum [7]：直接前作系统（同第一作者）。

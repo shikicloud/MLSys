@@ -300,7 +300,7 @@ flowchart TB
 
 ### OpenHands RL 训练 rollout（论文 Table 5）
 
-一个本身有意思的旁路实验：Continuum 应用到 **RL 训练的 rollout 生成** —— Multi-SWE-Bench 上 GLM-4.5-fp8 的 OpenHands agent（8×H100）。对比同期 ThunderAgent（RL 专用 agent serving）：
+一个本身有意思的旁路实验：Continuum 应用到 **RL 训练的 rollout 生成** —— Multi-SWE-Bench 上 GLM-4.5-fp8 的 OpenHands agent（8×H100）。对比同期 [[thunderagent|ThunderAgent]]（program-aware agent serving）：
 
 | 系统 | 吞吐（步/分）|
 | --- | -----------: |
@@ -423,7 +423,7 @@ pip install -e .   # 扩展 vLLM 0.10.2
 - Autellix（Luo et al., 2025, [arXiv:2502.13965](https://arxiv.org/abs/2502.13965)）—— PLAS（Program-Level Attained Service）baseline；按累积服务时间优先排序。
 - Pie（SOSP 2025）—— 可编程 agent serving；被引用为相关但需要用户写调度逻辑。
 - LMCache —— CPU DRAM offload 集成；Continuum 的 CPU-offload 实验用 LMCache 0.3.7。
-- ThunderAgent —— 同期 RL 专用 agent serving，在 OpenHands rollout 实验中对比。
+- [[thunderagent|ThunderAgent]] —— 同期 program-aware agent serving 系统；OpenHands rollout 实验里作为 baseline（Continuum 在那个实验里 +27% over TA）。**ThunderAgent 自己后续的论文在随机工具 workload 上 6 个 benchmark 全胜 Continuum** —— 详细对比见 [[thunderagent]]。
 - mini-swe-agent（截至 2026 年 4 月 SWE-Bench 排行榜第 5）—— 工作负载 trace 用的 SWE-Bench agent。
 - BFCL v4 Web Search —— Berkeley Function Calling Leaderboard，作为函数调用工作负载。
 - OpenHands（Multi-SWE-Bench，Go 语言例子）—— 第三个工作负载用的 OpenHands 变种。

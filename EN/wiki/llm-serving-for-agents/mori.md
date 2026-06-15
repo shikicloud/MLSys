@@ -15,7 +15,7 @@ paper: arXiv:2606.00866
 > - **Code**: Not released as of June 2026
 > - **Authors**: Tian Xia¹, Hanchen Li¹, Zhifei Li², Xiaokun Chen³, Hao Kang⁴, Yifan Qiao¹, Yi Xu¹, Ion Stoica¹
 > - **Affiliations**: ¹UC Berkeley, ²Renmin University of China, ³Stanford University, ⁴Georgia Institute of Technology
-> - **Implementation**: ~3,300 lines Python on ThunderAgent + 500 lines on SGLang v0.5.10 HiCache
+> - **Implementation**: ~3,300 lines Python on [[thunderagent|ThunderAgent]] + 500 lines on SGLang v0.5.10 HiCache
 
 > [!important] Direct successor to [[continuum|Continuum]]
 > Same first author (Hanchen Li, UC Berkeley) and same problem domain (program-aware agent serving). Where **Continuum** was single-tier (GPU HBM only) with TTL-based pinning, **MORI** is **two-tier (GPU + CPU DRAM)** with a continuous *idleness* metric that ranks all programs and dynamically partitions them across memory tiers. The progression is: Continuum decides "pin or not", MORI decides "which tier" along a relative-idleness spectrum. **MORI is what agent serving systems should converge to** for the next 12 months — read this as the new state of the art over Continuum.
@@ -209,8 +209,8 @@ flowchart TB
 
 **Baselines**:
 - **SGLang Model Gateway (SMG)**: prefix-aware request scheduler, no offloading
-- **ThunderAgent (TA)**: program-aware, no CPU offloading
-- **ThunderAgent + Offloading (TA+O)**: program-aware + HiCache CPU offload, but **eviction is context-length based, not phase-aware** (this is the strongest comparable baseline)
+- **[[thunderagent|ThunderAgent]] (TA)**: program-aware, no CPU offloading
+- **[[thunderagent|ThunderAgent]] + Offloading (TA+O)**: program-aware + HiCache CPU offload, but **eviction is context-length based, not phase-aware** (this is the strongest comparable baseline)
 
 ### Single-replica throughput (Figure 7-9, Section 6.2.1)
 
@@ -361,7 +361,7 @@ git clone https://github.com/sgl-project/sglang   # v0.5.10
 ## References
 
 - Tian Xia, Hanchen Li, Zhifei Li, Xiaokun Chen, Hao Kang, Yifan Qiao, Yi Xu, Ion Stoica. *Idleness is Relative: Exploiting Tool-Call Idle Windows for Offloading in Agentic Systems with MORI.* arXiv:2606.00866, May 2026. https://arxiv.org/abs/2606.00866
-- ThunderAgent [24]: program-aware scheduler MORI builds atop.
+- [[thunderagent|ThunderAgent]] [24]: program-aware scheduler MORI builds atop (ICML 2026 Spotlight, top 2.2%).
 - SGLang v0.5.10 [68]: inference engine.
 - HiCache [59]: CPU offload backend.
 - Continuum [7]: direct predecessor system (same first author).

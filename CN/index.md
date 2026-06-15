@@ -1,6 +1,6 @@
 ---
 title: 目录索引
-updated: 2026-06-08
+updated: 2026-06-15
 ---
 
 # Wiki 目录索引
@@ -90,3 +90,4 @@ updated: 2026-06-08
 - [[speccache]] — SpecCache + What Limits Agentic Systems Efficiency？：5 天/5 provider/9 模型 LLM API 延迟研究（69.21× 方差）+ 53.7% web-env 延迟发现 + SpecCache（action-observation cache with draft-LLM 模型基础 prefetching）；cache 命中率比随机改善 58×、web env 延迟降低 3.2×（UW-Madison/多伦多/NVIDIA, arXiv 2510.16276）—— 论文精读
 - [[mori]] — MORI：Memory Offloader with Relative Idleness —— Continuum 的直接后继（同第一作者 Hanchen Li）；两层（GPU + CPU）KV offloading 带连续 idleness metric + sticky rebalancing + typed 驱逐；在真实 Claude Code SWE-bench Pro trace 上吞吐高 20-71%、TTFT 低 18-43%、TTFT 降低多达 2.8×；第一个处理动态 agent workload 的 program-aware 两层调度器（UC Berkeley/人大/斯坦福/Georgia Tech, arXiv 2606.00866）—— 论文精读
 - [[infercept]] — InferCept：第一个面向被中断的增强型 LLM 设计的推理框架；确立 Discard/Preserve/Swap 分类法 + 四条闭式浪费方程 + min-waste 调度；swap 流水线（消除 96% Swap 浪费）+ 重算分块（砍半 Discard 浪费）+ 动态中断时长估计器（达到 oracle 的 93%）；吞吐 1.6×–2×、Llama3-70B 上 normalized latency 降低 1.3×–12×、GPU 内存浪费从 ~25% → 0.69%；Continuum 与 MORI 都以它为 canonical baseline（UCSD WukLab, ICML 2024, arXiv 2402.01869）—— 论文精读
+- [[thunderagent]] — ThunderAgent：ICML 2026 Spotlight（top 2.2%）—— 第一个把 multi-turn workflow 抽象成一等公民 **agentic program** $P = \langle ID, c, \mathcal{T}, \mathcal{L}, \tau, s \rangle$ 并按 program 粒度调度的 agent-serving 系统；反应式 thrashing 监视器（每 $\Delta t = 5$ s）配 shortest-context-first 驱逐（由 Lemma 4.1 形式化：$\text{Cost}_{\text{recompute}} \propto c_i^2$）；全局跨节点 waiting queue；hook-based 工具 GC + 异步环境准备；**对 vLLM 1.48-3.58×、在所有 6 个 benchmark 上击败 [[continuum|Continuum]]**（Continuum 在随机 ToolOrchestra 上*输*给 vLLM）；RL rollout 加速 1.79-3.92×；**[[mori|MORI]] 建立在其之上的系统层**（MORI 的 ~3,300 行实现在 ThunderAgent 上）（Georgia Tech/CMU/UIUC/Together AI, arXiv 2602.13692）—— 论文精读

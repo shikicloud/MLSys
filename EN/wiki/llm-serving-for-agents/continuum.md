@@ -300,7 +300,7 @@ Simulated more-turn scenarios on SWE-Bench by repeating the trace (1× to 5×) w
 
 ### OpenHands rollout for RL training (paper Table 5)
 
-A side-experiment that's interesting in its own right: Continuum applied to **rollout generation for RL training** of an OpenHands agent on Multi-SWE-Bench with GLM-4.5-fp8 (8×H100). Compared to the concurrent ThunderAgent (RL-focused agent serving):
+A side-experiment that's interesting in its own right: Continuum applied to **rollout generation for RL training** of an OpenHands agent on Multi-SWE-Bench with GLM-4.5-fp8 (8×H100). Compared to the concurrent [[thunderagent|ThunderAgent]] (program-aware agent serving):
 
 | System | Throughput (steps / min) |
 | ------ | -----------------------: |
@@ -423,7 +423,7 @@ pip install -e .   # extends vLLM 0.10.2
 - Autellix (Luo et al., 2025, [arXiv:2502.13965](https://arxiv.org/abs/2502.13965)) — PLAS (Program-Level Attained Service) baseline; prioritizes by cumulative service time.
 - Pie (SOSP 2025) — programmable agent serving; cited as related but requires user-written scheduling logic.
 - LMCache — CPU DRAM offload integration; Continuum's CPU-offload experiments use LMCache 0.3.7.
-- ThunderAgent — concurrent RL-focused agent serving compared in the OpenHands rollout experiment.
+- [[thunderagent|ThunderAgent]] — concurrent program-aware agent serving system; cited as baseline in the OpenHands rollout experiment (+27% Continuum over TA). **ThunderAgent's own follow-up paper later beat Continuum on all 6 of its benchmarks** under stochastic tool workloads — see [[thunderagent]] for the direct comparison.
 - mini-swe-agent (ranked #5 on SWE-Bench leaderboard as of April 2026) — the SWE-Bench agent used in the workload trace.
 - BFCL v4 Web Search — Berkeley Function Calling Leaderboard, used as the function-calling workload.
 - OpenHands (Multi-SWE-Bench, Go language example) — the OpenHands variant used in the third workload.

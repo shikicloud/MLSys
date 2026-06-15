@@ -1,6 +1,6 @@
 ---
 title: Index
-updated: 2026-06-08
+updated: 2026-06-15
 ---
 
 # Wiki Index
@@ -90,3 +90,4 @@ updated: 2026-06-08
 - [[speccache]] — SpecCache + What Limits Agentic Systems Efficiency?: 5-day/5-provider/9-model LLM API latency study (69.21× variance) + 53.7% web-env latency finding + SpecCache (action-observation cache with draft-LLM model-based prefetching); 58× cache hit rate improvement vs random, 3.2× web env latency reduction (UW-Madison/Toronto/NVIDIA, arXiv 2510.16276) — paper review
 - [[mori]] — MORI: Memory Offloader with Relative Idleness — direct successor to Continuum (same first author Hanchen Li); two-tier (GPU + CPU) KV offloading with continuous idleness metric + sticky rebalancing + typed eviction; 20-71% higher throughput, 18-43% lower TTFT, up to 2.8× TTFT reduction on real Claude Code SWE-bench Pro traces; first program-aware two-tier scheduler that handles dynamic agent workloads (UC Berkeley/Renmin/Stanford/Georgia Tech, arXiv 2606.00866) — paper review
 - [[infercept]] — InferCept: the first LLM inference framework designed for augmented LLMs with interceptions; establishes the Discard/Preserve/Swap taxonomy + four closed-form waste equations + min-waste scheduling; swap pipelining (96% Swap waste eliminated) + recomputation chunking (halves Discard waste) + dynamic interception-duration estimator (93% of oracle); 1.6×–2× throughput, 1.3×–12× lower normalized latency on Llama3-70B, GPU memory waste from ~25% → 0.69%; the canonical baseline that Continuum and MORI both extend (UCSD WukLab, ICML 2024, arXiv 2402.01869) — paper review
+- [[thunderagent]] — ThunderAgent: ICML 2026 Spotlight (top 2.2%) — the first agent-serving system to abstract multi-turn workflows as first-class **agentic programs** $P = \langle ID, c, \mathcal{T}, \mathcal{L}, \tau, s \rangle$ and schedule at program granularity; reactive thrashing monitor at $\Delta t = 5$s with shortest-context-first eviction (formalized by Lemma 4.1: $\text{Cost}_{\text{recompute}} \propto c_i^2$); global cross-node waiting queue; hook-based tool GC + async env prep; **1.48-3.58× over vLLM, beats [[continuum|Continuum]] on all 6 benchmarks** (Continuum *loses* to vLLM on stochastic ToolOrchestra); 1.79-3.92× RL rollout speedup; the **system layer that [[mori|MORI]] builds on** (~3,300 lines of MORI sit atop ThunderAgent) (Georgia Tech/CMU/UIUC/Together AI, arXiv 2602.13692) — paper review
