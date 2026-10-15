@@ -9,18 +9,18 @@ const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const feedUrl = 'https://shikicloud.github.io/MLSys/reading.xml';
 const copy = {
   zh: {
-    folder: 'CN', title: '每日论文推荐', description: '从经典基础到新研究：agent serving 与 RL infra 的每日阅读候选。',
-    introduction: '每天推荐 1 篇主读与 2–4 篇选读；候选不等于已读，无需一天读完。优先建立系统基础，再逐步连接当前的 agent serving 与 RL infra 工作。',
+    folder: 'CN', title: '每日论文推荐', description: 'LLM 与 Agent 的能力、学习与系统：从经典基础到前沿研究。',
+    introduction: '每天推荐 1 篇主读与 2–4 篇选读，覆盖 LLM Inference、RL Infra、Post-Training、RSI（递归自我改进），以及推理计算、Agent 学习与记忆、数据评估和模型架构。经典与前沿并行，按主题逐步展开；不要求与当前工作直接相关。候选不等于已读，无需一天读完。',
     sync: '本页与每日归档随仓库发布同步；手机可浏览网站或订阅 RSS。RSS 订阅是否推送通知取决于所用阅读器。',
     roadmap: '学习路线', feed: '订阅 RSS', archive: '历史推荐（最新在前）', main: '主读', optional: '选读', source: '原文',
-    labels: ['核心贡献', '与当前工作的关系', '阅读建议', '前置知识', '局限与注意'], venue: '年份 / 发表信息', revisit: '再次推荐的原因', back: '全部推荐',
+    labels: ['核心贡献', '阅读价值与启发', '阅读建议', '前置知识', '局限与注意'], venue: '年份 / 发表信息', revisit: '再次推荐的原因', back: '全部推荐',
   },
   en: {
-    folder: 'EN', title: 'Daily reading recommendations', description: 'Daily candidates for agent serving and RL infrastructure, from foundational classics to new research.',
-    introduction: 'Each digest recommends 1 main paper and 2–4 optional papers. A recommendation does not mean it has been read, and there is no need to finish everything in one day. Build the foundations, then connect them to current agent serving and RL infrastructure work.',
+    folder: 'EN', title: 'Daily reading recommendations', description: 'LLM and agent capabilities, learning, and systems: from foundations to frontier research.',
+    introduction: 'Each digest recommends 1 main paper and 2–4 optional papers across LLM inference, RL infrastructure, post-training, RSI (recursive self-improvement), reasoning compute, agent learning and memory, data and evaluation, and model architecture. Explore foundations and current research by theme; a direct connection to current work is not required. A recommendation does not mean it has been read, and there is no need to finish everything in one day.',
     sync: 'This index and the daily archive sync with repository publishing. Browse on your phone or subscribe through RSS; notification delivery depends on your RSS reader.',
     roadmap: 'Learning roadmap', feed: 'Subscribe via RSS', archive: 'Archive (newest first)', main: 'Main reading', optional: 'Optional reading', source: 'Original source',
-    labels: ['Core contribution', 'Connection to current work', 'Reading guidance', 'Prerequisites', 'Limitations'], venue: 'Year / publication', revisit: 'Why revisit', back: 'All recommendations',
+    labels: ['Core contribution', 'Learning value and connections', 'Reading guidance', 'Prerequisites', 'Limitations'], venue: 'Year / publication', revisit: 'Why revisit', back: 'All recommendations',
   },
 };
 

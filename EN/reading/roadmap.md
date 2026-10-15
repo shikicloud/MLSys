@@ -1,5 +1,5 @@
 ---
-title: A Foundational Reading Roadmap for Agent Serving and RL Infrastructure
+title: A Reading Roadmap for LLMs, Agents, and Learning Systems
 category: ml-sys
 tags: [reading-roadmap]
 created: '2026-10-15'
@@ -7,17 +7,32 @@ updated: '2026-10-15'
 status: growing
 ---
 
-# A Foundational Reading Roadmap for Agent Serving and RL Infrastructure
+# A Reading Roadmap for LLMs, Agents, and Learning Systems
 
 **Current starting point (2026-10-15):** Orca and PagedAttention have been read closely, so skip the first two entries; HybridFlow is the next main read. Study SGLang cache paths alongside current source code. Other roadmap entries are optional references, not completion claims.
 
 ## Overview
 
-This roadmap starts with request scheduling and memory management, then connects agent workloads, distributed training, MoE, and RL training pipelines. It is intended for readers building their systems foundations; mastery is only assumed for entries explicitly marked as already read.
+The reading scope covers LLM and agent capabilities, learning, and systems. The existing four-stage sequence below is one systems foundation branch, connecting scheduling and memory management to distributed training, MoE, and RL pipelines. Post-training, reasoning, data and evaluation, and self-improvement can be explored in parallel. Mastery is only assumed for entries explicitly marked as already read.
 
-Selection is not limited by publication date. Foundational contributions and relevance to concrete systems problems come first, with venues and research teams as additional signals. Publication details below were checked against original papers or official publication pages. No unverified citation counts are used. **A recommendation is not a record of having read a paper, and the sequence does not imply completion.**
+Selection is not limited by publication date or a direct connection to current work. Either foundational or current research can be the main reading, chosen for learning value, evidence, and prerequisites; venues and teams are additional signals. Publication details below were checked against original papers or official publication pages. No unverified citation counts are used. **A recommendation is not a record of having read a paper, and the sequence does not imply completion.**
 
 Each daily selection should contain **one main read and two to four alternatives**. The main read develops one concept; alternatives can be compared, skimmed, or saved. There is no expectation to read every candidate in depth each day. Start with the abstract, motivation, main design, and key experiments before proofs, code, and implementation details.
+
+## Directions to explore in parallel
+
+| Direction | Questions to explore |
+| --- | --- |
+| LLM Inference | Efficient execution: serving, caching, scheduling, decoding, quantization, and kernels. |
+| RL Infra | Organizing rollout, environments, training, weight synchronization, and distributed execution. |
+| Post-Training | Acquiring capabilities through SFT, preference optimization, RL, rewards, and distillation. |
+| RSI (Recursive Self-Improvement) | Improving the system and its improvement process: what changes and how gains are verified. |
+| Reasoning / Test-Time Compute | Improving answers through search, verification, and compute allocation. |
+| Agents / Lifelong Learning | Tool use, planning, memory, and learning from long-term interaction. |
+| Data / Evaluation | The value of data and feedback, reliable measurement, and generalization. |
+| Model Architecture / Training | MoE, hybrid architectures, long context, multimodality, training scale, and hardware co-design. |
+
+These directions overlap and are not a closed list. Every edition need not cover all of them, and immediate applicability is not required. For RSI, distinguish task-level revision, retraining on synthetic data, and changes to the learning process. Check feedback sources, independent validation, multiple iterations, and human involvement instead of relying on a self-improvement label.
 
 ## Stage 1: How requests execute and why KV fills GPU memory
 
@@ -133,7 +148,7 @@ Each daily selection should contain **one main read and two to four alternatives
 
 ## Related work and further reading
 
-Use [[EN/wiki/llm-inference/index|LLM Inference and Serving]], [[EN/wiki/rl-infra/index|RL Infrastructure]], and [[EN/wiki/llm-serving-for-agents/index|LLM Serving for Agents]] to fill conceptual gaps. Add new papers and in-depth analyses around the questions above. Newness need not displace foundations, and routine version updates are not research contributions by themselves.
+Use [[EN/wiki/llm-inference/index|LLM Inference and Serving]], [[EN/wiki/rl-infra/index|RL Infrastructure]], and [[EN/wiki/llm-serving-for-agents/index|LLM Serving for Agents]] to fill conceptual gaps in this systems branch. Daily selections also cover the other directions above, admitting important mechanisms, new perspectives, and useful research questions. Routine version updates are not research contributions by themselves.
 
 Original sources are linked under each paper heading, with publication and preprint years distinguished. The order can change when a discussion reveals missing prerequisites; finishing the entire list at once is unnecessary.
 

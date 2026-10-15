@@ -2,6 +2,22 @@
   "updated": "2026-10-15",
   "timezone": "Asia/Shanghai",
   "dailyStart": "09:00",
+  "topicScope": {
+    "framing": "LLM and agent capabilities, learning, and systems",
+    "directions": [
+      "LLM Inference: serving, caching, scheduling, decoding, quantization, kernels, and cost",
+      "RL Infra: rollout, training pipelines, environments, weight synchronization, and distributed execution",
+      "Post-Training: SFT, preference optimization, RL, rewards, distillation, and learning dynamics",
+      "Recursive Self-Improvement (RSI): self-improving agents, learning processes, and automated research",
+      "Reasoning and Test-Time Compute: search, verification, adaptive computation, and reasoning efficiency",
+      "Agents and Lifelong Learning: tools, planning, memory, long-horizon tasks, and continual adaptation",
+      "Data and Evaluation: data quality, synthetic data, feedback, benchmarks, generalization, and reliability",
+      "Model Architecture and Training: MoE, hybrid architectures, long context, multimodality, scaling, and hardware co-design"
+    ],
+    "selection": "These are discovery directions, not a closed whitelist. Select for learning value and evidence without requiring a direct connection to current work. Mix foundational and current work; either may be the main reading. Rotate themes across editions, without quotas or covering every direction each day.",
+    "rsiEvidence": "State what changes (outputs, memory, prompts/tools/code, weights, or the learning process), where feedback comes from, how gains are independently tested, how many iterations are demonstrated, and how much human intervention remains. Do not infer sustained recursive improvement from a single gain or the paper title.",
+    "exclude": "Routine version updates, promotional announcements, and items without substantive technical content"
+  },
   "alreadyReadClosely": [
     "orca-2022",
     "pagedattention-2023"

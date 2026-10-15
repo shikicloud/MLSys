@@ -8,7 +8,7 @@ updated: 2026-10-15
 ## Daily reading
 
 - [[EN/reading/index|Daily recommendations and archive]] — one main read and 2–4 optional papers, available on phone and desktop
-- [[EN/reading/roadmap|Foundational reading roadmap]] — scheduling, KV caching, parallelism, MoE, and RL infrastructure
+- [[EN/reading/roadmap|Reading roadmap and directions]] — LLM inference, RL infrastructure, post-training, recursive self-improvement, agents, data and evaluation, and model architecture
 - [Subscribe to the Chinese daily RSS feed](https://shikicloud.github.io/MLSys/reading.xml)
 
 ## LLM Inference & Serving

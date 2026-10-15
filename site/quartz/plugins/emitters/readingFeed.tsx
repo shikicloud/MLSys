@@ -7,7 +7,7 @@ import type { ProcessedContent } from "../vfile"
 import { write } from "./helpers"
 
 const feedTitle = "MLSys 每日论文精选"
-const feedDescription = "Agent serving 与 RL infra：经典论文、系统设计与值得精读的新工作。"
+const feedDescription = "LLM 与 Agent 的能力、学习与系统：推理、RL Infra、Post-Training、递归自我改进，以及数据、评估和架构研究。"
 const digestPrefix = "CN/reading/daily/"
 
 function isCalendarDate(value: string): boolean {

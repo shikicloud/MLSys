@@ -8,7 +8,7 @@ updated: 2026-10-15
 ## 每日论文
 
 - [[CN/reading/index|每日推荐与历史归档]] — 每天 1 篇主读、2–4 篇选读，手机与电脑打开同一份内容
-- [[CN/reading/roadmap|经典阅读路线]] — 从调度、KV cache 到并行、MoE 与 RL 基础设施
+- [[CN/reading/roadmap|阅读路线与方向]] — LLM 推理、RL Infra、后训练、递归自我改进，以及 Agent、数据评估与模型架构
 - [订阅每日推荐 RSS](https://shikicloud.github.io/MLSys/reading.xml)
 
 ## LLM 推理与服务
