@@ -122,3 +122,4 @@ updated: 2026-06-15
 - [RSS] Fixed oversized link icons in feed readers by removing website decorations and the duplicate title from RSS while preserving content, paper links, and figures; publication time and item IDs remain stable.
 - [READING] Added intrinsic dimensions to website link icons so reader modes that strip styles cannot enlarge them.
 - [READING] Expanded the 2026-10-15 edition into technical reading notes: HybridFlow mechanisms and evaluation conditions, pinned SGLang code and recovery examples, and Ray/DistServe tradeoffs. Added bilingual sectioned prose and recorded the same depth requirement for future editions.
+- [NOTIFY] Added local Bark publication notifications: verify the public RSS before sending the edition topic and reading link; keep device credentials outside the repository and track delivery per edition to prevent repeat pushes.

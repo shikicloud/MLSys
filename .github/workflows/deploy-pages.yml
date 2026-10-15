@@ -38,6 +38,9 @@ jobs:
           node --test scripts/reading-digest.test.mjs
           node scripts/reading-digest.mjs --check
 
+      - name: Test local notification helper
+        run: node --test scripts/notify-reading.test.mjs
+
       - name: Test reading RSS
         working-directory: ./site
         run: node --import tsx --test quartz/plugins/emitters/readingFeed.test.ts

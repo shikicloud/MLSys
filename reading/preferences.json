@@ -13,7 +13,14 @@
   },
   "deliveryPreference": {
     "device": "iPhone",
-    "default": "NetNewsWire on iPhone; full-text RSS confirmed working; no direct push channel configured"
+    "default": "NetNewsWire on iPhone for full-text RSS; Bark notification after verified publication",
+    "push": {
+      "provider": "Bark",
+      "enabled": true,
+      "trigger": "after verified website and RSS publication",
+      "frequency": "once per edition",
+      "credentials": "private local configuration outside repository"
+    }
   },
   "editorialPreference": {
     "format": "detailed technical reading notes",

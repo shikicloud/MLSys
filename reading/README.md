@@ -33,6 +33,7 @@ RSS exports semantic article HTML without the duplicate page title or Quartz hea
 4. Review the generated CN and EN editions and archive indexes. Append a concise note to each language's `log.md`; do not rewrite historical entries. Change only digest data, generated reading pages, and those append-only log entries during routine runs.
 5. Commit the complete edition as one change to `main` using the authorized GitHub connection. Check the current branch head first; use a fast-forward / expected-head guard and refresh on conflicts. Never overwrite an unrelated concurrent change. A failed publication must remain visible as a failure, not be reported as synchronized.
 6. The existing Pages workflow validates the data and feed, builds Quartz, and deploys the website. Check its result and the live edition before reporting publication success. A successful commit alone is not a successful deployment.
+7. When Bark is configured on the local publishing machine, run `node scripts/notify-reading.mjs --date YYYY-MM-DD` after deployment verification. The helper rechecks the public RSS entry before sending and records accepted deliveries to avoid repeat notifications for the same edition. Report notification status separately from website deployment.
 
 `--check` validates all source records and verifies that committed generated pages match them. Do not hand-edit generated daily pages or reading indexes. Roadmap pages are maintained separately.
 
@@ -67,6 +68,27 @@ Subscribe to the dedicated feed in a mobile RSS reader. Content is shared across
 The existing Codex task starts at 09:00 Asia/Shanghai. Research and deployment take time, so this is a start time rather than a delivery deadline. The local generation task needs the computer and app available; the published site is independently hosted by GitHub. This repository does not contain an unattended cloud model runner or a model API key.
 
 Direct push notifications are optional and require a chosen channel. RSS polling is reader-dependent. GitHub Mobile does not treat ordinary commits or Pages deploys as paper notifications. Bark requires an iPhone, notification permission, and a private device key; never put that key in source files, RSS, URLs shown publicly, or build logs.
+
+### Bark notification delivery
+
+The local publishing task uses `scripts/notify-reading.mjs` to notify the configured iPhone after an edition is live. The notification includes the edition topic, main paper, and a link to the public reading page. RSS remains the full-text reading channel. The helper uses Bark's JSON POST endpoint, keeping the device key out of the request URL; no credential is sent to GitHub Actions.
+
+Credentials live outside the repository, in `~/.config/mlsys-reading/bark.json`. The helper creates private files with mode `0600` and its directory with mode `0700`. Configure it by providing the dedicated HTTPS address from Bark to `node scripts/notify-reading.mjs --configure` through standard input with terminal echo disabled. Do not place the address in command-line arguments, shell history, screenshots, or a committed example file. Configuration only stores the address; it does not send a notification.
+
+Useful commands from the repository root:
+
+```sh
+node scripts/notify-reading.mjs --status
+node scripts/notify-reading.mjs --preview 2026-10-15
+node scripts/notify-reading.mjs --date 2026-10-15
+node --test scripts/notify-reading.test.mjs
+```
+
+`--status` does not print the key. `--preview` displays only the public notification content and sends nothing. `--date` sends a real notification, so use it only for an authorized recipient and a published edition. It requires a matching public RSS item and successful HTTP/API responses before recording acceptance. An accepted response means Bark accepted the push, not that the user has seen it. iOS notification permissions, network conditions, and Focus settings can affect display.
+
+Local delivery records and locks are kept separately for each edition. A lock left by an interrupted process blocks that edition for review without blocking future dates. A network timeout, gateway/server failure, or otherwise ambiguous response is not automatically resent; do not delete records or bypass the guard just to obtain a success result. An explicit rejection remains a failure that can be retried after its cause is resolved. The existing daily task invokes this helper; it does not introduce another scheduler. The 09:00 start time and local-computer requirement still apply.
+
+References: [Bark JSON POST API](https://github.com/Finb/Bark/blob/master/docs/tutorial.md), [notification parameters](https://github.com/Finb/Bark/blob/master/docs/params.md).
 
 ## Deployment detail
 
