@@ -19,6 +19,8 @@
       "enabled": true,
       "trigger": "after verified website and RSS publication",
       "frequency": "once per edition",
+      "tapUrl": "netnewswire://",
+      "tapBehavior": "Open NetNewsWire; select the MLSys subscription to read. Does not deep-link to a specific article.",
       "credentials": "private local configuration outside repository"
     }
   },

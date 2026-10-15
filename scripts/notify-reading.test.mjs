@@ -54,7 +54,8 @@ test('preview needs no secret and rejects unsafe dates or mismatched JSON', asyn
   assert.equal(payload.title, `📚 MLSys 每日选读 · ${date}`);
   assert.ok(payload.body.includes(title));
   assert.ok(payload.body.includes('主读：HybridFlow'));
-  assert.equal(payload.url, publicUrl);
+  assert.equal(payload.url, 'netnewswire://');
+  assert.ok(payload.body.includes('NetNewsWire'));
   assert.equal(payload.group, 'MLSys 每日选读');
   assert.equal(payload.isArchive, 1);
   assert.ok(!JSON.stringify(payload).includes(key));
@@ -79,6 +80,7 @@ test('a verified publication is POSTed once with pending persisted before the re
     assert.equal(init.method, 'POST');
     const delivery = JSON.parse(await readFile(path.join(options.configDir, `delivery-${date}.json`), 'utf8'));
     assert.equal(delivery.status, 'pending');
+    assert.equal(delivery.url, publicUrl, 'delivery identity stays the public edition URL');
     assert.deepEqual(JSON.parse(init.body), { ...await preview(date, options), device_key: key });
     return response({ code: 200, message: `server-private-body-${key}` });
   };
@@ -98,6 +100,7 @@ test('publication gate requires the same item GUID and title and refuses feed re
   for (const published of [
     response(feed(publicUrl, 'Wrong title')),
     response(feed(`${publicUrl}-wrong`)),
+    response(feed('netnewswire://')),
     response('<rss><item><title>训练 &amp; rollout &lt;边界&gt;</title><guid>wrong</guid></item><item><title>Wrong</title><guid>' + publicUrl + '</guid></item></rss>'),
     response('redirect', 302),
   ]) {

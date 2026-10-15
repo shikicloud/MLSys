@@ -123,3 +123,4 @@ updated: 2026-06-15
 - [READING] Added intrinsic dimensions to website link icons so reader modes that strip styles cannot enlarge them.
 - [READING] Expanded the 2026-10-15 edition into technical reading notes: HybridFlow mechanisms and evaluation conditions, pinned SGLang code and recovery examples, and Ray/DistServe tradeoffs. Added bilingual sectioned prose and recorded the same depth requirement for future editions.
 - [NOTIFY] Added local Bark publication notifications: verify the public RSS before sending the edition topic and reading link; keep device credentials outside the repository and track delivery per edition to prevent repeat pushes.
+- [NOTIFY] Changed future Bark notification taps to open NetNewsWire, where the MLSys subscription provides the full text. Public article URLs remain the publication and deduplication identity; opening a specific article is not promised.

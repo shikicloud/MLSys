@@ -71,7 +71,7 @@ Direct push notifications are optional and require a chosen channel. RSS polling
 
 ### Bark notification delivery
 
-The local publishing task uses `scripts/notify-reading.mjs` to notify the configured iPhone after an edition is live. The notification includes the edition topic, main paper, and a link to the public reading page. RSS remains the full-text reading channel. The helper uses Bark's JSON POST endpoint, keeping the device key out of the request URL; no credential is sent to GitHub Actions.
+The local publishing task uses `scripts/notify-reading.mjs` to notify the configured iPhone after an edition is live. The notification includes the edition topic and main paper. Tapping it opens NetNewsWire through its registered `netnewswire://` scheme; select the MLSys subscription to read the full text. This launches the reader, without promising to select a particular article or refresh the feed immediately. Existing notifications keep the target they were sent with. RSS remains the full-text reading channel, and the public edition URL remains the publication check and delivery identity. The helper uses Bark's JSON POST endpoint, keeping the device key out of the request URL; no credential is sent to GitHub Actions.
 
 Credentials live outside the repository, in `~/.config/mlsys-reading/bark.json`. The helper creates private files with mode `0600` and its directory with mode `0700`. Configure it by providing the dedicated HTTPS address from Bark to `node scripts/notify-reading.mjs --configure` through standard input with terminal echo disabled. Do not place the address in command-line arguments, shell history, screenshots, or a committed example file. Configuration only stores the address; it does not send a notification.
 
@@ -88,7 +88,7 @@ node --test scripts/notify-reading.test.mjs
 
 Local delivery records and locks are kept separately for each edition. A lock left by an interrupted process blocks that edition for review without blocking future dates. A network timeout, gateway/server failure, or otherwise ambiguous response is not automatically resent; do not delete records or bypass the guard just to obtain a success result. An explicit rejection remains a failure that can be retried after its cause is resolved. The existing daily task invokes this helper; it does not introduce another scheduler. The 09:00 start time and local-computer requirement still apply.
 
-References: [Bark JSON POST API](https://github.com/Finb/Bark/blob/master/docs/tutorial.md), [notification parameters](https://github.com/Finb/Bark/blob/master/docs/params.md).
+References: [Bark JSON POST API](https://github.com/Finb/Bark/blob/master/docs/tutorial.md), [notification parameters](https://github.com/Finb/Bark/blob/master/docs/params.md), [NetNewsWire iOS 7.1.4 registered URL schemes](https://github.com/Ranchero-Software/NetNewsWire/blob/iOS-7.1.4-7213/iOS/Resources/Info.plist#L29-L51), [incoming URL handling](https://github.com/Ranchero-Software/NetNewsWire/blob/iOS-7.1.4-7213/iOS/SceneDelegate.swift#L120-L203).
 
 ## Deployment detail
 

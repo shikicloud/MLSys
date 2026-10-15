@@ -10,6 +10,7 @@ const defaultRoot = path.resolve(path.dirname(fileURLToPath(import.meta.url)), '
 const defaultConfigDir = path.join(os.homedir(), '.config', 'mlsys-reading');
 const publicRoot = 'https://shikicloud.github.io/MLSys';
 const feedUrl = `${publicRoot}/reading.xml`;
+const readerUrl = 'netnewswire://';
 const safeError = () => new Error('MLSys notification operation could not be completed.');
 const requireValue = condition => { if (!condition) throw safeError(); };
 
@@ -129,10 +130,11 @@ async function readIssue(date, root) {
   const main = shortText(mains[0].title, 140);
   return {
     issueTitle: digest.zh.title,
+    publicUrl: issueUrl(date),
     payload: {
       title: `📚 MLSys 每日选读 · ${date}`,
-      body: `主题：${theme}\n主读：${main}`,
-      url: issueUrl(date), group: 'MLSys 每日选读', isArchive: 1, id: `mlsys-reading-${date}`,
+      body: `主题：${theme}\n主读：${main}\n点此打开 NetNewsWire，在 MLSys 订阅读取全文。`,
+      url: readerUrl, group: 'MLSys 每日选读', isArchive: 1, id: `mlsys-reading-${date}`,
     },
   };
 }
@@ -165,7 +167,7 @@ async function verifyPublished(issue, fetchImpl) {
     for (const match of feed.matchAll(/<item\b[^>]*>([\s\S]*?)<\/item>/g)) {
       const title = match[1].match(/<title\b[^>]*>([\s\S]*?)<\/title>/);
       const guid = match[1].match(/<guid\b[^>]*>([\s\S]*?)<\/guid>/);
-      if (title && guid && xmlText(title[1]) === issue.issueTitle && xmlText(guid[1]) === issue.payload.url) return true;
+      if (title && guid && xmlText(title[1]) === issue.issueTitle && xmlText(guid[1]) === issue.publicUrl) return true;
     }
     return false;
   } catch { return false; }
@@ -196,7 +198,7 @@ export async function notifyReading(date, { root = defaultRoot, configDir = defa
       }
       if (!await verifyPublished(issue, fetchImpl)) return { status: 'unverified' };
       if (!delivery) {
-        delivery = { date, url: issue.payload.url };
+        delivery = { date, url: issue.publicUrl };
       }
       Object.assign(delivery, { status: 'pending', updatedAt: new Date().toISOString() });
       await writePrivate(configDir, deliveryName, delivery);
