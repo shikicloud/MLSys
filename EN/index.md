@@ -1,9 +1,15 @@
 ---
 title: Index
-updated: 2026-06-15
+updated: 2026-10-15
 ---
 
 # Wiki Index
+
+## Daily reading
+
+- [[EN/reading/index|Daily recommendations and archive]] — one main read and 2–4 optional papers, available on phone and desktop
+- [[EN/reading/roadmap|Foundational reading roadmap]] — scheduling, KV caching, parallelism, MoE, and RL infrastructure
+- [Subscribe to the Chinese daily RSS feed](https://shikicloud.github.io/MLSys/reading.xml)
 
 ## LLM Inference & Serving
 - [[vllm]] — vLLM: High-throughput LLM serving with PagedAttention

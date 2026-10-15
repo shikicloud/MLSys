@@ -1,0 +1,18 @@
+{
+  "updated": "2026-10-15",
+  "timezone": "Asia/Shanghai",
+  "dailyStart": "09:00",
+  "alreadyReadClosely": [
+    "orca-2022",
+    "pagedattention-2023"
+  ],
+  "nextMainRead": "hybridflow-2025",
+  "codeReadingFocus": {
+    "zh": "SGLang 应结合当前源码，从 UnifiedRadixCache 的组件选择入手，区分 Full、SWA、Mamba 的状态复用约束，以及 HiCache 的存储分层；不要把所有模型都叫 hybrid。",
+    "en": "Explain SGLang against current code, starting with UnifiedRadixCache component selection. Distinguish Full, SWA, and Mamba state reuse constraints from HiCache storage tiers; do not describe every model as hybrid."
+  },
+  "deliveryPreference": {
+    "device": "iPhone",
+    "default": "full-text RSS; push channel not configured"
+  }
+}

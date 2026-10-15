@@ -1,3 +1,22 @@
 @use "./base.scss";
 
-// put your custom CSS here!
+// Keep Markdown titles useful on GitHub without repeating the Quartz page title.
+body[data-slug^="CN/reading/"],
+body[data-slug^="EN/reading/"] {
+  article > h1:first-child {
+    display: none;
+  }
+
+  article > h2 {
+    border-top: 1px solid var(--lightgray);
+    padding-top: 1rem;
+  }
+}
+
+// The hand-curated archive already links every edition and the roadmap.
+body[data-slug="CN/reading/index"],
+body[data-slug="EN/reading/index"] {
+  .page-listing {
+    display: none;
+  }
+}

@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-15",
+  "publishedAt": "2026-10-15T13:46:00+08:00",
+  "zh": {
+    "title": "从 HybridFlow 理解训练与 rollout 的衔接",
+    "summary": "主读尚未读过的 HybridFlow；SGLang 结合当前缓存源码选读，Ray 与 DistServe 补充控制流和资源调度视角。Orca/PagedAttention 已精读，不再重复推荐。"
+  },
+  "en": {
+    "title": "Understanding the training–rollout boundary with HybridFlow",
+    "summary": "Read HybridFlow first; explore SGLang alongside current cache code, with Ray and DistServe for orchestration and resource scheduling. Orca and PagedAttention have already been read closely."
+  },
+  "papers": [
+    {
+      "id": "hybridflow-2025",
+      "title": "HybridFlow: A Flexible and Efficient RLHF Framework",
+      "year": 2025,
+      "venue": "EuroSys 2025 · preprint 2024",
+      "url": "https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf",
+      "role": "main",
+      "zh": {
+        "contribution": "结合单控制器与多控制器执行方式，并用 3D-HybridEngine 降低策略模型在生成与训练之间切换分片的成本。",
+        "relevance": "与 rollout worker、训练到推理的权重同步和并行配置切换直接相连；有助于区分控制开销、数据搬运与 GPU 计算。",
+        "reading": "本期主读，值得精读。先用约 30 分钟画 generation → preparation → training 的 GPU 分配与权重流向，再读单/多控制器和 3D-HybridEngine；可从自己熟悉的 rollout/refit 路径反向理解。",
+        "prerequisites": "RLHF/GRPO 训练循环、数据并行和张量并行；不熟悉时先读路线中的 Ray、Megatron-LM 与 ZeRO。",
+        "caveat": "会议版为 2025 年，预印本为 2024 年；原始 RLHF 评估不能直接外推到含长时间工具调用的 agent rollout。"
+      },
+      "en": {
+        "contribution": "Combines single- and multi-controller execution and uses 3D-HybridEngine to reduce policy-model resharding costs between generation and training.",
+        "relevance": "Directly relates to rollout workers, weight synchronization, and changes in parallelism; separates orchestration, data movement, and GPU execution costs.",
+        "reading": "Main reading for this edition. Spend about 30 minutes mapping GPU allocation and weight movement across generation, preparation, and training, then read the controller design and 3D-HybridEngine; connect them to a familiar rollout/refit pipeline.",
+        "prerequisites": "An RLHF/GRPO loop, data parallelism, and tensor parallelism; use Ray, Megatron-LM, and ZeRO in the roadmap if needed.",
+        "caveat": "The conference paper is from 2025 and the preprint from 2024. Original RLHF results do not directly establish performance for tool-heavy agent rollouts."
+      }
+    },
+    {
+      "id": "sglang-2024",
+      "title": "SGLang: Efficient Execution of Structured Language Model Programs",
+      "year": 2024,
+      "venue": "NeurIPS 2024",
+      "url": "https://proceedings.nips.cc/paper_files/paper/2024/hash/724be4472168f31ba1c9ac630f15dec8-Abstract-Conference.html",
+      "role": "optional",
+      "zh": {
+        "contribution": "联合设计语言程序前端与运行时，以 RadixAttention 复用 KV 前缀，并优化结构化生成。",
+        "relevance": "把程序结构与缓存命中联系起来，适合反思多轮 agent 的共享历史、分支生成和前缀优先保留。",
+        "reading": "结合源码选择性精读。以 2026-10-15 核验的 commit f2b73d4 为准，从 [registry.py](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/registry.py#L83-L199) 确认 UnifiedRadixCache 的组件选择，再看 [SWA 的窗口与独立回收](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/components/swa.py#L62-L100) 和 [Mamba 的可恢复状态边界](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/components/mamba.py#L147-L224)。重点追 prefix match、插入、驱逐和恢复。",
+        "prerequisites": "前缀缓存、树结构，以及 PagedAttention 的逻辑块和物理块概念。",
+        "caveat": "原论文与当前实现分开看：普通 full-attention 也可走 UnifiedRadixCache，只有相应模型才追加 SWA/Mamba 组件；[HiCache](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py#L203-L269) 的 GPU/CPU/存储分层与模型的混合状态是两个可组合的维度。"
+      },
+      "en": {
+        "contribution": "Co-designs a language-program frontend and runtime, using RadixAttention for KV prefix reuse and optimizing structured generation.",
+        "relevance": "Connects program structure with cache reuse, informing shared histories, branching, and prefix retention in multi-turn agents.",
+        "reading": "Read selectively with source pinned to commit f2b73d4, verified on 2026-10-15. Start with [registry.py](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/registry.py#L83-L199) for UnifiedRadixCache component selection, then [SWA window coverage and independent eviction](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/components/swa.py#L62-L100) and [Mamba recoverable state boundaries](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/components/mamba.py#L147-L224). Trace prefix matching, insertion, eviction, and restoration.",
+        "prerequisites": "Prefix caching, trees, and the logical-versus-physical block distinction in PagedAttention.",
+        "caveat": "Separate the original paper from current code: ordinary full-attention can also use UnifiedRadixCache; SWA/Mamba components depend on the model. [HiCache](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py#L203-L269) adds GPU/CPU/storage tiers, a separate dimension that can be combined with mixed model state."
+      }
+    },
+    {
+      "id": "ray-2018",
+      "title": "Ray: A Distributed Framework for Emerging AI Applications",
+      "year": 2018,
+      "venue": "OSDI 2018",
+      "url": "https://www.usenix.org/conference/osdi18/presentation/moritz",
+      "role": "optional",
+      "zh": {
+        "contribution": "在统一执行引擎中支持 task 与 actor，为动态 AI 工作负载提供分布式调度与容错控制状态管理。",
+        "relevance": "作为 HybridFlow 的补充，帮助区分 RL 系统中的控制流、worker 状态、对象传输和 GPU 资源调度。",
+        "reading": "选择性阅读 task/actor 模型与调度设计。试着说明 rollout worker 为什么常用持久 actor，以及模型状态和大张量各应放在哪里。",
+        "prerequisites": "进程、远程调用与有状态/无状态任务的区别。",
+        "caveat": "这是 2018 年架构论文；学习其抽象，实际 API 和部署行为需查当前官方文档。"
+      },
+      "en": {
+        "contribution": "Unifies tasks and actors in an execution engine with distributed scheduling and fault-tolerant control state for dynamic AI workloads.",
+        "relevance": "Complements HybridFlow by separating control flow, worker state, object movement, and GPU resource scheduling.",
+        "reading": "Selectively read the task/actor model and scheduler. Explain why rollout workers often use persistent actors and where model state and large tensors should live.",
+        "prerequisites": "Processes, remote calls, and stateful versus stateless tasks.",
+        "caveat": "This describes the 2018 architecture; use it for abstractions and current official documentation for APIs and deployment."
+      }
+    },
+    {
+      "id": "distserve-2024",
+      "title": "DistServe: Disaggregating Prefill and Decoding for Goodput-optimized Large Language Model Serving",
+      "year": 2024,
+      "venue": "OSDI 2024",
+      "url": "https://www.usenix.org/conference/osdi24/presentation/zhong-yinmin",
+      "role": "optional",
+      "zh": {
+        "contribution": "将 prefill 和 decode 分离，并按各自的延迟约束配置资源与并行策略，优化满足服务目标的有效吞吐。",
+        "relevance": "在已理解连续批处理和分页 KV 的基础上，进一步分析阶段隔离、KV 传输以及 rollout 与在线服务的目标差异。",
+        "reading": "值得精读，可留到下一期。先区分吞吐与 goodput，再看分离后如何选择 GPU 配置、平衡传输开销。",
+        "prerequisites": "prefill/decode、TTFT/TPOT、连续批处理与 KV cache；已有 Orca/PagedAttention 基础即可进入。",
+        "caveat": "在线服务的 SLO 优化不能直接代替 rollout 的完整轨迹完成时间目标；收益取决于负载与互连条件。"
+      },
+      "en": {
+        "contribution": "Separates prefill and decoding, selecting resources and parallelism for their distinct latency constraints to optimize goodput.",
+        "relevance": "Builds on batching and paged KV memory to analyze stage isolation, KV transfer, and the different objectives of online serving and rollouts.",
+        "reading": "Worth a close read, possibly in a later edition. Distinguish throughput from goodput, then examine GPU allocation and transfer overhead.",
+        "prerequisites": "Prefill/decode, TTFT/TPOT, continuous batching, and KV caches; Orca and PagedAttention provide the background.",
+        "caveat": "Online-serving SLOs do not directly replace end-to-end trajectory completion objectives; gains depend on workload and interconnect conditions."
+      }
+    }
+  ]
+}
