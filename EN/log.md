@@ -120,3 +120,4 @@ updated: 2026-06-15
 ## 2026-10-15
 - [READING] Added daily recommendations and a foundational roadmap. The first edition features HybridFlow, with SGLang source-code reading, Ray, and DistServe as optional reading; Orca and PagedAttention are recorded as already read closely; bilingual archives and a dedicated RSS feed are included. Recommendation does not imply completion.
 - [RSS] Fixed oversized link icons in feed readers by removing website decorations and the duplicate title from RSS while preserving content, paper links, and figures; publication time and item IDs remain stable.
+- [READING] Added intrinsic dimensions to website link icons so reader modes that strip styles cannot enlarge them.
