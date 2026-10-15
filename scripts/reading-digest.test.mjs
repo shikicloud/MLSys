@@ -20,6 +20,19 @@ const fixture = (date = '2026-10-15') => ({
   })),
 });
 
+const detailedFixture = () => {
+  const record = fixture();
+  record.papers[0].zh.sections = [
+    { heading: '背景与核心设计', paragraphs: ['**迭代调度**从请求长度不一的问题出发。', '每次生成一个 token 后重新决定批次成员。'] },
+    { heading: '系统联系、先修与局限', paragraphs: ['以自回归生成知识分析 rollout 调度；工具等待仍需独立策略。'] },
+  ];
+  record.papers[0].en.sections = [
+    { heading: 'Motivation and design', paragraphs: ['**Iteration scheduling** addresses requests of unequal lengths.', 'Reconsider batch membership after each token.'] },
+    { heading: 'Practical relevance, prerequisites, and limits', paragraphs: ['Use autoregressive generation to reason about rollout scheduling.', 'Tool waits still require their own policy.'] },
+  ];
+  return record;
+};
+
 async function setup(t, records = [fixture()]) {
   const root = await mkdtemp(path.join(os.tmpdir(), 'mlsys-reading-test-'));
   t.after(() => rm(root, { recursive: true, force: true }));
@@ -54,6 +67,112 @@ test('bilingual output preserves publication time, explicit recommendation statu
   await writeFile(cnPath, cn + '\nmanual drift');
   await assert.rejects(generate({ root, mode: 'check', now }), /missing or outdated/);
 });
+
+test('optional bilingual sections render long-form paragraphs while legacy papers stay unchanged', async t => {
+  const record = detailedFixture();
+  record.papers[0].revisitReason = { zh: '从调度视角回顾。', en: 'Revisit the scheduler perspective.' };
+  const root = await setup(t, [record]);
+  await generate({ root, mode: 'write', now });
+  const outputs = new Map();
+  for (const [lang, folder, main, optional, guidance, reason] of [
+    ['zh', 'CN', '主读', '选读', '阅读建议', '再次推荐的原因'],
+    ['en', 'EN', 'Main reading', 'Optional reading', 'Reading guidance', 'Why revisit'],
+  ]) {
+    const destination = path.join(root, folder, 'reading/daily/2026-10-15.md');
+    const content = await readFile(destination, 'utf8');
+    const mainBody = content.split(`## ${main} · Orca\n\n`)[1].split(`## ${optional} ·`)[0];
+    assert.match(mainBody, /2022 · Verified proceedings/);
+    assert.match(mainBody, /https:\/\/example.org\/papers\/orca-2022/);
+    assert.ok(mainBody.includes(`**${guidance}：** ${record.papers[0][lang].reading}`));
+    assert.ok(mainBody.includes(`**${reason}：** ${record.papers[0].revisitReason[lang]}`));
+    assert.doesNotMatch(mainBody, /^- /m, 'long-form metadata must not become a checklist');
+    assert.ok(!mainBody.includes(record.papers[0][lang].contribution), 'summary text is retained in JSON, not duplicated in the long form');
+    for (const section of record.papers[0][lang].sections) {
+      assert.ok(mainBody.includes(`### ${section.heading}\n\n${section.paragraphs.join('\n\n')}\n`));
+    }
+    assert.ok(content.includes(record.papers[1][lang].contribution), 'legacy optional papers retain their summaries');
+    assert.match(content, /published: "2026-10-15T09:00:00\+08:00"/);
+    outputs.set(destination, { content, mtime: (await stat(destination)).mtimeMs });
+  }
+  await generate({ root, mode: 'write', now: new Date('2026-10-17T00:00:00Z') });
+  await generate({ root, mode: 'check', now });
+  for (const [destination, previous] of outputs) {
+    assert.equal(await readFile(destination, 'utf8'), previous.content);
+    assert.equal((await stat(destination)).mtimeMs, previous.mtime);
+  }
+});
+
+test('block syntax and open fences cannot consume later sections or papers', async t => {
+  for (const paragraph of [
+    '```', '```js', '   ````python', '~~~', '~~~inline~~~',
+    '# Replaces a heading', '   ### Nested heading', '> quote', '>without a space',
+    '- list', '+ list', '* list', '1. numbered list', '2) numbered list',
+    '    indented code', '---', '* * *', '___',
+    '[source]: https://example.org', '[^note]: footnote', '$$', '$$$ E=mc^2',
+  ]) {
+    const record = detailedFixture();
+    record.papers[0].zh.sections[0].paragraphs = [paragraph];
+    const root = await setup(t, [record]);
+    for (const mode of ['write', 'check']) {
+      await assert.rejects(generate({ root, mode, now }), /inline Markdown only, not block syntax/, paragraph);
+    }
+    await assert.rejects(stat(path.join(root, 'CN')), { code: 'ENOENT' });
+    await assert.rejects(stat(path.join(root, 'EN')), { code: 'ENOENT' });
+  }
+});
+
+test('section paragraphs preserve inline links, math, emphasis, and code without false block matches', async t => {
+  const paragraphs = [
+    '[Original source](https://example.org/paper?x=1&y=2#results)',
+    '**Main result.** Read *this comparison* first.',
+    '`cache.match()` returns a boundary.', '```inline code containing `backticks` ```',
+    '$x < y$ and $a > b$ are inline comparisons.', '$$E=mc^2$$',
+    '-1 is negative; +1 is positive.', '1.5× throughput is not an ordered list.',
+    'a * b - c is arithmetic.', '#hashtag is text.', '\\# A literal heading marker.',
+  ];
+  const record = detailedFixture();
+  for (const lang of ['zh', 'en']) record.papers[0][lang].sections[0].paragraphs = paragraphs;
+  const root = await setup(t, [record]);
+  await generate({ root, mode: 'write', now });
+  await generate({ root, mode: 'check', now });
+  for (const folder of ['CN', 'EN']) {
+    const content = await readFile(path.join(root, folder, 'reading/daily/2026-10-15.md'), 'utf8');
+    assert.ok(content.includes(paragraphs.join('\n\n')));
+    assert.match(content, /## (?:选读|Optional reading) · PagedAttention/);
+  }
+});
+
+const invalidSections = [
+  ['missing English sections', p => { delete p.en.sections; }, /sections must be arrays in both zh and en/],
+  ['missing Chinese sections', p => { delete p.zh.sections; }, /sections must be arrays in both zh and en/],
+  ['non-array sections', p => { p.zh.sections = {}; }, /sections must be arrays/],
+  ['null sections', p => { p.zh.sections = null; }, /sections must be arrays/],
+  ['empty sections', p => { p.zh.sections = []; p.en.sections = []; }, /sections must be nonempty/],
+  ['mismatched section counts', p => { p.en.sections.pop(); }, /matching zh and en section counts/],
+  ['non-object section', p => { p.zh.sections[0] = 'paragraph'; }, /sections\[0\] must be an object/],
+  ['null section', p => { p.zh.sections[0] = null; }, /sections\[0\] must be an object/],
+  ['missing heading', p => { delete p.zh.sections[0].heading; }, /heading must be nonempty text/],
+  ['blank heading', p => { p.zh.sections[0].heading = ' '; }, /heading must be nonempty text/],
+  ['HTML heading', p => { p.zh.sections[0].heading = '<b>Design</b>'; }, /heading must not contain HTML/],
+  ['non-array paragraphs', p => { p.zh.sections[0].paragraphs = 'text'; }, /paragraphs must be a nonempty array/],
+  ['empty paragraphs', p => { p.zh.sections[0].paragraphs = []; }, /paragraphs must be a nonempty array/],
+  ['non-text paragraph', p => { p.zh.sections[0].paragraphs[0] = { text: 'text' }; }, /paragraphs\[0\] must be nonempty text/],
+  ['blank paragraph', p => { p.zh.sections[0].paragraphs[0] = ' '; }, /paragraphs\[0\] must be nonempty text/],
+  ['HTML paragraph', p => { p.zh.sections[0].paragraphs[0] = '<script>bad</script>'; }, /paragraphs\[0\] must not contain HTML/],
+  ['control characters in a paragraph', p => { p.zh.sections[0].paragraphs[0] = 'first\nsecond'; }, /without control characters/],
+  ['missing summary alongside sections', p => { delete p.en.caveat; }, /en.caveat must be nonempty text/],
+];
+
+for (const [name, mutate, error] of invalidSections) {
+  test(`rejects ${name} before writing any long-form output`, async t => {
+    const record = detailedFixture();
+    mutate(record.papers[0]);
+    const root = await setup(t, [record]);
+    for (const mode of ['write', 'check']) await assert.rejects(generate({ root, mode, now }), error);
+    await assert.rejects(stat(path.join(root, 'CN')), { code: 'ENOENT' });
+    await assert.rejects(stat(path.join(root, 'EN')), { code: 'ENOENT' });
+  });
+}
 
 test('repeated IDs require a bilingual revisit reason and archive sorts newest first', async t => {
   const first = fixture();

@@ -4,11 +4,11 @@
   "publishedAt": "2026-10-15T13:46:00+08:00",
   "zh": {
     "title": "从 HybridFlow 理解训练与 rollout 的衔接",
-    "summary": "主读尚未读过的 HybridFlow；SGLang 结合当前缓存源码选读，Ray 与 DistServe 补充控制流和资源调度视角。Orca/PagedAttention 已精读，不再重复推荐。"
+    "summary": "本期按技术文章展开：主读 HybridFlow 的控制流、权重分片切换与实验边界；选读当前 SGLang 缓存源码、Ray 的 worker 抽象和 DistServe 的阶段分离。每篇附具体例子、系统联系与精读路线，Orca/PagedAttention 已读内容仅作背景。"
   },
   "en": {
     "title": "Understanding the training–rollout boundary with HybridFlow",
-    "summary": "Read HybridFlow first; explore SGLang alongside current cache code, with Ray and DistServe for orchestration and resource scheduling. Orca and PagedAttention have already been read closely."
+    "summary": "Detailed reading notes on HybridFlow’s control flow, weight-layout transitions, and experimental limits, with optional SGLang cache code, Ray worker abstractions, and DistServe phase separation. Each includes concrete examples, systems connections, and a reading path; Orca and PagedAttention are background already read."
   },
   "papers": [
     {
@@ -23,14 +23,180 @@
         "relevance": "与 rollout worker、训练到推理的权重同步和并行配置切换直接相连；有助于区分控制开销、数据搬运与 GPU 计算。",
         "reading": "本期主读，值得精读。先用约 30 分钟画 generation → preparation → training 的 GPU 分配与权重流向，再读单/多控制器和 3D-HybridEngine；可从自己熟悉的 rollout/refit 路径反向理解。",
         "prerequisites": "RLHF/GRPO 训练循环、数据并行和张量并行；不熟悉时先读路线中的 Ray、Megatron-LM 与 ZeRO。",
-        "caveat": "会议版为 2025 年，预印本为 2024 年；原始 RLHF 评估不能直接外推到含长时间工具调用的 agent rollout。"
+        "caveat": "会议版为 2025 年，预印本为 2024 年；原始 RLHF 评估不能直接外推到含长时间工具调用的 agent rollout。",
+        "sections": [
+          {
+            "heading": "两分钟摘要：它优化的是一整轮 RL",
+            "paragraphs": [
+              "HybridFlow 是香港大学与 ByteDance 的 EuroSys 2025 论文，预印本发表于 2024 年，也是 verl 的论文基础。主线有三条：用混合控制方式表达 RL 数据流；为 actor 的训练与生成设计低冗余布局切换；根据整轮耗时选择模型放置。它值得精读，因为 rollout 快不等于训练迭代快，模型之间的数据搬运和阶段切换可能吃掉收益。[原论文 §3、Fig. 4](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=6)"
+            ]
+          },
+          {
+            "heading": "背景：一个模型的优化，为何不够",
+            "paragraphs": [
+              "把 PPO 看成几个服务的协作：actor 生成回答，reference 提供参照概率，reward model 打分，critic 估计价值，随后更新 actor 和 critic。它们的数据依赖、显存构成和合适的并行方式不同。生成逐 token 执行；训练还要保存梯度、优化器状态并做反向传播。统一使用一套并行度，可能让一个阶段高效、另一个阶段低效。[原论文 §2.1–2.3、Fig. 1–3](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=3)",
+              "这里的图节点是一次分布式模型计算。论文的 intra-node / inter-node 指图节点内部与节点之间，不能直接理解为单机内与跨服务器。一个 actor 节点本身就可能占据多台机器。",
+              "先修只需补齐三个并行概念：DP（数据并行）让副本处理不同样本，TP（张量并行）把同一层的张量计算拆给多卡，PP（流水线并行）把不同层分到不同阶段。下文先讨论布局和数据路径，不要求先推完 PPO 损失函数。"
+            ]
+          },
+          {
+            "heading": "顺着一批 prompts 走完一次迭代",
+            "paragraphs": [
+              "**① 生成。** 将一批 prompts 分给 actor 的生成副本，用当前策略得到 responses。此时首先关心生成并发、KV 容量和每个副本拿到的工作量。",
+              "**② 准备经验。** 把 prompt 与 response 交给 reference、reward 和 critic，取得参照 log probability、reward 和 value，再计算训练需要的 advantage 等量。PPO 还需要采样策略的概率信息；官方编程示例显式包含 old_log_prob。不同模型的 DP 大小不同，数据必须按消费者布局重新分发。[原论文 Fig. 1、Fig. 6](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=7)；[官方 PPO 示例](https://verl.readthedocs.io/en/latest/hybrid_flow.html#ppo-main-loop)",
+              "**③ 更新。** actor 与 critic 用整理好的经验执行训练。共用 GPU 的计算通常顺序执行；资源分离且依赖满足时可以并行。**④ 准备下一轮。** 新 actor 权重要变成生成引擎需要的布局。reference 并不是每轮都跟着 actor 更新；GRPO/ReMax 等算法也不能机械套用 PPO 的四模型图。"
+            ]
+          },
+          {
+            "heading": "混合控制：把编排与分布式计算拆开",
+            "paragraphs": [
+              "single-controller 容易写出“先生成、再评分、再更新”的算法，但不适合由中心进程逐个调度庞大的模型算子。multi-controller 让每个 worker 本地执行分布式程序，调度开销低，却容易把模型计算、collective 和模型间收发纠缠在一起。HybridFlow 在模型之间使用单控制器，在每个分布式模型内部沿用多控制器。[原论文 §2.2、§4、Fig. 2](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=3)",
+              "关键接口是 ParallelWorker、ResourcePool 与 transfer protocol：前者封装计算，资源池决定放置，协议决定 collect/distribute。Fig. 5 中 controller 转交 data futures，目标 worker 按自身 DP rank 获取所需数据；不能把图上的中心箭头理解成所有大 tensor 都经过 controller CPU。这里的异步调用与依赖就绪执行，也不等于已经实现跨策略版本的全异步 RL。[原论文 §4.1、Fig. 5](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=7)"
+            ]
+          },
+          {
+            "heading": "3D-HybridEngine：为什么切换 TP/PP/DP",
+            "paragraphs": [
+              "论文让 actor 的训练与生成在同一组 GPU 上分时执行，但允许两阶段采用不同布局。训练记为 (p,t,d)，分别是 PP、TP、DP；生成记为 (p_g,t_g,d_g,d)，其中 d_g 是每个训练副本拆成的生成 micro-DP 副本数。设备数守恒：N_a = ptd = p_g t_g d_g d，所以 d_g = pt/(p_g t_g)。[原论文 §5.1–5.2、Fig. 7](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=8)",
+              "减小生成 TP/PP 可以增加副本并降低某些通信成本，但每 GPU 承担的模型与 KV 压力随之变化，不能认为 TP 越小越快。Fig. 15 在 16 GPU、训练布局 (1,8,2) 下展示了这个权衡：7B 和 13B 的较好生成 TP 不同。"
+            ]
+          },
+          {
+            "heading": "真正的机制：让生成分片包含本地训练分片",
+            "paragraphs": [
+              "Fig. 8 的例子用 8 张卡：训练 TP 组为 [G1,G2,G3,G4] 和 [G5,G6,G7,G8]，生成 TP 降到 2。若仍按相邻 rank 组生成 TP，部分 GPU 原有训练分片与所需生成分片错位，需要保留额外副本。HybridFlow 改用 [G1,G3]、[G2,G4] 等生成 TP 组，在 [G1,G2]、[G3,G4] 等 micro-DP 组内 all-gather。每张卡保留自己的训练分片，只补齐生成所需的其他部分。[原论文 §5.3、Fig. 8](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=8)",
+              "![一个训练 DP 副本的简化示意：TP 从 4 变为 2，生成组改为 G1/G3 和 G2/G4；all-gather 后每张 GPU 仍包含本地训练分片。](CN/reading/figures/hybridflow-layout.png)",
+              "图为根据论文 Fig. 8 原理绘制的简化示意，仅展示一个训练副本的 4 张卡；A/B/C/D 是权重分片，不包含 KV、梯度或优化器状态。重点看每张卡如何保留原分片，以及哪些卡共同组成一个完整生成副本。",
+              "Table 2 的零冗余指布局切换造成的额外 GPU 权重冗余：模型权重峰值等于生成分片大小 M/(t_g p_g)。它不表示零通信、整个训练零额外内存或只有一个物理 buffer。§7 明确描述分开的训练／生成 buffer、CPU offload 和 NCCL 收集；KV 的 CPU 搬运也不能解读成跨权重版本可以无条件复用旧激活。[原论文 §5.4 Table 2、§7](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=9)"
+            ]
+          },
+          {
+            "heading": "模型放置：共卡还是分卡，应看整轮关键路径",
+            "paragraphs": [
+              "§6 的 auto-mapping 在训练开始前搜索模型共置方式、GPU 分配与并行策略，以模拟器估算整轮延迟。一个阶段内，共置计算的耗时相加，独立资源组的耗时取最大值；再累加各阶段。Fig. 12–13 显示最优放置会随规模和模型组合变化。因此“永远共置”或“永远分离”都不是论文结论；它也不是根据每次工具调用在线重排资源的调度器。[原论文 §6 Algorithm 1、§8.3](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=10)"
+            ]
+          },
+          {
+            "heading": "实验怎么读：先看条件，再看加速比",
+            "paragraphs": [
+              "主实验集群最多 16 台机器、128 张 A100-80GB，每机 8 卡；论文报告机内 NVLink 600 GB/s、机间 200 Gbps。模型为 7B–70B Llama，算法覆盖 PPO、ReMax、Safe-RLHF。主端到端对比使用同规模的 actor/reference/critic/reward；另有异构模型规模放置实验。[原论文 §8.1–8.3](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=10)",
+              "**输入和输出各固定 1024 token，global batch 为 1024；预热 10 轮后平均 5 轮。** 吞吐分子是该批 prompt 与 response 的总 token 数，分母是完整 RL 迭代时间。作者强制等长输出，是为控制基线连续批处理能力的差异。[原论文 §8.1](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=11)",
+              "摘要的 1.53–20.57× 横跨多种规模、算法与基线，不是对一个现代最佳基线的统一收益。基线版本为 DeepSpeed-Chat 0.14.0、OpenRLHF 0.2.5、NeMo-Aligner 0.2.0。读 Fig. 9–11 看端到端，Fig. 14 看转换，Fig. 15 看转换与生成的联合代价，避免把局部节省等同整轮加速。",
+              "还有两条边界：自动放置的基本设定是同质 GPU，并依赖对输入形状与阶段耗时的估计；论文吞吐实验也不等于证明更快收敛或更高最终奖励。若实际负载、硬件与基线版本改变，应重新测量关键路径和训练质量，而不是直接沿用加速比。[原论文 §6、§8](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=10)"
+            ]
+          },
+          {
+            "heading": "映射到 rollout、refit 与 agent 长尾",
+            "paragraphs": [
+              "**以下是系统分析，不是论文新增实验。** refit 至少拆成四项计时：训练权重导出与布局转换、传输、推理引擎加载、缓存／执行状态恢复。3D-HybridEngine主要回答布局与搬运怎样避免多余工作；具体引擎的加载、量化格式转换和其他恢复成本，仍要独立测量。",
+              "对多轮 agent，工具等待会使轨迹长度和完成时间不均。如果更新必须等整批结束，少数慢轨迹就可能决定阶段切换时间。可以比较共置的切换成本与分离的同步成本，但还需记录尾延迟、训练端等待、每秒有效轨迹、策略版本滞后和最终任务质量。**固定等长生成实验没有证明这些长尾问题已经解决。**",
+              "一个具体排查顺序是：先问生成结束后 GPU 是否还在等最慢轨迹，再看权重是否已准备好却卡在装载，最后确认下一批请求是否因缓存重建而重复 prefill。三种现象都表现为“rollout 慢”，但分别需要处理批次屏障、refit 路径和缓存有效性，不能只调一个 TP 参数。"
+            ]
+          },
+          {
+            "heading": "今天的 verl：另外一层需要核验的实现",
+            "paragraphs": [
+              "截至 2026-10-15 查阅的官方资料，当前 worker 入口已统一到 engine_workers；update_weights 区分共置直接更新和分离式 checkpoint-engine 传输。因此不应把老论文的类名、3D 分组和所有现行后端逐一等同。本节依据当前文档，不声称验证了某个运行配置。[Engine Workers](https://verl.readthedocs.io/en/latest/workers/engine_workers.html)",
+              "Agent Loop 单独定义多轮执行及 response_mask：模型生成 token 与工具返回 token 需要区分。V1 Async Trainer 又引入部分轨迹恢复、策略版本跨度及陈旧度处理；恢复时可能重建前缀 KV。它们是论文之后的发展，不能倒写成原始 HybridFlow 的实验结果。[Agent Loop](https://verl.readthedocs.io/en/latest/advance/agent_loop.html)；[V1 Async Trainer](https://verl.readthedocs.io/en/latest/advance/v1_async_trainer.html)"
+            ]
+          },
+          {
+            "heading": "精读顺序与三个检查问题",
+            "paragraphs": [
+              "先用 Fig. 1/2/5 画清控制与数据路径；再照 Fig. 7/8 手算一次权重分片切换；最后读 Table 2 和 §8 的实验条件。带走三个问题：一次调用的控制消息和大 tensor 分别走哪？切换前后每张卡究竟持有哪些权重？如果 rollout 换成长尾工具调用，原先整轮成本模型还缺哪几项？"
+            ]
+          }
+        ]
       },
       "en": {
         "contribution": "Combines single- and multi-controller execution and uses 3D-HybridEngine to reduce policy-model resharding costs between generation and training.",
         "relevance": "Directly relates to rollout workers, weight synchronization, and changes in parallelism; separates orchestration, data movement, and GPU execution costs.",
         "reading": "Main reading for this edition. Spend about 30 minutes mapping GPU allocation and weight movement across generation, preparation, and training, then read the controller design and 3D-HybridEngine; connect them to a familiar rollout/refit pipeline.",
         "prerequisites": "An RLHF/GRPO loop, data parallelism, and tensor parallelism; use Ray, Megatron-LM, and ZeRO in the roadmap if needed.",
-        "caveat": "The conference paper is from 2025 and the preprint from 2024. Original RLHF results do not directly establish performance for tool-heavy agent rollouts."
+        "caveat": "The conference paper is from 2025 and the preprint from 2024. Original RLHF results do not directly establish performance for tool-heavy agent rollouts.",
+        "sections": [
+          {
+            "heading": "Two-minute overview: the unit of optimization is an RL iteration",
+            "paragraphs": [
+              "HybridFlow is a EuroSys 2025 paper from the University of Hong Kong and ByteDance, first released as a 2024 preprint, and the paper behind verl. Its three threads are a hybrid control model for RL dataflows, low-redundancy transitions between actor training and generation layouts, and model placement chosen for iteration latency. It merits a close read because faster rollout alone does not guarantee faster training: transfers and transitions can consume the saving. [Paper §3, Fig. 4](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=6)"
+            ]
+          },
+          {
+            "heading": "Background: why optimizing one model is insufficient",
+            "paragraphs": [
+              "Think of PPO as several cooperating services. The actor generates responses; a reference policy supplies reference probabilities; a reward model scores responses; a critic estimates values; actor and critic are then updated. Their dependencies, memory requirements, and useful parallel configurations differ. Generation repeatedly executes token steps, whereas training also maintains gradients and optimizer states and performs backward computation. One parallel configuration may suit one stage and impede another. [Paper §2.1–2.3, Fig. 1–3](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=3)",
+              "A node here is a distributed model computation in the dataflow graph. The paper's intra-node and inter-node terminology means within or between graph nodes, not necessarily within or between physical servers. An actor node can itself span multiple machines.",
+              "The needed parallelism vocabulary is small: data parallelism (DP) assigns different samples to replicas; tensor parallelism (TP) partitions a layer’s tensor computation across devices; pipeline parallelism (PP) places layers in different stages. The discussion follows layouts and data paths without requiring a full derivation of the PPO loss first."
+            ]
+          },
+          {
+            "heading": "Follow one batch of prompts through an iteration",
+            "paragraphs": [
+              "**1. Generate.** Distribute prompts across the actor's generation replicas and sample responses with the current policy. Relevant concerns include concurrency, KV capacity, and the work assigned to each replica.",
+              "**2. Prepare experience.** Send prompts and responses to the reference, reward, and critic computations to obtain reference log probabilities, rewards, and values, then form advantages and other training inputs. PPO also needs probabilities associated with the sampling policy; the official programming example explicitly computes old_log_prob. Different DP sizes require redistributing data according to the consumer's layout. [Paper Fig. 1 and Fig. 6](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=7); [official PPO example](https://verl.readthedocs.io/en/latest/hybrid_flow.html#ppo-main-loop)",
+              "**3. Update.** Train the actor and critic using that experience. Computations sharing GPUs normally run sequentially; independent resources can execute ready work concurrently. **4. Prepare the next rollout.** Make updated actor weights available in the generation engine's required layout. The reference policy does not simply track every actor update, and the four-model PPO graph should not be imposed unchanged on algorithms such as GRPO or ReMax."
+            ]
+          },
+          {
+            "heading": "Hybrid control: separate orchestration from distributed computation",
+            "paragraphs": [
+              "A single controller makes a sequence such as generate, score, and update easy to express, but centrally dispatching a model's large operator graph incurs overhead. Multiple controllers execute distributed computation locally with low dispatch overhead, but computation, collectives, and transfers between models can become tangled. HybridFlow uses one controller between models and multiple controllers inside each distributed model. [Paper §2.2, §4, Fig. 2](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=3)",
+              "ParallelWorker encapsulates computation; ResourcePool specifies placement; transfer protocols specify collection and distribution. In Fig. 5, the controller passes data futures, and destination workers fetch the portions required by their DP ranks. The central arrows should not be read as routing every large tensor through the controller CPU. Asynchronous invocation and dependency-driven execution also do not by themselves imply fully asynchronous RL across policy versions. [Paper §4.1, Fig. 5](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=7)"
+            ]
+          },
+          {
+            "heading": "3D-HybridEngine: why change TP, PP, and DP between stages?",
+            "paragraphs": [
+              "The paper time-shares the same actor GPUs between training and generation while allowing different layouts. Training uses (p,t,d), denoting PP, TP, and DP. Generation uses (p_g,t_g,d_g,d), where d_g is the number of generation micro-DP replicas created from each training replica. Device-count conservation gives N_a = ptd = p_g t_g d_g d, hence d_g = pt/(p_g t_g). [Paper §5.1–5.2, Fig. 7](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=8)",
+              "Reducing generation TP or PP can create more replicas and reduce some communication, but changes the model and KV burden per GPU. Smaller TP is therefore not universally faster. Fig. 15 demonstrates this tradeoff on 16 GPUs with training layout (1,8,2): the favorable generation TP differs between the 7B and 13B models."
+            ]
+          },
+          {
+            "heading": "The mechanism: generation shards retain the local training shard",
+            "paragraphs": [
+              "Fig. 8 uses eight GPUs. Training TP groups are [G1,G2,G3,G4] and [G5,G6,G7,G8], and generation TP is reduced to two. Keeping adjacent ranks as generation TP groups misaligns some GPUs' existing training shards with their required generation shards, creating extra storage. HybridFlow instead uses generation TP groups such as [G1,G3] and [G2,G4], and all-gathers within micro-DP groups such as [G1,G2] and [G3,G4]. Each GPU retains its training shard and gathers the additional pieces needed for generation. [Paper §5.3, Fig. 8](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=8)",
+              "![Simplified layout for one training DP replica: TP changes from four to two, with generation groups G1/G3 and G2/G4; each GPU retains its local training shard after all-gather.](EN/reading/figures/hybridflow-layout.png)",
+              "This original schematic illustrates the principle in the paper’s Fig. 8 using four GPUs from one training replica. A/B/C/D denote weight shards; KV, gradients, and optimizer state are excluded. Follow which local shard each GPU retains and which GPUs together form a complete generation replica.",
+              "Zero redundancy in Table 2 refers to extra GPU weight storage caused by resharding: peak parameter storage equals the generation partition M/(t_g p_g). It does not mean zero communication, zero additional memory for the entire system, or a single physical buffer. Section 7 explicitly describes separate training and generation buffers, CPU offload, and NCCL collection. Moving KV storage through CPU memory also does not establish that old activations remain valid after weights change. [Paper §5.4, Table 2, and §7](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=9)"
+            ]
+          },
+          {
+            "heading": "Placement: judge colocation and separation by the iteration's critical path",
+            "paragraphs": [
+              "Section 6's auto-mapping searches model colocation, GPU allocation, and parallel strategies before training, estimating iteration latency with simulators. Within a stage, colocated computation times add, while independent resource groups contribute their maximum; stage latencies are then added. Figures 12–13 show that the favorable placement changes with cluster size and model combinations. Neither universal colocation nor universal separation follows from the paper. This is also not an online scheduler that rearranges resources after every tool call. [Paper §6, Algorithm 1, and §8.3](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=10)"
+            ]
+          },
+          {
+            "heading": "Read the experiment conditions before the speedups",
+            "paragraphs": [
+              "The testbed has up to 16 machines and 128 A100-80GB GPUs, eight per machine. The paper reports 600 GB/s NVLink within a machine and 200 Gbps between machines. Experiments cover 7B–70B Llama models and PPO, ReMax, and Safe-RLHF. Main end-to-end comparisons use equally sized actor, reference, critic, and reward models; a separate placement experiment uses unequal model sizes. [Paper §8.1–8.3](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=10)",
+              "**Prompt and response lengths are each fixed at 1,024 tokens, with a global batch of 1,024; results average five iterations after ten warm-up iterations.** Throughput counts prompt plus response tokens divided by full RL iteration time. Equal response lengths are deliberately enforced to control differences in baseline continuous-batching support. [Paper §8.1](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=11)",
+              "The abstract's 1.53–20.57× range spans algorithms, scales, and baselines; it is not a uniform improvement over one contemporary best baseline. Compared versions are DeepSpeed-Chat 0.14.0, OpenRLHF 0.2.5, and NeMo-Aligner 0.2.0. Read Figures 9–11 for end-to-end throughput, Fig. 14 for transition time, and Fig. 15 for the joint cost of transition and generation. A local reduction is not automatically an equal iteration-level speedup.",
+              "Two further boundaries matter. The mapping algorithm assumes homogeneous GPUs and relies on estimated workloads and stage costs. Throughput results also do not establish faster convergence or higher final reward. Changed workloads, hardware, and baseline versions require new critical-path and training-quality measurements rather than reuse of the headline multiplier. [Paper §6 and §8](https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf#page=10)"
+            ]
+          },
+          {
+            "heading": "Applying the ideas to rollout, refit, and agent tails",
+            "paragraphs": [
+              "**The following is systems analysis, not an additional experiment reported by the paper.** Separate refit timing into four parts: training-weight export and layout conversion, transport, inference-engine loading, and cache or execution-state restoration. The 3D-HybridEngine addresses avoidable work in layout changes and data movement. Engine-specific loading, quantization-format conversion, and other restoration costs still need their own measurements.",
+              "Multi-turn agents introduce uneven trajectory lengths and completion times through tool waits. If updating requires a complete batch, a few slow trajectories can determine when the stage transition starts. Compare colocated switching costs with separated synchronization costs, while also recording tail latency, trainer waiting, useful trajectories per second, policy-version staleness, and task quality. **Fixed-length generation experiments do not demonstrate that these tail problems are solved.**",
+              "A concrete debugging sequence is to ask whether GPUs are waiting for the last trajectory, whether ready weights are blocked in engine loading, and whether the next requests repeat prefill because caches must be rebuilt. All three can appear as slow rollout, but they concern a batch barrier, the refit path, and cache validity respectively. Changing one TP setting is not a complete diagnosis."
+            ]
+          },
+          {
+            "heading": "Current verl is a separate implementation layer to verify",
+            "paragraphs": [
+              "Official documentation checked on 2026-10-15 places the current worker entry points in engine_workers. Its update_weights path distinguishes direct colocated updates from checkpoint-engine transport for separated execution. Historical class names and 3D group construction should therefore not be equated with every current backend. This section describes the documentation; it does not claim a particular configuration was executed or benchmarked. [Engine Workers](https://verl.readthedocs.io/en/latest/workers/engine_workers.html)",
+              "Agent Loop separately defines multi-turn execution and response_mask, distinguishing generated tokens from tool-returned tokens. The V1 Async Trainer adds partial-trajectory resumption, policy-version spans, and staleness handling; resumption may rebuild prefix KV. These are developments after the paper, not results that can be retroactively attributed to its original evaluation. [Agent Loop](https://verl.readthedocs.io/en/latest/advance/agent_loop.html); [V1 Async Trainer](https://verl.readthedocs.io/en/latest/advance/v1_async_trainer.html)"
+            ]
+          },
+          {
+            "heading": "Reading order and three questions to answer",
+            "paragraphs": [
+              "Start with Figures 1, 2, and 5 to draw control and data paths. Use Figures 7 and 8 to work through one weight-layout transition by hand, then inspect Table 2 and the evaluation conditions in §8. Answer three questions: where do control messages and large tensors travel; which weights does each GPU hold before and after the switch; and which terms are missing from the iteration cost model when rollout includes long-tailed tool execution?"
+            ]
+          }
+        ]
       }
     },
     {
@@ -43,16 +209,104 @@
       "zh": {
         "contribution": "联合设计语言程序前端与运行时，以 RadixAttention 复用 KV 前缀，并优化结构化生成。",
         "relevance": "把程序结构与缓存命中联系起来，适合反思多轮 agent 的共享历史、分支生成和前缀优先保留。",
-        "reading": "结合源码选择性精读。以 2026-10-15 核验的 commit f2b73d4 为准，从 [registry.py](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/registry.py#L83-L199) 确认 UnifiedRadixCache 的组件选择，再看 [SWA 的窗口与独立回收](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/components/swa.py#L62-L100) 和 [Mamba 的可恢复状态边界](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/components/mamba.py#L147-L224)。重点追 prefix match、插入、驱逐和恢复。",
+        "reading": "值得结合源码精读。本期先理解 Full/SWA/Mamba 的复用条件与 HiCache 分层，再沿固定提交的匹配、恢复路径走一遍工具调用例子。源码核验于 2026-10-15，固定到 commit f2b73d4。",
         "prerequisites": "前缀缓存、树结构，以及 PagedAttention 的逻辑块和物理块概念。",
-        "caveat": "原论文与当前实现分开看：普通 full-attention 也可走 UnifiedRadixCache，只有相应模型才追加 SWA/Mamba 组件；[HiCache](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py#L203-L269) 的 GPU/CPU/存储分层与模型的混合状态是两个可组合的维度。"
+        "caveat": "原论文与当前实现分开看：普通 full-attention 也可走 UnifiedRadixCache，只有相应模型才追加 SWA/Mamba 组件；[HiCache](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py#L203-L269) 的 GPU/CPU/存储分层与模型的混合状态是两个可组合的维度。",
+        "sections": [
+          {
+            "heading": "为什么把 SGLang 作为今天的源码选读",
+            "paragraphs": [
+              "**值得精读，但先聚焦缓存。** 原论文的 RadixAttention 把跨调用的公共前缀组织成基数树，结合缓存保留、驱逐与调度，减少重复 prefill。它解释“为什么值得复用”；今天要读的是固定提交 `f2b73d4` 的状态管理，不能拿 2024 年论文代替当前实现。[原论文 §3](https://arxiv.org/html/2312.07104v2#S3)"
+            ]
+          },
+          {
+            "heading": "源码事实：先分清两条轴",
+            "paragraphs": [
+              "先把术语展开：Full 指全注意力层的历史 KV；SWA（Sliding Window Attention）只需相应窗口内的 KV；Mamba 这类递推层需要的是在特定位置保存的循环状态快照。它们复用历史的条件不同。",
+              "Full、SWA、Mamba 描述模型需要保留什么状态；HiCache 描述状态放在哪里。[registry.py](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/registry.py#L150-L199) 为统一树组合 Full 与所需的 SWA/Mamba 组件，再按配置接入 HiCache。[纯 SWA 另有选择分支](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/registry.py#L127-L130)，不能把这条路径概括成所有模型唯一的实现。",
+              "匹配也不只是找最长共同 token 前缀：[树核心](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py#L917-L970) 对组件检查求“全部通过”，同时分别记录 Full-KV 命中长度与可直接恢复的边界。",
+              "Full 命中长度只描述一个组件的覆盖；整体可恢复边界还要满足其他组件。即使找到满足条件的主存副本，也要搬回 GPU 后才能执行。"
+            ]
+          },
+          {
+            "heading": "一个工具调用例子：4096 个相同 token 为什么仍不够",
+            "paragraphs": [
+              "假设编码 agent 在 4096-token 处调用测试工具，返回后追加结果；模型、输入设置不变，旧前缀完全一致。以下数字仅作示意，位置均已对齐。",
+              "Full 层若整段 KV 仍在，就有 4096-token 的复用基础。再看窗口为 1024 的 SWA：若最后一窗中缺了一页，仅有 Full KV 不能让 SWA 直接从 4096 继续；需要找有效窗口边界或补算缺失状态。",
+              "这是从[SWA 检查与结果处理](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/components/swa.py#L355-L421) 推导出的例子：缺失状态会重置连续覆盖长度，Full 命中可以长于 SWA 边界；主存副本可参与匹配，但使用前要恢复。这里讨论树保存窗口的路径，源码另有请求独占的环形缓冲区特例。",
+              "若含 Mamba 层且仅保留 3072 处循环状态，就不能因 token 相同而宣称可直接从 4096 恢复，必须从有效检查点继续计算。[Mamba 检查与分支位置](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/components/mamba.py#L147-L190) 要求节点有状态，[节点拆分](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/components/mamba.py#L309-L319) 也不会凭空给新边界生成状态。混合模型必须满足其全部组件；较长的 Full 命中仍可能用于后续恢复。"
+            ]
+          },
+          {
+            "heading": "HiCache 解决存放位置，不消除恢复代价",
+            "paragraphs": [
+              "[控制器](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py#L964-L1035) 将主存状态排队搬回设备，也提交存储预取；[存储查询](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py#L1348-L1412) 还处理各状态池的命中信息。因此“主存里找得到”和“GPU 已能继续运行”要分开计量，不能把 HiCache 当成与 SWA/Mamba 并列的第四种模型缓存。"
+            ]
+          },
+          {
+            "heading": "与你的 agent 系统工作的关系",
+            "paragraphs": [
+              "**我的系统推导：** 工具等待期间，驻留策略应问“保住哪些状态才能低成本继续”，不能只问“保留多少 token”。测量时分别记录可恢复位置、Full/SWA/循环状态驻留量、搬运时间与补算时间，再比较保留、下放和重算。这里的可恢复状态只覆盖模型侧；工具容器、会话副作用和训练优化器状态仍需另外管理。"
+            ]
+          },
+          {
+            "heading": "建议阅读顺序",
+            "paragraphs": [
+              "先看原论文 §3 和 Figure 3，理解复用动机；再看 registry 的组件选择、SWA/Mamba 的匹配检查，最后跟控制器的 load/prefetch。第一次读到能解释上述工具返回场景即可。它非常适合校准 agent KV 调度的状态模型，但这些文件本身不证明哪种工具等待策略最优。"
+            ]
+          }
+        ]
       },
       "en": {
         "contribution": "Co-designs a language-program frontend and runtime, using RadixAttention for KV prefix reuse and optimizing structured generation.",
         "relevance": "Connects program structure with cache reuse, informing shared histories, branching, and prefix retention in multi-turn agents.",
-        "reading": "Read selectively with source pinned to commit f2b73d4, verified on 2026-10-15. Start with [registry.py](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/registry.py#L83-L199) for UnifiedRadixCache component selection, then [SWA window coverage and independent eviction](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/components/swa.py#L62-L100) and [Mamba recoverable state boundaries](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/components/mamba.py#L147-L224). Trace prefix matching, insertion, eviction, and restoration.",
+        "reading": "Worth a close read with code. Start with Full/SWA/Mamba reuse conditions and HiCache tiers, then trace matching and recovery through the tool-call example. Source checked on October 15, 2026 and pinned to commit f2b73d4.",
         "prerequisites": "Prefix caching, trees, and the logical-versus-physical block distinction in PagedAttention.",
-        "caveat": "Separate the original paper from current code: ordinary full-attention can also use UnifiedRadixCache; SWA/Mamba components depend on the model. [HiCache](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py#L203-L269) adds GPU/CPU/storage tiers, a separate dimension that can be combined with mixed model state."
+        "caveat": "Separate the original paper from current code: ordinary full-attention can also use UnifiedRadixCache; SWA/Mamba components depend on the model. [HiCache](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py#L203-L269) adds GPU/CPU/storage tiers, a separate dimension that can be combined with mixed model state.",
+        "sections": [
+          {
+            "heading": "Why SGLang is today's source-code reading",
+            "paragraphs": [
+              "**Worth a close read, starting with caching.** The original paper's RadixAttention organizes shared prefixes across calls in a radix tree and combines cache retention, eviction, and scheduling to reduce repeated prefill. It explains why reuse matters. Today's implementation reading concerns state management at commit `f2b73d4`; the 2024 paper is not a specification of the current code. [Original paper, §3](https://arxiv.org/html/2312.07104v2#S3)"
+            ]
+          },
+          {
+            "heading": "Code facts: separate two dimensions",
+            "paragraphs": [
+              "First unpack the terminology: Full refers to historical KV for full-attention layers; SWA (Sliding Window Attention) needs KV for the relevant window; recurrent layers such as Mamba need state snapshots at particular positions. Their requirements for reusing history differ.",
+              "Full, SWA, and Mamba describe the state the model needs to retain; HiCache describes where that state lives. [registry.py](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/registry.py#L150-L199) composes Full with the required SWA/Mamba components in a unified tree, then optionally attaches HiCache. [Pure SWA has a separate selection branch](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/registry.py#L127-L130), so this is not the sole implementation path for every model.",
+              "Matching is more than finding the longest shared token prefix: the [tree core](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/unified_tree_core.py#L917-L970) requires all component validators to pass and separately tracks Full-KV hit length and the boundary from which execution can resume.",
+              "Full hit length describes coverage for one component. The overall resumable boundary must satisfy the other components as well. A suitable host-memory copy still has to reach the GPU before execution."
+            ]
+          },
+          {
+            "heading": "A tool-call example: why 4,096 identical tokens may be insufficient",
+            "paragraphs": [
+              "Suppose a coding agent calls a test tool after 4,096 tokens, then appends the returned result. Its model and input configuration are unchanged, and the old prefix is identical. The numbers are illustrative; all positions are aligned.",
+              "If the Full layers retain the entire prefix's KV, they have a basis for reusing 4,096 tokens. Now consider SWA with a 1,024-token window: if a page is missing from the final window, Full KV alone does not allow SWA to resume directly at 4,096. Execution needs a valid window boundary or recomputation of missing state.",
+              "This example is derived from the [SWA validator and result handling](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/components/swa.py#L355-L421): missing state resets contiguous coverage, and the Full hit can extend beyond the SWA boundary. A host copy can participate in matching but must be restored before use. This discussion covers tree-stored windows; the code also has a special case for per-request ring buffers.",
+              "If the model contains Mamba layers and retains a recurrent-state checkpoint only at 3,072, identical tokens do not make direct resumption at 4,096 possible. Execution must advance from a valid checkpoint. [Mamba validation and branching positions](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/components/mamba.py#L147-L190) require state at the node, and [splitting a node](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/unified_cache/components/mamba.py#L309-L319) does not invent state for the new boundary. A hybrid model must satisfy all its components; the longer Full hit can still help subsequent recovery."
+            ]
+          },
+          {
+            "heading": "HiCache changes placement; recovery still has a cost",
+            "paragraphs": [
+              "The [controller](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py#L964-L1035) queues host-to-device restoration and submits storage prefetches; its [storage queries](https://github.com/sgl-project/sglang/blob/f2b73d4f9b4e64415b8d775b0f811c7801f1728b/python/sglang/srt/mem_cache/hybrid_cache/hybrid_cache_controller.py#L1348-L1412) also handle per-pool hit information. Consequently, “available in host memory” and “ready for GPU execution” need separate accounting. HiCache is not a fourth model-cache type alongside SWA and Mamba."
+            ]
+          },
+          {
+            "heading": "Connection to your agent systems work",
+            "paragraphs": [
+              "**My systems inference:** during a tool wait, a residency policy should ask which states enable inexpensive continuation, rather than counting retained tokens alone. Measure resumable positions, resident Full/SWA/recurrent state, transfer time, and recomputation time separately before comparing retention, offloading, and recomputation. Resumable state here covers the model side only; tool containers, session side effects, and training optimizer state need separate management."
+            ]
+          },
+          {
+            "heading": "Suggested reading order",
+            "paragraphs": [
+              "Start with §3 and Figure 3 of the paper for the motivation. Follow registry's component selection, the SWA/Mamba match validators, and finally the controller's load/prefetch paths. For a first pass, being able to explain the tool-return example is enough. This is valuable for refining the state model behind agent KV scheduling, but these files alone do not establish an optimal tool-wait policy."
+            ]
+          }
+        ]
       }
     },
     {
@@ -67,14 +321,86 @@
         "relevance": "作为 HybridFlow 的补充，帮助区分 RL 系统中的控制流、worker 状态、对象传输和 GPU 资源调度。",
         "reading": "选择性阅读 task/actor 模型与调度设计。试着说明 rollout worker 为什么常用持久 actor，以及模型状态和大张量各应放在哪里。",
         "prerequisites": "进程、远程调用与有状态/无状态任务的区别。",
-        "caveat": "这是 2018 年架构论文；学习其抽象，实际 API 和部署行为需查当前官方文档。"
+        "caveat": "这是 2018 年架构论文；学习其抽象，实际 API 和部署行为需查当前官方文档。",
+        "sections": [
+          {
+            "heading": "为什么读完 HybridFlow 还要回头看 Ray",
+            "paragraphs": [
+              "HybridFlow 要表达的是训练与 rollout 的算法流程，Ray 提供的是让远程计算和持久 worker 协作的基础抽象。2018 年论文把 task 与 actor 放进同一执行框架，支持动态依赖和分布式调度。读这篇时先建立分层：算法何时推进、哪个进程执行、张量怎样传输，是三个相关但不同的问题。[OSDI 原论文与报告](https://www.usenix.org/conference/osdi18/presentation/moritz)"
+            ]
+          },
+          {
+            "heading": "Task、actor、ObjectRef 分别表达什么",
+            "paragraphs": [
+              "Task 适合表达一次远程函数计算；actor 则是有状态的长期进程，其方法可以使用和修改已有状态。对加载模型成本很高的 rollout worker，持久 actor 的价值在于后续请求可以继续使用已初始化的引擎。这里的 actor 是 Ray 的进程抽象，不是 PPO 里与 critic 相对的策略模型；同一个词在两层有不同含义。[当前 actor 文档](https://docs.ray.io/en/latest/ray-core/actors.html)",
+              "远程调用返回的 ObjectRef 类似 future：调用方可以先拿到结果引用，再安排依赖该结果的工作，不必立即把数据取回控制进程。Ray 的远程对象是不可变的，可能存在于不同节点的对象存储中；引用在哪里，并不意味着数据就在哪里。[当前对象文档](https://docs.ray.io/en/latest/ray-core/objects.html)"
+            ]
+          },
+          {
+            "heading": "一个 rollout 调试例子：调用提交了，为什么 GPU 仍然空闲",
+            "paragraphs": [
+              "**下面是排查思路，不是论文实验。** 假设控制进程提交 generate，之后要计算 reward。第一步看 worker 是否已启动并获得所需资源；第二步看输入依赖是否就绪、是否正在跨节点取数据；第三步才看模型是否进入 GPU 执行。把这三个等待都叫作“Ray 慢”，会把完全不同的优化问题混在一起。",
+              "即使 ObjectRef 已经就绪，也不能据此断定 rollout 使用了正确版本的权重。可以给每批数据标记 policy version，并分别记录“生成请求提交”“依赖就绪”“首个 GPU 工作开始”“整批生成结束”“新权重安装完成”的时间。这样才能辨认控制开销、搬运、计算与版本切换。这里提出的是应用层观测方案，需要在自己的系统中实现和验证。"
+            ]
+          },
+          {
+            "heading": "资源声明的边界：半张 GPU 不是半份显存",
+            "paragraphs": [
+              "当前 Ray 文档把资源数量定义为调度准入所用的逻辑资源。`num_gpus=0.5` 可以让多个 actor 共享一张可见 GPU，但不会替你划出互不干扰的半份显存。Ray 通过 `CUDA_VISIBLE_DEVICES` 提供设备可见性，应用仍需管理模型、KV、临时张量和通信缓冲区的实际占用。[资源与 fractional GPU 文档](https://docs.ray.io/en/latest/ray-core/scheduling/resources.html)",
+              "**我的系统推导：** 如果 trainer 与 rollout 引擎轮流使用同一批 GPU，资源声明只解决一部分放置问题。什么时候释放 KV、什么时候 offload 优化器、谁建立通信组、何时完成权重更新，仍是训练框架和推理引擎之间的协议。仅把两个进程都声明为半张 GPU，无法证明它们能够安全、高效地共存。"
+            ]
+          },
+          {
+            "heading": "精读范围与当前工作的连接",
+            "paragraphs": [
+              "值得选择性精读 task/actor、动态依赖和调度设计，不必一开始追完所有容错实现。先修只需理解进程、远程调用与 future。读完后试着画一张自己的 worker 图：哪些状态常驻 actor，哪些批数据通过引用流动，哪些模型通信另有专用路径。",
+              "论文用于理解 2018 年设计，以上 API 行为以 2026-10-15 查阅的官方文档为准。不要拿论文的 task 吞吐数字估算 LLM rollout 吞吐；真正需要评估的是自己流程中调度、数据传输和计算分别占多少时间。可对照站内 [[CN/wiki/rl-infra/rl-training-frameworks|RL 训练框架]]，把 Ray 与算法框架的职责分开。"
+            ]
+          }
+        ]
       },
       "en": {
         "contribution": "Unifies tasks and actors in an execution engine with distributed scheduling and fault-tolerant control state for dynamic AI workloads.",
         "relevance": "Complements HybridFlow by separating control flow, worker state, object movement, and GPU resource scheduling.",
         "reading": "Selectively read the task/actor model and scheduler. Explain why rollout workers often use persistent actors and where model state and large tensors should live.",
         "prerequisites": "Processes, remote calls, and stateful versus stateless tasks.",
-        "caveat": "This describes the 2018 architecture; use it for abstractions and current official documentation for APIs and deployment."
+        "caveat": "This describes the 2018 architecture; use it for abstractions and current official documentation for APIs and deployment.",
+        "sections": [
+          {
+            "heading": "Why return to Ray after HybridFlow",
+            "paragraphs": [
+              "HybridFlow expresses the algorithmic relationship between training and rollout. Ray supplies abstractions for coordinating remote computation and persistent workers. The 2018 paper combines tasks and actors in one execution framework with dynamic dependencies and distributed scheduling. Keep three questions separate: when the algorithm advances, which process executes, and how tensors move. [OSDI paper and presentation](https://www.usenix.org/conference/osdi18/presentation/moritz)"
+            ]
+          },
+          {
+            "heading": "What tasks, actors, and ObjectRefs represent",
+            "paragraphs": [
+              "A task expresses a remote function computation. An actor is a persistent, stateful process whose methods can access and modify existing state. A rollout worker with expensive model initialization can use an actor to retain its initialized engine across requests. This process abstraction is different from the policy model called the actor in PPO. [Current actor documentation](https://docs.ray.io/en/latest/ray-core/actors.html)",
+              "An ObjectRef returned by a remote call is similar to a future. The caller can arrange dependent work without immediately fetching the result into the controller. Ray remote objects are immutable and may reside in object stores on different nodes; the location of a reference does not determine the location of the data. [Current object documentation](https://docs.ray.io/en/latest/ray-core/objects.html)"
+            ]
+          },
+          {
+            "heading": "A rollout debugging example: submitted work, idle GPU",
+            "paragraphs": [
+              "**This is a diagnostic example, not a paper experiment.** Suppose a controller submits generate and will calculate rewards afterward. First check whether the worker has started and obtained its requested resources. Next check whether input dependencies are ready or data is moving between nodes. Only then check whether execution has reached the GPU. Calling all three delays “Ray overhead” hides different optimization problems.",
+              "Even a ready ObjectRef does not establish that rollout used the intended policy version. Tag each batch with its policy version and separately record request submission, dependency readiness, first GPU work, batch completion, and installation of new weights. These observations help distinguish control overhead, transfer, computation, and version transitions. This is an application-level instrumentation proposal to implement and validate in your own system."
+            ]
+          },
+          {
+            "heading": "Half a GPU resource does not reserve half its memory",
+            "paragraphs": [
+              "Current Ray documentation defines resource quantities as logical admission controls. `num_gpus=0.5` can allow actors to share a visible GPU, but does not partition device memory into isolated halves. Ray sets `CUDA_VISIBLE_DEVICES`; the application still manages the real footprint of models, KV state, temporary tensors, and communication buffers. [Resources and fractional GPUs](https://docs.ray.io/en/latest/ray-core/scheduling/resources.html)",
+              "**My systems inference:** when a trainer and a rollout engine alternate on the same GPUs, resource declarations solve only part of placement. Releasing KV, offloading optimizer state, establishing communication groups, and completing weight installation still require a protocol between the training framework and inference engine. Declaring each process to require half a GPU does not establish safe or efficient coexistence."
+            ]
+          },
+          {
+            "heading": "Reading scope and connection to current work",
+            "paragraphs": [
+              "Read the task/actor model, dynamic dependencies, and scheduler selectively; detailed fault-tolerance internals can wait. Processes, remote calls, and futures are enough background. Then draw your worker graph: which states remain inside actors, which batches flow through references, and which model communications use dedicated paths?",
+              "Use the paper for the 2018 design and the official documentation, checked on October 15, 2026, for the API behavior described above. Task throughput in the paper is not a prediction of LLM rollout throughput. Measure scheduling, transfer, and computation in your own workflow. The site's [[EN/wiki/rl-infra/rl-training-frameworks|RL training frameworks]] note can help place Ray beneath algorithm frameworks."
+            ]
+          }
+        ]
       }
     },
     {
@@ -87,16 +413,88 @@
       "zh": {
         "contribution": "将 prefill 和 decode 分离，并按各自的延迟约束配置资源与并行策略，优化满足服务目标的有效吞吐。",
         "relevance": "在已理解连续批处理和分页 KV 的基础上，进一步分析阶段隔离、KV 传输以及 rollout 与在线服务的目标差异。",
-        "reading": "值得精读，可留到下一期。先区分吞吐与 goodput，再看分离后如何选择 GPU 配置、平衡传输开销。",
+        "reading": "值得精读，可在主读之后单独安排时间。先区分吞吐与 goodput，再看独立配置的收益与 KV 传输成本。",
         "prerequisites": "prefill/decode、TTFT/TPOT、连续批处理与 KV cache；已有 Orca/PagedAttention 基础即可进入。",
-        "caveat": "在线服务的 SLO 优化不能直接代替 rollout 的完整轨迹完成时间目标；收益取决于负载与互连条件。"
+        "caveat": "在线服务的 SLO 优化不能直接代替 rollout 的完整轨迹完成时间目标；收益取决于负载与互连条件。",
+        "sections": [
+          {
+            "heading": "已懂连续批处理后，还缺哪一块",
+            "paragraphs": [
+              "Orca 解释请求怎样按迭代进入和离开 batch，PagedAttention 解释 KV 怎样更有效地使用显存。DistServe 接着追问：prefill 与 decode 是否应该一直共享同一组 GPU 和并行配置？它将两阶段拆开，并围绕首 token 时间 TTFT、后续 token 平均时间 TPOT 的要求联合选择资源与并行方式。[OSDI 2024 论文页](https://www.usenix.org/conference/osdi24/presentation/zhong-yinmin)"
+            ]
+          },
+          {
+            "heading": "吞吐高，不代表服务体验达标",
+            "paragraphs": [
+              "可以用一个假想场景理解干扰：一批用户正在等待逐 token 输出，新的长 prompt 同时到来。把它放进同一组 GPU，可能提高总处理量，却拉长正在生成请求的等待。用户关心的是首字是否及时出现、后续是否持续流畅，不能只看所有请求合计的 tokens/s。这是动机示例，实际影响取决于 batching 与 kernel 行为。",
+              "DistServe 的实验关注在一定达标比例下能承受的请求到达率，并按 GPU 数归一化比较。读图时先固定 SLO 与达标比例，再比较容量；否则更宽松的延迟要求也能制造“吞吐更高”的表象。[论文 §6.1–6.2](https://www.usenix.org/system/files/osdi24-zhong-yinmin.pdf#page=10)"
+            ]
+          },
+          {
+            "heading": "分离的收益与账单：独立配置，额外搬运 KV",
+            "paragraphs": [
+              "拆开之后，prefill 与 decode 可以选择不同的并行配置与实例数量，但请求要把 prefill 产生的 KV 交给 decode。论文的 placement 设计把互连条件纳入考虑：跨节点带宽不足时，通过对应阶段的同机放置利用机器内高速连接。把它理解成“只要分两台机器就更快”会漏掉设计的关键条件。[论文 §3–4](https://www.usenix.org/system/files/osdi24-zhong-yinmin.pdf#page=4)",
+              "**一个自算的带宽下界例子：** 假设每个请求需要搬运 1 GiB KV，到达率为 8 请求/秒，那么仅 KV 流量就约为 8 GiB/s，尚未计协议开销、争用和其他通信。如果可用链路带宽低于这个值，队列会持续积累；如果只略高，也不意味着尾延迟就能达标。这是容量规划示例，不是论文的实测配置。"
+            ]
+          },
+          {
+            "heading": "实验应怎样读，哪些结论不能外推",
+            "paragraphs": [
+              "论文实机环境是 4 个节点、共 32 张 A100 80GB，节点内 NVLink、跨节点 25 Gbps；使用 OPT 模型和聊天、代码补全、摘要负载。§6.4 的高带宽方案对比包含仿真，不能全部当作该实机集群跑出的结果。原文表 1、Figure 7 和 Figure 11 分别帮助检查 SLO、长度分布和消融条件。[实验与消融](https://www.usenix.org/system/files/osdi24-zhong-yinmin.pdf#page=10)",
+              "**我的系统推导：** 用到 rollout 时，应另画完整轨迹时间线：模型计算、工具等待、KV 恢复、reward 完成、训练批次凑齐。在线 TTFT/TPOT 好了，不必然让最后一条轨迹更早结束；长尾也可能来自工具或批次屏障。比较方案时应同时观察阶段延迟、传输量、GPU 利用率和整批轨迹完成时间。"
+            ]
+          },
+          {
+            "heading": "是否值得精读，以及下一步看什么",
+            "paragraphs": [
+              "值得精读，但今天可以先理解“阶段需求不同—独立配置—支付搬运成本”这一条因果链。已有 Orca/PagedAttention 基础即可进入，补清 TTFT/TPOT 的定义后，按 §2 动机、§3 代价分析、§4 placement、§6 实验顺序读。",
+              "读完后尝试回答：自己的工作负载究竟被 prefill、decode、网络还是工具长尾限制？这个答案决定是否值得做分离、需要什么测量，而不是单靠论文的最大加速比。后续可与站内 [[CN/wiki/llm-serving-for-agents/infercept|InferCept]] 对照，进一步区分阶段隔离与工具等待期间的 KV 管理。"
+            ]
+          }
+        ]
       },
       "en": {
         "contribution": "Separates prefill and decoding, selecting resources and parallelism for their distinct latency constraints to optimize goodput.",
         "relevance": "Builds on batching and paged KV memory to analyze stage isolation, KV transfer, and the different objectives of online serving and rollouts.",
-        "reading": "Worth a close read, possibly in a later edition. Distinguish throughput from goodput, then examine GPU allocation and transfer overhead.",
+        "reading": "Worth a close read after the main paper. Distinguish throughput from goodput, then examine the benefit of independent configurations and the cost of KV transfer.",
         "prerequisites": "Prefill/decode, TTFT/TPOT, continuous batching, and KV caches; Orca and PagedAttention provide the background.",
-        "caveat": "Online-serving SLOs do not directly replace end-to-end trajectory completion objectives; gains depend on workload and interconnect conditions."
+        "caveat": "Online-serving SLOs do not directly replace end-to-end trajectory completion objectives; gains depend on workload and interconnect conditions.",
+        "sections": [
+          {
+            "heading": "What comes after continuous batching",
+            "paragraphs": [
+              "Orca explains iteration-level batch membership, while PagedAttention explains efficient KV memory use. DistServe asks whether prefill and decode should always share GPUs and parallel configurations. It separates the phases and chooses resources and parallelism around time to first token (TTFT) and average time per subsequent output token (TPOT). [OSDI 2024 paper page](https://www.usenix.org/conference/osdi24/presentation/zhong-yinmin)"
+            ]
+          },
+          {
+            "heading": "High throughput can still miss the service target",
+            "paragraphs": [
+              "Consider a hypothetical interference scenario: users are waiting for streaming output when a new long prompt arrives. Processing it on the same GPUs might increase aggregate work while delaying requests already decoding. Users care about prompt first output and smooth continuation, which total tokens/s alone cannot express. This is a motivating example; the actual effect depends on batching and kernel behavior.",
+              "DistServe evaluates the arrival rate supportable at a chosen SLO attainment target and compares capacity per GPU. Fix latency requirements and the attainment target before reading throughput comparisons; relaxed requirements can otherwise create the appearance of greater capacity. [Paper, §6.1–6.2](https://www.usenix.org/system/files/osdi24-zhong-yinmin.pdf#page=10)"
+            ]
+          },
+          {
+            "heading": "Independent configurations come with a KV transfer bill",
+            "paragraphs": [
+              "Separation permits different parallel configurations and instance counts, but prefill must hand KV state to decode. Placement accounts for connectivity: when inter-node bandwidth is limited, corresponding stages share a machine to use faster local links. Simply putting the phases on two machines omits this condition. [Paper, §3–4](https://www.usenix.org/system/files/osdi24-zhong-yinmin.pdf#page=4)",
+              "**An illustrative bandwidth lower bound:** if every request transfers 1 GiB of KV and arrivals average eight requests per second, KV traffic alone is about 8 GiB/s, before protocol overhead, contention, or other communication. Below that available bandwidth, queues grow; slightly exceeding it still does not guarantee acceptable tail latency. This is a capacity-planning example, not the paper's measured configuration."
+            ]
+          },
+          {
+            "heading": "Reading the evidence and its limits",
+            "paragraphs": [
+              "The physical testbed has four nodes with 32 A100 80GB GPUs, intra-node NVLink, and 25 Gbps inter-node connectivity. Workloads use OPT models for chat, code completion, and summarization. High-bandwidth comparisons in §6.4 include simulation. Table 1, Figure 7, and Figure 11 expose the SLOs, length distributions, and ablation conditions. [Experiments and ablations](https://www.usenix.org/system/files/osdi24-zhong-yinmin.pdf#page=10)",
+              "**My systems inference:** for rollout, draw the entire trajectory timeline: model computation, tool waiting, KV recovery, reward completion, and formation of a training batch. Better online TTFT/TPOT need not finish the last trajectory earlier; tools or batch barriers may dominate the tail. Compare phase latency, traffic, GPU utilization, and whole-batch trajectory completion together."
+            ]
+          },
+          {
+            "heading": "Reading recommendation and next connection",
+            "paragraphs": [
+              "Worth a close read. For today, follow the causal chain: different phase requirements allow independent configurations, at the cost of state transfer. Orca and PagedAttention provide enough background once TTFT/TPOT are clear. Read §2 motivation, §3 cost analysis, §4 placement, then §6 evaluation.",
+              "Then ask whether your workload is constrained by prefill, decode, networking, or tool tails. That answer determines what to measure and whether separation is promising; the paper's maximum speedup alone cannot decide. Compare the site's [[EN/wiki/llm-serving-for-agents/infercept|InferCept]] note to distinguish phase isolation from KV management during tool waits."
+            ]
+          }
+        ]
       }
     }
   ]

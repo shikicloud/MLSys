@@ -56,6 +56,36 @@ function canonicalUrl(value) {
   return url.href;
 }
 
+function inlineParagraph(value, label) {
+  text(value, label);
+  // Each string becomes a standalone paragraph. In particular, an open fence
+  // would consume later sections and papers even though the string has no newline.
+  const block = /^ {4}/.test(value)
+    || /^ {0,3}(?:#{1,6}(?: |$)|>|[-+*](?: |$)|\d{1,9}[.)](?: |$))/.test(value)
+    || /^ {0,3}(?:`{3,}[^`]*|~{3,}.*|\${2,}[^$]*)$/.test(value)
+    || /^ {0,3}(?:(?:\* *){3,}|(?:- *){3,}|(?:_ *){3,})$/.test(value)
+    || /^ {0,3}\[(?:\\.|[^\]\\])+\]:/.test(value);
+  assert(!block, `${label} must contain inline Markdown only, not block syntax`);
+}
+
+function validateSections(paper, label) {
+  if (languages.every(lang => paper[lang].sections === undefined)) return;
+  const { sections: zh } = paper.zh;
+  const { sections: en } = paper.en;
+  assert(Array.isArray(zh) && Array.isArray(en), `${label}.sections must be arrays in both zh and en`);
+  assert(zh.length > 0 && en.length > 0, `${label}.sections must be nonempty`);
+  assert(zh.length === en.length, `${label}.sections must have matching zh and en section counts`);
+  for (const lang of languages) {
+    paper[lang].sections.forEach((section, index) => {
+      const location = `${label}.${lang}.sections[${index}]`;
+      assert(section && typeof section === 'object' && !Array.isArray(section), `${location} must be an object`);
+      text(section.heading, `${location}.heading`);
+      assert(Array.isArray(section.paragraphs) && section.paragraphs.length > 0, `${location}.paragraphs must be a nonempty array`);
+      section.paragraphs.forEach((paragraph, paragraphIndex) => inlineParagraph(paragraph, `${location}.paragraphs[${paragraphIndex}]`));
+    });
+  }
+}
+
 function validateDigest(digest, filename, now) {
   assert(digest && digest.schemaVersion === 1, `${filename}: schemaVersion must be 1`);
   assert(isDate(digest.date) && filename === `${digest.date}.json`, `${filename}: invalid date or date does not match filename`);
@@ -88,6 +118,7 @@ function validateDigest(digest, filename, now) {
     assert(!urls.has(normalizedUrl), `${label}: duplicate source URL within a digest: ${normalizedUrl}`);
     urls.add(normalizedUrl);
     bilingual(paper, fields, label);
+    validateSections(paper, label);
     if (paper.revisitReason !== undefined) bilingual(paper.revisitReason, null, `${label}.revisitReason`);
   }
 }
@@ -148,11 +179,22 @@ function renderDigest(digest, lang) {
   ];
   const ordered = [...digest.papers].sort((a, b) => Number(b.role === 'main') - Number(a.role === 'main'));
   for (const paper of ordered) {
-    lines.push(`## ${paper.role === 'main' ? c.main : c.optional} · ${paper.title}`, '',
-      `- **${c.venue}：** ${paper.year} · ${paper.venue} · [${c.source}](<${paper.url}>)`);
-    fields.forEach((field, i) => lines.push(`- **${c.labels[i]}：** ${paper[lang][field]}`));
-    if (paper.revisitReason) lines.push(`- **${c.revisit}：** ${paper.revisitReason[lang]}`);
-    lines.push('');
+    lines.push(`## ${paper.role === 'main' ? c.main : c.optional} · ${paper.title}`, '');
+    const info = `**${c.venue}：** ${paper.year} · ${paper.venue} · [${c.source}](<${paper.url}>)`;
+    const sections = paper[lang].sections;
+    if (sections) {
+      lines.push(info, '', `**${c.labels[2]}：** ${paper[lang].reading}`, '');
+      if (paper.revisitReason) lines.push(`**${c.revisit}：** ${paper.revisitReason[lang]}`, '');
+      for (const section of sections) {
+        lines.push(`### ${section.heading}`, '');
+        for (const paragraph of section.paragraphs) lines.push(paragraph, '');
+      }
+    } else {
+      lines.push(`- ${info}`);
+      fields.forEach((field, i) => lines.push(`- **${c.labels[i]}：** ${paper[lang][field]}`));
+      if (paper.revisitReason) lines.push(`- **${c.revisit}：** ${paper.revisitReason[lang]}`);
+      lines.push('');
+    }
   }
   return lines.join('\n');
 }

@@ -13,6 +13,15 @@
   },
   "deliveryPreference": {
     "device": "iPhone",
-    "default": "full-text RSS; push channel not configured"
+    "default": "NetNewsWire on iPhone; full-text RSS confirmed working; no direct push channel configured"
+  },
+  "editorialPreference": {
+    "format": "detailed technical reading notes",
+    "styleReferences": [
+      "CN/wiki/llm-serving-for-agents/thunderagent.md",
+      "CN/wiki/llm-serving-for-agents/infercept.md"
+    ],
+    "zh": "按站内技术文章的深度与结构写，默认主动展开细节。主读完整解释背景瓶颈、关键机制、具体例子或有帮助的图示、实验条件与局限、系统工作联系、精读路线；选读也写成有机制与取舍的分节短文。使用双语 sections，小标题和分段正文，不停留在几条摘要。明确区分原论文、当前源码事实和自己的分析。",
+    "en": "Use the depth and structure of existing technical articles and explain details proactively. The main paper needs motivation, mechanisms, a concrete example or useful diagram, experimental conditions and limits, systems connections, and a reading route. Optional papers should also have developed sections on mechanisms and tradeoffs. Use bilingual sections with headings and paragraphs rather than summary bullets. Distinguish the original paper, current code facts, and our analysis."
   }
 }

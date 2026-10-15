@@ -12,13 +12,16 @@ RSS exports semantic article HTML without the duplicate page title or Quartz hea
 - Focus on agent workloads, rollout/training infrastructure, KV caching and scheduling, parallelism, and MoE systems. Exclude routine releases and promotional announcements.
 - Verify title, paper year, venue, and source against the original paper or official proceedings. Distinguish preprint year from conference year.
 - Explain the bottleneck, contribution, practical connection, prerequisites, reading advice, and a material limitation. Label measured results as author-reported and include their conditions when giving numbers.
+- Write developed technical reading notes by default, following the structure and depth of the site's ThunderAgent and InferCept articles (`CN/wiki/llm-serving-for-agents/`). Do not wait for a follow-up question before explaining the mechanism. Their prose structure is a style reference, not a substitute for checking primary sources.
+- The main reading needs a short overview, motivation and bottleneck, a walkthrough of the key mechanism, a concrete example or useful diagram, evaluation conditions and limitations, connections to the reader's public systems interests, and a suggested reading route. Define new terminology when first used. Optional readings should be shorter sectioned notes that still explain mechanisms and tradeoffs; a few summary bullets are insufficient.
+- Distinguish original-paper results, current implementation facts, and our own analysis. Label illustrative numbers as examples. Pin code links to a verified commit and state the verification date. Do not describe current documentation as evidence that a configuration has been run or benchmarked.
 - An existing wiki page or previous recommendation is not evidence that the reader has read or mastered a paper. Avoid repeating recommended papers unless the new entry includes an explicit bilingual `revisitReason`.
 - Keep personal resumes, contacts, internal work details, cluster paths, and notification credentials out of this public repository.
 
 ## Add an edition
 
 1. Read this file, `reading/preferences.json`, the roadmap, and existing `reading/digests/` records. Respect explicitly completed reading and use existing IDs for previously recommended papers. For source-code explanations, pin links to a verified commit and distinguish model-specific implementations.
-2. Create one JSON record following `2026-10-15.json`. Use the actual Beijing date and first publication timestamp (`+08:00`). Do not predate missed editions or change `publishedAt` when correcting one.
+2. Create one JSON record following `2026-10-15.json`, with bilingual sectioned prose as described below. Use the actual Beijing date and first publication timestamp (`+08:00`). Do not predate missed editions or change `publishedAt` when correcting one.
 3. Run from the repository root:
 
    ```sh
@@ -32,6 +35,26 @@ RSS exports semantic article HTML without the duplicate page title or Quartz hea
 6. The existing Pages workflow validates the data and feed, builds Quartz, and deploys the website. Check its result and the live edition before reporting publication success. A successful commit alone is not a successful deployment.
 
 `--check` validates all source records and verifies that committed generated pages match them. Do not hand-edit generated daily pages or reading indexes. Roadmap pages are maintained separately.
+
+## Sectioned article format
+
+Keep the existing five summary fields (`contribution`, `relevance`, `reading`, `prerequisites`, `caveat`) in each paper's `zh` and `en` objects. New editions also include `sections` in both languages, with matching section counts and equivalent coverage:
+
+```json
+"sections": [
+  {
+    "heading": "Why this bottleneck matters",
+    "paragraphs": [
+      "A complete explanatory paragraph with **inline emphasis** and a [primary source](https://example.org/paper).",
+      "A concrete example or a clearly labeled inference connecting the mechanism to a systems decision."
+    ]
+  }
+]
+```
+
+Each heading and paragraph is one nonempty line. Inline Markdown links, emphasis, code spans, and image references are supported; raw HTML, control characters, and block Markdown inside these strings are not. Sectioned output shows paper metadata and reading advice, then real subsection headings and paragraphs. Integrate contribution, relevance, prerequisites, and limitations into the prose rather than repeating the summary fields as a checklist. Historical records without sections retain their original rendering.
+
+The full sectioned Chinese article is included in RSS. Use ordinary, bounded raster images for diagrams that must work in readers; do not rely on JavaScript, site CSS, or inline SVG for understanding the article. Make an illustration only when it clarifies a mechanism. If an edition needs a new figure asset, include that referenced asset and its editable source in the same commit as the edition.
 
 ## Mobile reading
 
