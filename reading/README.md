@@ -2,6 +2,8 @@
 
 The daily reading archive is part of the existing Quartz site. Canonical content lives in `reading/digests/YYYY-MM-DD.json`; a deterministic generator renders the Chinese and English pages and their archive indexes. The dedicated RSS feed includes only Chinese daily editions, with stable issue links and publication dates. Existing wiki pages and the general site feed remain independent.
 
+RSS exports semantic article HTML without the duplicate page title or Quartz heading/link icons. Readers may remove website styles, causing decorative SVG icons to render at large default sizes; article links and actual figures are preserved.
+
 ## Editorial policy
 
 - Choose 3–5 directly relevant papers, technical reports, or substantive engineering analyses. Name one main read and make the others optional.

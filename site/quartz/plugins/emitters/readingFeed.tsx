@@ -1,6 +1,6 @@
 import type { Root } from "hast"
 import { toHtml } from "hast-util-to-html"
-import { visit } from "unist-util-visit"
+import { SKIP, visit } from "unist-util-visit"
 import type { FullSlug } from "../../util/path"
 import type { QuartzEmitterPlugin } from "../types"
 import type { ProcessedContent } from "../vfile"
@@ -73,7 +73,25 @@ export function readingFeedHtml(tree: Root, slug: string, baseUrl: string): stri
   const root = siteRoot(baseUrl)
   const pageUrl = new URL(slug, root)
   const copy = structuredClone(tree)
-  visit(copy, "element", (node) => {
+  // Feed readers display the issue title separately. Website CSS hides this duplicate H1.
+  const firstElement = copy.children.findIndex((node) => node.type === "element")
+  const first = copy.children[firstElement]
+  if (first?.type === "element" && first.tagName === "h1") copy.children.splice(firstElement, 1)
+
+  visit(copy, "element", (node, index, parent) => {
+    const classValue = node.properties.className ?? node.properties.class
+    const classes = Array.isArray(classValue)
+      ? classValue
+      : typeof classValue === "string"
+        ? classValue.split(/\s+/)
+        : []
+    const decorative =
+      (node.tagName === "a" && node.properties.role === "anchor") ||
+      (node.tagName === "svg" && classes.includes("external-icon"))
+    if (decorative && parent && index !== undefined) {
+      parent.children.splice(index, 1)
+      return [SKIP, index]
+    }
     for (const attribute of ["href", "src", "poster", "cite"]) {
       const value = node.properties[attribute]
       if (typeof value === "string") {

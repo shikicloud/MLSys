@@ -119,3 +119,4 @@ updated: 2026-06-15
 
 ## 2026-10-15
 - [READING] 新增每日论文推荐与经典阅读路线。首期主读 HybridFlow，选读当前源码视角的 SGLang、Ray、DistServe；Orca/PagedAttention 已精读；提供中英文归档和独立 RSS。推荐不代表已读。
+- [RSS] 修复阅读器中外链图标被放大的问题：RSS 移除网页装饰图标与重复标题，保留正文、论文链接和插图；首发时间与条目 ID 不变。

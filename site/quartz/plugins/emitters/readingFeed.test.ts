@@ -1,6 +1,6 @@
 import assert from "node:assert/strict"
 import test from "node:test"
-import type { Root } from "hast"
+import type { Element, Root } from "hast"
 import type { FullSlug } from "../../util/path"
 import { defaultProcessedContent } from "../vfile"
 import {
@@ -102,6 +102,50 @@ test("full HTML resolves links and resources without changing the page tree", ()
   assert.ok(html.includes('src="https://shikicloud.github.io/MLSys/assets/figure.png"'))
   assert.ok(html.includes("https://arxiv.org/abs/1234.56789?x=1&#x26;y=2"))
   assert.deepEqual(tree, original)
+})
+
+test("reader HTML omits website icons and duplicate title while preserving links and figures", () => {
+  const svg = (properties: Element["properties"]): Element => ({
+    type: "element", tagName: "svg", properties,
+    children: [{ type: "element", tagName: "path", properties: { d: "M0 0L1 1" }, children: [] }],
+  })
+  const tree: Root = {
+    type: "root",
+    children: [
+      { type: "text", value: "\n" },
+      { type: "element", tagName: "h1", properties: {}, children: [{ type: "text", value: "Issue title" }] },
+      {
+        type: "element", tagName: "h2", properties: { id: "main" }, children: [
+          { type: "text", value: "Main paper" },
+          { type: "element", tagName: "a", properties: { role: "anchor", href: "#main" }, children: [svg({ width: 18 })] },
+          { type: "element", tagName: "a", properties: { role: "anchor", href: "#main" }, children: [svg({ width: 18 })] },
+        ],
+      },
+      {
+        type: "element", tagName: "p", properties: {}, children: [
+          { type: "element", tagName: "a", properties: { href: "https://example.org/paper" }, children: [
+            { type: "text", value: "Original paper" },
+            svg({ className: ["external-icon"], style: "max-width:0.8em" }),
+            svg({ className: "external-icon" }),
+            svg({ class: "external-icon extra" }),
+          ] },
+        ],
+      },
+      svg({ role: "img", ariaLabel: "Architecture figure", viewBox: "0 0 100 100" }),
+      { type: "element", tagName: "img", properties: { src: "/assets/figure.png", alt: "Figure" }, children: [] },
+    ],
+  }
+  const original = structuredClone(tree)
+  const html = readingFeedHtml(tree, slug, baseUrl)
+  assert.ok(!html.includes("<h1"))
+  assert.ok(!html.includes("external-icon"))
+  assert.ok(!html.includes('role="anchor"'))
+  assert.ok(html.includes('<h2 id="main">Main paper</h2>'))
+  assert.ok(html.includes('<a href="https://example.org/paper">Original paper</a>'))
+  assert.equal(html.match(/<svg\b/g)?.length, 1, "content illustrations must survive")
+  assert.ok(html.includes('aria-label="Architecture figure"'))
+  assert.ok(html.includes('src="https://shikicloud.github.io/MLSys/assets/figure.png"'))
+  assert.deepEqual(tree, original, "feed cleanup must not change the website")
 })
 
 test("RSS preserves complete HTML, escapes XML, limits issues, and excludes other pages", () => {
