@@ -8,7 +8,7 @@ date: 2026-10-15
 created: 2026-10-15
 updated: 2026-10-15
 status: growing
-paper_ids: ["orca-2022","pagedattention-2023","sglang-2024","hybridflow-2025"]
+paper_ids: ["hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
 ---
 
 # 每日论文推荐
@@ -21,4 +21,4 @@ paper_ids: ["orca-2022","pagedattention-2023","sglang-2024","hybridflow-2025"]
 
 ## 历史推荐（最新在前）
 
-- [[CN/reading/daily/2026-10-15|2026-10-15 · 从请求调度到 RL rollout：四篇经典把系统串起来]] — 主读: Orca: A Distributed Serving System for Transformer-Based Generative Models
+- [[CN/reading/daily/2026-10-15|2026-10-15 · 从 HybridFlow 理解训练与 rollout 的衔接]] — 主读: HybridFlow: A Flexible and Efficient RLHF Framework

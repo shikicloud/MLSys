@@ -118,4 +118,4 @@ updated: 2026-06-15
 
 
 ## 2026-10-15
-- [READING] 新增每日论文推荐与经典阅读路线。首期主读 Orca，选读 PagedAttention、SGLang、HybridFlow；提供中英文归档和独立 RSS。推荐不代表已读。
+- [READING] 新增每日论文推荐与经典阅读路线。首期主读 HybridFlow，选读当前源码视角的 SGLang、Ray、DistServe；Orca/PagedAttention 已精读；提供中英文归档和独立 RSS。推荐不代表已读。

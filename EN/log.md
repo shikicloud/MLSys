@@ -118,4 +118,4 @@ updated: 2026-06-15
 
 
 ## 2026-10-15
-- [READING] Added daily recommendations and a foundational roadmap. The first edition features Orca, with PagedAttention, SGLang, and HybridFlow as optional reading; bilingual archives and a dedicated RSS feed are included. Recommendation does not imply completion.
+- [READING] Added daily recommendations and a foundational roadmap. The first edition features HybridFlow, with SGLang source-code reading, Ray, and DistServe as optional reading; Orca and PagedAttention are recorded as already read closely; bilingual archives and a dedicated RSS feed are included. Recommendation does not imply completion.

@@ -15,7 +15,7 @@ The daily reading archive is part of the existing Quartz site. Canonical content
 
 ## Add an edition
 
-1. Read this file, the roadmap, and existing `reading/digests/` records. Use existing IDs for previously recommended papers.
+1. Read this file, `reading/preferences.json`, the roadmap, and existing `reading/digests/` records. Respect explicitly completed reading and use existing IDs for previously recommended papers. For source-code explanations, pin links to a verified commit and distinguish model-specific implementations.
 2. Create one JSON record following `2026-10-15.json`. Use the actual Beijing date and first publication timestamp (`+08:00`). Do not predate missed editions or change `publishedAt` when correcting one.
 3. Run from the repository root:
 

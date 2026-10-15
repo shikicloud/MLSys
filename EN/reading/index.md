@@ -8,7 +8,7 @@ date: 2026-10-15
 created: 2026-10-15
 updated: 2026-10-15
 status: growing
-paper_ids: ["orca-2022","pagedattention-2023","sglang-2024","hybridflow-2025"]
+paper_ids: ["hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
 ---
 
 # Daily reading recommendations
@@ -21,4 +21,4 @@ This index and the daily archive sync with repository publishing. Browse on your
 
 ## Archive (newest first)
 
-- [[EN/reading/daily/2026-10-15|2026-10-15 · From request scheduling to RL rollouts: four foundational papers]] — Main reading: Orca: A Distributed Serving System for Transformer-Based Generative Models
+- [[EN/reading/daily/2026-10-15|2026-10-15 · Understanding the training–rollout boundary with HybridFlow]] — Main reading: HybridFlow: A Flexible and Efficient RLHF Framework

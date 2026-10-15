@@ -9,9 +9,11 @@ status: growing
 
 # A Foundational Reading Roadmap for Agent Serving and RL Infrastructure
 
+**Current starting point (2026-10-15):** Orca and PagedAttention have been read closely, so skip the first two entries; HybridFlow is the next main read. Study SGLang cache paths alongside current source code. Other roadmap entries are optional references, not completion claims.
+
 ## Overview
 
-This roadmap starts with request scheduling and memory management, then connects agent workloads, distributed training, MoE, and RL training pipelines. It is intended for readers building their systems foundations; it does not assume that any paper has already been mastered.
+This roadmap starts with request scheduling and memory management, then connects agent workloads, distributed training, MoE, and RL training pipelines. It is intended for readers building their systems foundations; mastery is only assumed for entries explicitly marked as already read.
 
 Selection is not limited by publication date. Foundational contributions and relevance to concrete systems problems come first, with venues and research teams as additional signals. Publication details below were checked against original papers or official publication pages. No unverified citation counts are used. **A recommendation is not a record of having read a paper, and the sequence does not imply completion.**
 
@@ -27,7 +29,7 @@ Each daily selection should contain **one main read and two to four alternatives
 
 - **Contribution:** Schedules individual generation iterations and uses selective batching so requests can enter and leave a batch dynamically.
 - **Systems connection:** Explains why fixed batches waste GPU time when rollout lengths differ, and introduces the core idea behind continuous batching.
-- **Reading advice: prioritize a close read.** Draw a timeline for one long request and two short ones, then compare request-level and iteration-level scheduling.
+- **Reading advice: already read closely; revisit as needed.** Use a timeline for one long request and two short ones to review request-level versus iteration-level scheduling.
 
 ### 2. PagedAttention / vLLM — SOSP 2023
 
@@ -35,7 +37,7 @@ Each daily selection should contain **one main read and two to four alternatives
 
 - **Contribution:** Applies paging to a growing KV cache, reducing fragmentation and enabling sharing within and across requests.
 - **Systems connection:** Explains how KV capacity limits concurrent rollouts and how shared prefixes change the number of requests that fit.
-- **Reading advice: prioritize a close read.** Understand logical blocks, physical blocks, and sharing before inspecting kernels. Draw two requests that share a prefix and then branch.
+- **Reading advice: already read closely; revisit as needed.** Use two requests that share a prefix and then branch to review logical blocks, physical blocks, and sharing.
 
 ### 3. FlashAttention — NeurIPS 2022
 
@@ -57,7 +59,7 @@ Each daily selection should contain **one main read and two to four alternatives
 
 - **Contribution:** Co-designs a language frontend and runtime, reuses KV prefixes with RadixAttention, and optimizes structured output.
 - **Systems connection:** Connects multi-turn calls, branching generation, and shared prompts to the redundant computation in agent workloads.
-- **Reading advice: prioritize a close read.** Draw a prefix tree for a multi-turn or branching program, then follow how the runtime reuses cached work.
+- **Reading advice: read closely alongside current code.** Draw a prefix tree for a multi-turn or branching program, then trace reuse boundaries and eviction for Full, SWA, and Mamba in UnifiedRadixCache. Analyze mixed model state separately from HiCache storage tiers. The [first edition](daily/2026-10-15.md) links to a pinned source revision.
 
 ### 5. DistServe — OSDI 2024
 
