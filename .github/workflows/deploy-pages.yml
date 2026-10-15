@@ -33,6 +33,15 @@ jobs:
         working-directory: ./site
         run: npm ci
 
+      - name: Validate reading digests
+        run: |
+          node --test scripts/reading-digest.test.mjs
+          node scripts/reading-digest.mjs --check
+
+      - name: Test reading RSS
+        working-directory: ./site
+        run: node --import tsx --test quartz/plugins/emitters/readingFeed.test.ts
+
       - name: Build Quartz
         working-directory: ./site
         run: npx quartz build

@@ -1,0 +1,103 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-15",
+  "publishedAt": "2026-10-15T13:46:00+08:00",
+  "zh": {
+    "title": "从请求调度到 RL rollout：四篇经典把系统串起来",
+    "summary": "主读 Orca；选读 PagedAttention、SGLang 与 HybridFlow。沿着调度、KV 内存、程序执行和训练生成切换，理解 agent serving 与 RL 基础设施。"
+  },
+  "en": {
+    "title": "From request scheduling to RL rollouts: four foundational papers",
+    "summary": "Start with Orca; optionally explore PagedAttention, SGLang, and HybridFlow. Connect scheduling, KV memory, program execution, and training-generation transitions."
+  },
+  "papers": [
+    {
+      "id": "orca-2022",
+      "title": "Orca: A Distributed Serving System for Transformer-Based Generative Models",
+      "year": 2022,
+      "venue": "OSDI 2022",
+      "url": "https://www.usenix.org/conference/osdi22/presentation/yu",
+      "role": "main",
+      "zh": {
+        "contribution": "把调度粒度降到一次生成迭代，让完成的请求退出、等待的请求进入，并用 selective batching 处理不同算子的批处理需求。",
+        "relevance": "为 agent 请求调度和 rollout 长短序列混跑建立基线：先理解一次 decode step 如何接纳请求，再看跨轮优先级与 KV 驻留。",
+        "reading": "值得精读。第一轮用约 25 分钟看问题、调度设计和实验设置，画出两个长请求与一个短请求的时间线；暂时跳过底层实现细节。",
+        "prerequisites": "知道自回归生成逐 token 进行；能够区分 prefill 和 decode 即可。",
+        "caveat": "论文面向当时的模型和硬件；它是理解迭代级调度的起点，不直接证明多轮工具调用的最优调度策略。"
+      },
+      "en": {
+        "contribution": "Schedules at generation-iteration boundaries so completed requests leave and waiting requests enter; selective batching handles different operators' batching needs.",
+        "relevance": "Provides a baseline for agent scheduling and mixed-length rollouts: understand admission at a decode step before reasoning about cross-turn priority and KV residency.",
+        "reading": "Read closely. Spend about 25 minutes on the problem, scheduling design, and evaluation setup; draw a timeline for two long requests and one short request before inspecting implementation details.",
+        "prerequisites": "Autoregressive token generation and the distinction between prefill and decode.",
+        "caveat": "The evaluation reflects its original hardware and models. Iteration scheduling alone does not establish an optimal policy for multi-turn tool-using agents."
+      }
+    },
+    {
+      "id": "pagedattention-2023",
+      "title": "Efficient Memory Management for Large Language Model Serving with PagedAttention",
+      "year": 2023,
+      "venue": "SOSP 2023",
+      "url": "https://arxiv.org/abs/2309.06180",
+      "role": "optional",
+      "zh": {
+        "contribution": "用逻辑块到物理块的映射管理动态增长的 KV cache，减少碎片，并支持共享与写时复制。",
+        "relevance": "解释为什么可接纳的 batch 不只由计算决定，也由 KV 内存布局决定；为讨论前缀保留、驱逐和 CPU offload 提供内存管理基础。",
+        "reading": "值得精读，可作为下一篇主读。先读 block table、共享与 copy-on-write，手画两个共享前缀请求的缓存布局；首轮不必钻 attention kernel。",
+        "prerequisites": "知道每生成一个 token 会增加 KV 状态；先了解 Orca 的动态批处理问题。",
+        "caveat": "分页管理解决内存分配问题；哪些会话应该保留、工具等待多久以及跨设备迁移，仍需单独的策略与评估。"
+      },
+      "en": {
+        "contribution": "Maps logical KV blocks to physical blocks to reduce fragmentation and enable sharing and copy-on-write as sequences grow.",
+        "relevance": "Explains why admission capacity depends on memory layout as well as compute, grounding later questions about prefix retention, eviction, and CPU offload.",
+        "reading": "Worth a close read, potentially next. Start with block tables, sharing, and copy-on-write; sketch two requests with a shared prefix before studying the attention kernel.",
+        "prerequisites": "KV state grows with generated tokens; understand the dynamic-batching problem in Orca.",
+        "caveat": "Paged allocation does not by itself choose which sessions to retain or how to handle tool waiting and cross-device migration."
+      }
+    },
+    {
+      "id": "sglang-2024",
+      "title": "SGLang: Efficient Execution of Structured Language Model Programs",
+      "year": 2024,
+      "venue": "NeurIPS 2024",
+      "url": "https://proceedings.nips.cc/paper_files/paper/2024/hash/724be4472168f31ba1c9ac630f15dec8-Abstract-Conference.html",
+      "role": "optional",
+      "zh": {
+        "contribution": "联合设计语言程序前端与运行时，以 RadixAttention 复用 KV 前缀，并优化结构化生成。",
+        "relevance": "把程序结构与缓存命中联系起来，适合反思多轮 agent 的共享历史、分支生成和前缀优先保留。",
+        "reading": "选择性精读 RadixAttention 与程序执行部分。用一个有工具调用的会话画前缀树，标出哪些调用能够共享 KV。",
+        "prerequisites": "前缀缓存、树结构，以及 PagedAttention 的逻辑块和物理块概念。",
+        "caveat": "论文描述原始系统设计；今天的 SGLang 已有后续演进，论文机制与当前实现要分开核对。"
+      },
+      "en": {
+        "contribution": "Co-designs a language-program frontend and runtime, using RadixAttention for KV prefix reuse and optimizing structured generation.",
+        "relevance": "Connects program structure with cache reuse, informing shared histories, branching, and prefix retention in multi-turn agents.",
+        "reading": "Read the RadixAttention and program-execution sections selectively. Draw a prefix tree for a tool-using conversation and identify reusable KV.",
+        "prerequisites": "Prefix caching, trees, and the logical-versus-physical block distinction in PagedAttention.",
+        "caveat": "This is the original design. Current SGLang has evolved, so distinguish the paper's mechanisms from today's implementation."
+      }
+    },
+    {
+      "id": "hybridflow-2025",
+      "title": "HybridFlow: A Flexible and Efficient RLHF Framework",
+      "year": 2025,
+      "venue": "EuroSys 2025 · preprint 2024",
+      "url": "https://i.cs.hku.hk/~cwu/papers/gmsheng-eurosys25.pdf",
+      "role": "optional",
+      "zh": {
+        "contribution": "结合单控制器与多控制器执行方式，并用 3D-HybridEngine 降低策略模型在生成与训练之间切换分片的成本。",
+        "relevance": "与 rollout worker、训练到推理的权重同步和并行配置切换直接相连；有助于区分控制开销、数据搬运与 GPU 计算。",
+        "reading": "先浏览整体数据流，稍后精读。画 generation → preparation → training 的 GPU 分配与权重流向，再联系自己的 rollout 路径。",
+        "prerequisites": "RLHF/GRPO 训练循环、数据并行和张量并行；不熟悉时先读路线中的 Ray、Megatron-LM 与 ZeRO。",
+        "caveat": "会议版为 2025 年，预印本为 2024 年；原始 RLHF 评估不能直接外推到含长时间工具调用的 agent rollout。"
+      },
+      "en": {
+        "contribution": "Combines single- and multi-controller execution and uses 3D-HybridEngine to reduce policy-model resharding costs between generation and training.",
+        "relevance": "Directly relates to rollout workers, weight synchronization, and changes in parallelism; separates orchestration, data movement, and GPU execution costs.",
+        "reading": "Skim the dataflow now and read closely later. Draw GPU allocation and weight movement through generation, preparation, and training, then compare with a rollout pipeline.",
+        "prerequisites": "An RLHF/GRPO loop, data parallelism, and tensor parallelism; use Ray, Megatron-LM, and ZeRO in the roadmap if needed.",
+        "caveat": "The conference paper is from 2025 and the preprint from 2024. Original RLHF results do not directly establish performance for tool-heavy agent rollouts."
+      }
+    }
+  ]
+}

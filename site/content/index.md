@@ -4,6 +4,12 @@ title: "Shiki's Knowledge Wiki"
 
 Personal knowledge base on LLM inference, RL infrastructure, agentic systems, and ML systems.
 
+## Daily reading / 每日论文
+
+**[今日推荐与历史归档](CN/reading/index)** · [经典阅读路线](CN/reading/roadmap) · [English](EN/reading/index) · [订阅 RSS](https://shikicloud.github.io/MLSys/reading.xml)
+
+每天一篇主读，另附 2–4 篇选读。从经典基础逐步走向 agent serving 与 RL infrastructure；不限定论文发表时间。
+
 ## Pick a language / 选择语言
 
 - **[English](EN/index)** — full wiki in English

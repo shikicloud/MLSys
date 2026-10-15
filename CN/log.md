@@ -115,3 +115,7 @@ updated: 2026-06-15
 - [初始化] Schema（CLAUDE.md）定义完成
 - [初始化] 目录索引创建完毕，规划了所有主题覆盖范围
 - [摄入] 所有主题领域的初始研究与填充
+
+
+## 2026-10-15
+- [READING] 新增每日论文推荐与经典阅读路线。首期主读 Orca，选读 PagedAttention、SGLang、HybridFlow；提供中英文归档和独立 RSS。推荐不代表已读。

@@ -115,3 +115,7 @@ updated: 2026-06-15
 - [INIT] Schema (CLAUDE.md) defined
 - [INIT] Index created with planned topic coverage
 - [INGEST] Initial research and population of all topic areas
+
+
+## 2026-10-15
+- [READING] Added daily recommendations and a foundational roadmap. The first edition features Orca, with PagedAttention, SGLang, and HybridFlow as optional reading; bilingual archives and a dedicated RSS feed are included. Recommendation does not imply completion.

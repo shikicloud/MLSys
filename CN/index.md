@@ -1,9 +1,15 @@
 ---
 title: 目录索引
-updated: 2026-06-15
+updated: 2026-10-15
 ---
 
 # Wiki 目录索引
+
+## 每日论文
+
+- [[CN/reading/index|每日推荐与历史归档]] — 每天 1 篇主读、2–4 篇选读，手机与电脑打开同一份内容
+- [[CN/reading/roadmap|经典阅读路线]] — 从调度、KV cache 到并行、MoE 与 RL 基础设施
+- [订阅每日推荐 RSS](https://shikicloud.github.io/MLSys/reading.xml)
 
 ## LLM 推理与服务
 - [[vllm]] — vLLM：基于 PagedAttention 的高吞吐量 LLM 服务

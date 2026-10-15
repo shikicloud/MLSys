@@ -8,7 +8,8 @@
 site/node_modules/
 site/public/
 site/.quartz-cache/
+site/quartz/.quartz-cache/
 
 # Stray Obsidian-created files
-2026-*.md
+/2026-*.md
 Untitled.base
