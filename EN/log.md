@@ -128,3 +128,4 @@ updated: 2026-06-15
 
 ## 2026-10-16
 - [READING] Published the 2026-10-16 selection on difficulty-aware test-time compute, with Self-Consistency, Let’s Verify Step by Step, and STaR as optional readings. Added bilingual mechanisms, teaching examples, experimental conditions, and reading routes separating inference compute, verification, and training-time bootstrapping.
+- [READING] Rewrote the Chinese notes for 2026-10-15 and 2026-10-16 to explain concrete problems and operations before introducing terminology, formulas, and implementation details. Added first-use explanations while preserving evidence, limitations, sources, and original publication times; recorded the clarity requirement for future editions.

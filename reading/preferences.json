@@ -1,5 +1,5 @@
 {
-  "updated": "2026-10-15",
+  "updated": "2026-10-16",
   "timezone": "Asia/Shanghai",
   "dailyStart": "09:00",
   "topicScope": {
@@ -42,6 +42,10 @@
   },
   "editorialPreference": {
     "format": "detailed technical reading notes",
+    "readability": {
+      "zh": "先让读者看懂具体发生了什么，再引入术语。以一个具体问题或例子开头，顺着模型或系统的操作解释：原来怎么做、为什么不够、论文改了哪一步、因此有什么收益和代价。读者有代码实践，不预设掌握相关理论；术语、缩写和公式在首次需要时解释，避免名词堆叠、翻译腔和省略因果。每段讲清一个问题，例子尽量前后贯通。中文应能独立读懂，不依赖英文补救。保留完整机制、实验条件与局限，将密集公式和实现细节放在直观解释之后；清晰程度优先于模仿参考文章的术语密度，不以缩成摘要代替讲解。",
+      "en": "Explain a concrete task and the sequence of operations before introducing terminology: what the original approach does, why it falls short, what the paper changes, and the resulting benefit and cost. Assume practical coding experience but not prior mastery of the theory. Define needed terms, acronyms, and symbols at first use; avoid compressed noun phrases and missing causal steps. Keep one main idea per paragraph and use a consistent worked example. Chinese notes must be independently understandable without relying on the English version. Preserve mechanism, evidence, and limitations, placing dense formulas and implementation detail after the intuitive explanation. Clarity takes priority over imitating the reference articles' terminology density; do not replace explanation with a shorter abstract."
+    },
     "styleReferences": [
       "CN/wiki/llm-serving-for-agents/thunderagent.md",
       "CN/wiki/llm-serving-for-agents/infercept.md"
