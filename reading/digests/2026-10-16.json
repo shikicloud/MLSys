@@ -1,0 +1,521 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-16",
+  "publishedAt": "2026-10-16T09:16:06+08:00",
+  "zh": {
+    "title": "推理时计算：从多采样到验证与预算分配",
+    "summary": "主读 ICLR 2025 的推理时计算分配研究，解释串行修正、并行采样与验证器搜索，以及题目难度和成本口径怎样影响结论。选读 Self-Consistency、Let’s Verify Step by Step 和 STaR，分别补齐投票、过程监督与训练自举；用具体例子区分“这次多算一些”和“训练后变得更会做”。若这些概念较新，可先读 Self-Consistency，再回到主读。"
+  },
+  "en": {
+    "title": "Test-time compute: sampling, verification, and budget allocation",
+    "summary": "The main ICLR 2025 reading explains sequential revision, parallel sampling, verifier search, and how difficulty and compute accounting shape the conclusions. Optional readings on Self-Consistency, Let’s Verify Step by Step, and STaR develop voting, process supervision, and training-time bootstrapping. Concrete examples distinguish spending more compute on one request from learning to solve future requests better. Start with Self-Consistency if these concepts are new."
+  },
+  "papers": [
+    {
+      "id": "test-time-compute-optimal-2025",
+      "title": "Scaling LLM Test-Time Compute Optimally Can be More Effective than Scaling Parameters for Reasoning",
+      "year": 2025,
+      "venue": "ICLR 2025 · preprint 2024",
+      "url": "https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf",
+      "role": "main",
+      "zh": {
+        "contribution": "把推理时计算拆成改变候选生成分布与验证器搜索两条轴，并展示按模型所感知的题目难度选择策略，能比统一 best-of-N 更有效地使用预算。",
+        "relevance": "建立理解 reasoning 与 test-time compute 的基础，也能帮助系统设计区分搜索宽度、串行依赖、验证器开销和缓存需求；无需把每个结论强行映射到 serving。",
+        "reading": "本期主读，值得精读。先理解两条轴和 16 次作答的例子，再读 Fig. 3、6、7 的难度与预算曲线，最后核查 §7 的 FLOPs 交换假设。建议 40–60 分钟。",
+        "prerequisites": "知道自回归生成、采样和监督微调即可；pass@1 是单次作答正确率，PRM 是为中间步骤打分的过程奖励模型，ORM 是为完整答案打分的结果奖励模型。",
+        "caveat": "以 ICLR 2025 正式版为准：验证器成本已计入，但每题 2048 样本的难度估计成本未计入；4× 不是实测 GPU 加速，14× 比较也依赖部署量和题目难度。",
+        "sections": [
+          {
+            "heading": "先问一个具体问题：多给计算，应该花在哪里",
+            "paragraphs": [
+              "Snell、Lee、Xu、Kumar 的这篇工作研究：同一个模型面对同一道题，多给推理预算后，该重新尝试、修改已有答案，还是沿中间步骤搜索？贡献是比较这些选择的有效条件，而非发明一种通吃所有题目的搜索算法。[ICLR 2025 正式记录](https://proceedings.iclr.cc/paper_files/paper/2025/hash/1b623663fd9b874366f3ce019fdfdd44-Abstract-Conference.html)",
+              "2024 年预印本标题以 Scaling Model Parameters 结尾，会议版改为 Scaling Parameters for Reasoning；本文使用会议版的图号和成本口径。先掌握一个区别：提高生成过程中碰到正确答案的机会，与从候选里选出正确答案，是两件事。[预印本](https://arxiv.org/abs/2408.03314)；[正式版 §2](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=3)"
+            ]
+          },
+          {
+            "heading": "两条轴：改变候选来源，或改变候选筛选",
+            "paragraphs": [
+              "proposal distribution 是模型在当前条件下产生各种答案的概率分布。独立重采样主要增加尝试次数；把先前答案放入上下文再修正，则改变了下一次生成的条件。这里推理时变化的是输入和候选分布，修正能力事先经过微调，并非每道题现场更新权重。[正式版 §2–3](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=3)",
+              "另一条轴是 verifier：完整答案可以生成后再排序，部分答案也可以逐步评分、剪枝和扩展。前者把更多预算花在覆盖解法，后者希望尽早减少无效分支。两条轴能够组合，但这篇的修正加答案选择实验，不等于已经联合优化了修正和 PRM 树搜索。"
+            ]
+          },
+          {
+            "heading": "示意例子：16 次作答，三种完全不同的工作量形状",
+            "paragraphs": [
+              "**以下为教学例子，不是论文实测数据。** 设预算为 16 次完整作答：16×1 是 16 条独立尝试；1×16 是一条含初答及后续修正的链；4×4 则先尝试四种起点，每条链再连续作答四次。暂时只数生成次数，答案长度、历史输入和验证器成本稍后另算。",
+              "假设一道几何题既可作辅助线也可设坐标，全部串行可能一直困在错误路线；并行有机会覆盖不同思路。若路线已对、只错一次代数运算，修正可能比重新找路线更省预算。这是理解结果的直觉，不保证修正局限于局部。还要从链中选择答案，不能默认最后一次最好。[正式版 Fig. 5、7](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=7)"
+            ]
+          },
+          {
+            "heading": "PRM 学到的是续写成功率，不是数学证明器",
+            "paragraphs": [
+              "作者从已有解答的中间步骤继续采样，以最终正确比例估计该前缀的价值，再训练 PRM 预测这个软标签。附录 F 使用每道训练题 16 个解答、每一步 16 次 Monte Carlo 续写。因此分数对应当前基础模型从这里继续做对的可能性，不能直接当作该步骤逻辑有效性的证明。[正式版 §5.1、附录 F](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=19)",
+              "完整解答的评分取 PRM 最后一步的预测；随后把最终答案相同的解答分数相加，选总分最高的答案，这叫 best-of-N weighted。它区别于仅挑最高分的一条，也区别于每票等重的多数投票。**例如**两个答案为 12 的候选各得 0.6，总权重可超过一个答案为 10、得 0.9 的候选；这只是聚合规则示意。[附录 G](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=20)"
+            ]
+          },
+          {
+            "heading": "逐步搜索为什么有时反而更差",
+            "paragraphs": [
+              "beam search 每轮给部分解答评分，保留较优前缀，再从它们扩展下一步，补满候选池。lookahead 多做一步：先向未来试走 k 步，用未来前缀的 PRM 分数评估当前选择。它可能改善判断，却要为试走付费；论文把这部分生成成本近似计为 N(k+1)，而不是仍按 N 算。[正式版 Fig. 2、§5.2–5.3、附录 C](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=5)",
+              "Fig. 3 中 beam 在较小预算有优势，较大预算时优势缩小，某些设置落后于 best-of-N。作者观察到重复低信息步骤和过短解答，认为搜索可能在利用评分器的错误偏好。优化分数更努力，未必提高真实正确率；这里的 lookahead 结果也不能推出所有树搜索都无效。"
+            ]
+          },
+          {
+            "heading": "修正能力从哪里来，为什么还需要选择器",
+            "paragraphs": [
+              "修正模型的训练样本不是一句“再想想”。作者每题并行采样 64 个回答，把最多四个错误回答放入上下文，以正确回答作为监督目标；还用编辑距离挑较相关的错误答案，帮助模型学会利用已有尝试。推理时保留最近四次作答，所以可以执行更长的修正链。[正式版 §6.1、附录 L](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=24)",
+              "训练上下文主要展示错误，部署时却可能已经答对，继续修改会产生分布偏移。论文报告该设置中约 38% 的正确答案被改错，因此使用多数投票或验证器选取。修正实验的验证器是适配修正输出的 ORM，先在链内选择，再跨链聚合；不能把它和前面的 PRM 搜索混为一种过程。[正式版 §6.1、附录 M–N](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=7)"
+            ]
+          },
+          {
+            "heading": "compute-optimal 的核心是条件选择，难点在估计条件",
+            "paragraphs": [
+              "这里的难度属于“这道题对这个模型有多难”：每题采样 2048 次，以 pass@1 分成五档；预测版改用这批候选的平均验证器分数，不需要真实答案标签。随后按难度和给定预算选择搜索方式或串并行比例。它是对理想最优策略的经验近似，不是全局最优定理，也不是已经实现跨用户队列的预算调度器。[正式版 §3](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=4)",
+              "在带验证器的修正实验里，容易题更偏好串行；较难题需要兼顾不同起点和后续修正。**关键缺口是 2048 次采样及难度评分的成本没有进入主要计算比较。** 预测版消除了真实标签依赖，却尚未提供廉价在线路由器；部署时必须测算估计难度是否比节约的推理还贵。[正式版 Fig. 7、附录 E](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=18)"
+            ]
+          },
+          {
+            "heading": "实验与 4×：先区分答案次数和折算预算",
+            "paragraphs": [
+              "主实验是 PaLM 2-S*（Codey）与 MATH 的 12,000 训练题、500 测试题切分，搜索使用四样例提示，并另行微调 PRM 和修正模型；不是直接给任意基础模型加一个循环。正式版明确把验证器近似计为使计算翻倍，故图上的 generation budget 不宜直接等同最终生成的答案条数。[正式版 §4–6、附录 J](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=5)",
+              "修正的 4× 指在选定预算附近，以更少计算超过并行 best-of-N：Fig. 6 图注写 128 对 512，§6.2 正文写 64 对 256。两组数相差二倍，与计入验证器的折算一致；这是对两种计数的解释，正文没有统一术语。搜索的 Fig. 4 则是约四分之一预算接近基线。它们都不是四倍准确率或四倍实测速度，也未包含上述难度估计成本。[正式版 Fig. 4、6、§6.2](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=8)"
+            ]
+          },
+          {
+            "heading": "14× 大模型比较：部署量改变算术",
+            "paragraphs": [
+              "§7 比较预训练加预期推理的总 FLOPs，固定预训练 token 数而放大参数量。记参数为 P，训练 token 为 Dpre，推理 token 为 Dinf：正式版采用 X=6P·Dpre、Y=4P·Dinf，后者包括验证器近似开销。参数放大 M 倍的预算是 M(X+Y)；小模型保持训练不变，则推理可放大 F=M+1.5(M−1)/R，其中 R=Dinf/Dpre。[正式版 §7](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=10)",
+              "**按该公式举例**，若 M=14、R=1，则 F=33.5；这不是论文新增实测点。相同平均输出长度下，部署查询越多，Dinf 和 R 越大，一次预训练投资越能被摊薄。论文实际比较 R=0.08、0.40、11，较容易题或较低部署量更利于小模型多算；困难题和较大部署量常更利于大模型。Fig. 8 用 oracle 难度与大模型 greedy 基线，不能读成任意小模型都能战胜 14 倍参数模型。"
+            ]
+          },
+          {
+            "heading": "系统视角：FLOPs 最省，不保证响应最快",
+            "paragraphs": [
+              "**以下是系统推导，不是论文的 GPU 测量。** 回到 16 次作答：独立分支有机会一起批处理，串行修正必须等待前一次结束。即使生成 token 总量相同，关键路径也不同；并行还需要容纳更多活跃 KV，串行则要处理不断携带的历史上下文。共享前缀能节省多少，应由实际缓存命中和上下文变化决定。",
+              "验证器的放置、批处理、排队和中间评分同步，也会改变延迟与利用率。做 serving 实验应同时记录准确率、生成及验证 token、GPU 时间、端到端 p50/p95 和峰值显存，再比较同等质量下的成本。若扩展到工具型 agent，还要加入外部等待和可恢复状态；这篇数学实验没有测这些环节。"
+            ]
+          },
+          {
+            "heading": "精读路线：把结论变成可检查的问题",
+            "paragraphs": [
+              "先读 §2–3 与 Fig. 5，画出候选如何生成、如何选中；再读 Fig. 3、6、7，看不同难度是否真的支持统一策略；最后读 §7、附录 E/G/M，核查预算遗漏和聚合规则。每条曲线都问：评分依据是什么，增加的是独立探索还是串行深度，横轴是否包含验证和路由成本？",
+              "它适合作为 reasoning 的基础阅读，但证据仍以可核验数学题为主，不能自动外推到开放研究任务。把高质量推理结果蒸馏回模型、反复形成自我改进循环，是附录 A 的未来方向；本文没有证明持续的 recursive self-improvement。后续读 RSI 时，应分别找推理提升、权重更新及多轮净增益的证据。[正式版附录 A](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=16)"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Separates test-time computation into changing the proposal distribution and searching with a verifier, then shows that choosing a strategy according to model-relative problem difficulty can use a budget more effectively than uniform best-of-N.",
+        "relevance": "Provides a foundation for reasoning and test-time compute, while helping systems work distinguish search width, sequential dependencies, verifier overhead, and cache requirements. The paper need not be reduced to a serving application.",
+        "reading": "Main reading for this edition; worth studying closely. Start with the two axes and the 16-attempt example, examine the difficulty and budget curves in Figures 3, 6, and 7, then audit the FLOPs assumptions in Section 7. Allow 40–60 minutes.",
+        "prerequisites": "Autoregressive generation, sampling, and supervised finetuning. Pass@1 is single-attempt accuracy; a PRM scores intermediate steps, while an ORM scores a complete answer.",
+        "caveat": "Uses the ICLR 2025 version: verifier overhead is included, but the 2,048-sample difficulty estimation is excluded. The 4× result is not measured GPU speedup, and the comparison against a 14× larger model depends on deployment volume and difficulty.",
+        "sections": [
+          {
+            "heading": "Start with a concrete question: where should extra computation go?",
+            "paragraphs": [
+              "Snell, Lee, Xu, and Kumar ask how a fixed model should use additional inference budget on a particular problem: try again independently, revise an existing answer, or search through intermediate steps? The contribution is an analysis of when these choices help, rather than a new search algorithm that dominates on every problem. [Official ICLR 2025 record](https://proceedings.iclr.cc/paper_files/paper/2025/hash/1b623663fd9b874366f3ce019fdfdd44-Abstract-Conference.html)",
+              "The 2024 preprint title ends with Scaling Model Parameters; the conference title ends with Scaling Parameters for Reasoning. This note follows the conference figures and compute accounting. Keep one distinction in mind throughout: making generation encounter a correct answer more often and reliably selecting that answer from the candidates are separate problems. [Preprint](https://arxiv.org/abs/2408.03314); [conference Section 2](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=3)"
+            ]
+          },
+          {
+            "heading": "Two axes: change where candidates come from, or how they are selected",
+            "paragraphs": [
+              "The proposal distribution assigns probabilities to possible answers under the model's current conditioning. Independent resampling mostly buys additional attempts. Conditioning on previous answers and asking for revisions changes the distribution used for the next attempt. In these experiments, test-time changes concern inputs and candidate distributions: revision capability was finetuned beforehand, and weights are not updated separately for each test question. [Conference Sections 2–3](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=3)",
+              "The second axis is the verifier. It can rank completed solutions after generation, or score partial solutions to guide pruning and expansion. The former spends computation on covering possible approaches; the latter tries to stop unpromising branches earlier. These axes can be combined, but the paper's revision-plus-answer-selection experiments should not be mistaken for a joint optimization of revisions and PRM tree search."
+            ]
+          },
+          {
+            "heading": "Illustrative example: 16 attempts create three different execution shapes",
+            "paragraphs": [
+              "**This is a teaching example, not a measured result from the paper.** Suppose the budget permits 16 complete attempts. A 16×1 allocation uses 16 independent starts; 1×16 uses one chain containing an initial answer and subsequent revisions; 4×4 uses four starts with four consecutive attempts in each chain. For now, count generations only. Answer lengths, historical context, and verifier costs will need separate accounting.",
+              "Imagine a geometry problem that admits either an auxiliary-line construction or a coordinate solution. A fully sequential chain might remain stuck with an unsuitable approach, while independent starts can cover alternatives. If the approach is sound and only one algebraic operation is wrong, revising may be more useful than starting over. This is an intuition for the results, not a guarantee that revisions are purely local. Answers must still be selected from the chain: its last output is not automatically its best. [Conference Figures 5 and 7](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=7)"
+            ]
+          },
+          {
+            "heading": "The PRM predicts continuation success; it is not a proof checker",
+            "paragraphs": [
+              "The authors continue sampling from intermediate solution steps, estimate a prefix's value from the fraction of continuations that finish correctly, and train the PRM on these soft labels. Appendix F uses 16 solutions per training question and 16 Monte Carlo continuations per step. A score therefore estimates the chance of eventual success under the base model's continuation policy. It is not a certificate that the current mathematical step is logically valid. [Conference Section 5.1 and Appendix F](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=19)",
+              "A completed solution is scored using the PRM's final-step prediction. Scores are then summed across solutions sharing the same final answer, and the answer with the greatest sum wins: best-of-N weighted. This differs from choosing the single highest-scoring solution and from equally weighted majority voting. **As an illustrative aggregation example**, two solutions ending in 12 with scores of 0.6 each outweigh one ending in 10 with a score of 0.9. [Appendix G](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=20)"
+            ]
+          },
+          {
+            "heading": "Why more aggressive stepwise search can become worse",
+            "paragraphs": [
+              "At each round, beam search scores partial solutions, retains promising prefixes, and branches from them to replenish the candidate pool. Lookahead adds a simulation: continue up to k steps and use the PRM score at that future prefix to evaluate the present choice. Better-informed selection is possible, but those trial continuations cost computation. The paper approximates this generation cost as N(k+1), rather than continuing to charge only N. [Conference Figure 2, Sections 5.2–5.3, and Appendix C](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=5)",
+              "In Figure 3, beam search helps at smaller budgets, but its advantage shrinks and sometimes reverses as the budget grows. The authors observe repetitive low-information steps and excessively short solutions, suggesting that search can exploit imperfections in the learned score. Optimizing a score harder does not necessarily improve actual correctness. Likewise, the reported lookahead results do not establish that every form of tree search is ineffective."
+            ]
+          },
+          {
+            "heading": "Where revision ability comes from, and why selection remains necessary",
+            "paragraphs": [
+              "Revision training is more than adding a request to think again. The authors sample 64 responses per question in parallel, place up to four incorrect responses in context, and supervise a correct response as the target. An edit-distance heuristic helps choose a related incorrect answer, encouraging the model to use previous attempts. At inference, retaining only the latest four attempts allows the model to run longer revision chains. [Conference Section 6.1 and Appendix L](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=24)",
+              "Training contexts primarily contain mistakes, whereas an inference-time answer may already be correct. Continuing to revise introduces a distribution shift. In this setup, roughly 38% of correct answers are changed into incorrect ones, motivating majority or verifier-based selection. The revision experiments use an ORM adapted to revision-model outputs, selecting within each chain and then aggregating across chains. This is distinct from the earlier PRM-guided search. [Conference Section 6.1 and Appendices M–N](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=7)"
+            ]
+          },
+          {
+            "heading": "Compute-optimal means conditioning the choice; estimating that condition is hard",
+            "paragraphs": [
+              "Difficulty is relative to the model, rather than an intrinsic problem label. The oracle version estimates pass@1 from 2,048 samples per question and forms five difficulty bins. The predicted version instead averages verifier scores over those candidates, avoiding ground-truth answer labels. Difficulty and the available budget then determine the search method or sequential/parallel ratio. This is an empirical approximation to an ideal strategy, not a global optimality theorem or an implemented scheduler allocating resources across a multi-user queue. [Conference Section 3](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=4)",
+              "With verifier-based revision selection, easier questions favor more sequential computation, while harder ones benefit from balancing independent starts and subsequent revisions. **The major omission is that generating and scoring the 2,048 difficulty-estimation samples is excluded from the main compute comparison.** Predicted difficulty removes the dependency on true labels, but does not supply a cheap online router. A deployment must check whether estimating difficulty costs more than the inference computation it saves. [Conference Figure 7 and Appendix E](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=18)"
+            ]
+          },
+          {
+            "heading": "The experiments and 4×: separate answer counts from adjusted budgets",
+            "paragraphs": [
+              "The main experiments use PaLM 2-S* (Codey) and a MATH split with 12,000 training and 500 test questions. Search uses a four-example prompt; the PRM and revision model are separately finetuned. This is not a demonstration that an arbitrary base model improves simply by being put in a loop. The conference version explicitly approximates verifier overhead as doubling computation, so plotted generation budgets should not automatically be read as counts of completed candidate answers. [Conference Sections 4–6 and Appendix J](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=5)",
+              "For revisions, 4× describes exceeding parallel best-of-N near selected budgets using less computation. Figure 6's caption gives 128 versus 512; Section 6.2 gives 64 versus 256. Their factor-of-two difference is consistent with charging for the verifier. This is an interpretation of two counting conventions; the prose does not harmonize its terminology. For search, Figure 4 describes approximately matching the baseline with roughly one-quarter of the budget. Neither result means four times the accuracy or four times measured speed, and neither includes the difficulty-estimation cost above. [Conference Figures 4 and 6, Section 6.2](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=8)"
+            ]
+          },
+          {
+            "heading": "The 14× larger model comparison: deployment volume changes the arithmetic",
+            "paragraphs": [
+              "Section 7 matches total pretraining plus expected inference FLOPs, holding pretraining tokens fixed while increasing parameters. Let P denote parameters, Dpre training tokens, and Dinf inference tokens. The conference convention is X=6P·Dpre and Y=4P·Dinf, with the latter including approximate verifier overhead. Increasing parameters by M yields a budget of M(X+Y). Keeping the smaller model's training unchanged allows its inference budget to grow by F=M+1.5(M−1)/R, where R=Dinf/Dpre. [Conference Section 7](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=10)",
+              "**For an algebraic illustration**, M=14 and R=1 give F=33.5; this is not an additional measured point. At fixed average response length, more deployment queries increase Dinf and R, amortizing a one-time pretraining investment over more use. The paper evaluates R=0.08, 0.40, and 11. Easier questions or lower deployment volume more often favor additional small-model inference; hard questions and greater volume often favor the larger model. Figure 8 uses oracle difficulty and a greedy large-model baseline. It does not establish that any small model can beat one with 14 times as many parameters."
+            ]
+          },
+          {
+            "heading": "The systems interpretation: minimizing FLOPs does not guarantee the fastest response",
+            "paragraphs": [
+              "**The following is systems reasoning, not a GPU measurement from the paper.** Return to the 16-attempt example: independent branches may be batched together, whereas each revision must wait for its predecessor. Equal generated-token totals can therefore have different critical paths. Parallel branches also require more active KV state, while sequential revisions must handle carried-forward historical context. Actual prefix sharing and context changes determine how much caching can save.",
+              "Verifier placement, batching, queueing, and synchronization for intermediate scores also affect latency and utilization. A serving evaluation should jointly measure accuracy, generation and verification tokens, GPU time, end-to-end p50/p95 latency, and peak memory, then compare cost at matched quality. Extending the workload to tool-using agents additionally requires external waiting and recoverable execution state. These stages were not measured in the mathematical reasoning experiments."
+            ]
+          },
+          {
+            "heading": "A reading route that turns the claims into checks",
+            "paragraphs": [
+              "Begin with Sections 2–3 and Figure 5, drawing how candidates are generated and selected. Next read Figures 3, 6, and 7 to see whether different difficulty groups support one universal strategy. Finish with Section 7 and Appendices E/G/M to audit missing costs and aggregation rules. For every curve, ask what supplies the score, whether extra computation buys independent exploration or sequential depth, and whether its horizontal axis includes verification and routing costs.",
+              "This is a useful foundation for reasoning research, but its evidence centers on verifiable mathematics and does not automatically extend to open-ended research tasks. Distilling better inference outputs back into the model and repeating the cycle is a future direction in Appendix A, rather than a demonstrated sustained recursive self-improvement process. When reading later RSI work, look separately for evidence of better inference, weight updates, and net gains across multiple rounds. [Conference Appendix A](https://proceedings.iclr.cc/paper_files/paper/2025/file/1b623663fd9b874366f3ce019fdfdd44-Paper-Conference.pdf#page=16)"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "self-consistency-2023",
+      "title": "Self-Consistency Improves Chain of Thought Reasoning in Language Models",
+      "year": 2023,
+      "venue": "ICLR 2023 · preprint 2022",
+      "url": "https://arxiv.org/abs/2203.11171",
+      "role": "optional",
+      "zh": {
+        "contribution": "从同一模型采样多条推理路径，按最终答案票数聚合，把额外推理计算转化为部分推理任务上的准确率提升，无须额外训练判别器。",
+        "relevance": "是理解并行推理时计算的清晰起点：一题多分支会改变生成 token 总量、KV 占用、批处理和完成延迟。",
+        "reading": "值得精读方法与预算曲线，约 25–35 分钟；先读 §2 与 Fig. 1，再读 §3.1–3.2 的设置和 Fig. 2，最后看 §3.5 的一致性分析。",
+        "prerequisites": "了解 greedy decoding、温度采样和 CoT 提示；能区分输出 token 概率、答案票数与实际正确率即可。",
+        "caveat": "最多票不保证正确，票占比也不是校准后的模型置信度；原实验使用特定模型、提示和 40 条采样，不能直接视作现代模型的同成本收益。",
+        "sections": [
+          {
+            "heading": "两分钟摘要：把一次回答变成多次尝试",
+            "paragraphs": [
+              "Self-Consistency 是 [ICLR 2023 正式论文](https://iclr.cc/virtual/2023/poster/11718)，预印本发表于 2022 年。它给固定模型多次作答的机会，再聚合答案；不更新权重，也不额外训练 verifier（判断候选好坏的模型）。这使它适合作为推理时计算的第一篇：先看清多花的计算在哪里，再讨论值不值得。"
+            ]
+          },
+          {
+            "heading": "机制：采样推理路径，按最终答案计票",
+            "paragraphs": [
+              "给定包含推理示例的同一个提示，采样 K 条“推理过程＋最终答案”，提取答案并统计每个答案出现几次，选择票数最高者。常称多数投票，但最高票不要求超过半数。路径文字不必相同；两种算式只要得到同一规范化答案，就投向同一项。[原文 §2](https://arxiv.org/html/2203.11171#S2)",
+              "这里聚合的是答案，不是挑出 token 概率最高的一条长文本，也不是让多个模型辩论。概率加权是论文讨论的其他方案，基础版本只计票。实现时要先约定答案格式、等价答案和解析失败的处理；这些规则会改变实际票数。"
+            ]
+          },
+          {
+            "heading": "教学例子：三票正确，不等于有六成把握",
+            "paragraphs": [
+              "**教学例子（非论文实验）：**题目是“三盒铅笔，每盒四支，另有两支，共多少支？”五条采样给出 14、10、14、12、14；聚合选择 14。三条正确路径可以分别使用乘法、连加或先合并两盒，系统只需提取相同的最终数量。",
+              "3/5 是这次采样的票占比，不能直接解释为答案有 60% 概率正确。相同模型可能反复犯同一种错误，五票一致也可能全错。论文发现一致程度与准确率有经验相关性；把它用于拒答或停止采样，仍需在目标任务上评估，而不能把票数当成天然校准的置信度。"
+            ]
+          },
+          {
+            "heading": "系统联系：一题多分支会消耗哪些资源",
+            "paragraphs": [
+              "**系统推演：**同一个 prompt 展开成 K 个生成请求，可利用批处理；支持前缀共享的引擎还可能复用相同前缀的 KV。分支开始生成不同 token 后，各自的后续 KV 和解码工作仍要承担。这是对 serving 实现的分析，并非本论文测得的缓存加速。",
+              "比较策略时，至少同时记正确率、总输出 token、显存峰值和请求完成延迟。K 个并行请求不等于零额外成本，也不必等于 K 倍墙钟时间；不同分支长度造成的尾部等待，可能决定一次投票何时能返回。预算有限时，应比较不同 K，而不只展示最高准确率。",
+              "一个最小复现实验可以固定同一批测试题、提示、模型和答案解析器，只改变采样数。分别记录单条回答与聚合回答的正确率，并单列解析失败、平票和超时。若采用提前停止，必须把停止规则当作另一种策略独立比较；否则减少计算的同时，也改变了哪些候选有机会参与投票。线上没有测试答案可查，正确率应由离线保留的评估集计算。"
+            ]
+          },
+          {
+            "heading": "实验与局限：读增益时必须带上采样预算",
+            "paragraphs": [
+              "论文在 UL2、LaMDA、PaLM 和 GPT-3 系列上做 few-shot 实验。主要结果每次采样 40 条、独立重复 10 次取平均，对照是 greedy CoT。PaLM-540B 在 GSM8K 从 56.5% 到 74.4%，提高 17.9 个百分点；对应温度 0.7、top-k 40，并使用八个算术示例。[原文 §3.1–3.2、Table 2](https://arxiv.org/html/2203.11171#S3)",
+              "这个结果没有证明每题都受益，也不是等 token 预算的比较。方法需要能归并的最终答案；自由写作、代码或多解任务不能直接按字符串计票。模型若几乎不产生正确答案，增加采样也未必能救回来；复制高度相似的错误路径更不等于获得独立证据。"
+            ]
+          },
+          {
+            "heading": "精读路线：先手算一轮，再看预算曲线",
+            "paragraphs": [
+              "先补三个概念：greedy 每步选最大概率 token；温度采样允许多样输出；CoT 提示给出“推理后作答”的示例。接着用 §2 和 Fig. 1 手算票数，再用 Fig. 2 看采样数变化，最后读 §3.5。读完应能回答：若 K 翻倍，增加了多少总 token？若票数高度集中，如何检验它确实更可靠？这两问分别连接 serving 成本与结果质量。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Samples multiple reasoning paths from one model and aggregates their final answers by vote count, trading extra inference computation for accuracy on reasoning tasks without training an additional verifier.",
+        "relevance": "A clear starting point for parallel inference-time computation: multiple branches per question change total generated tokens, KV occupancy, batching, and completion latency.",
+        "reading": "Worth a close read of the method and budget curves, about 25–35 minutes. Start with §2 and Fig. 1, then the setup in §3.1–3.2 and Fig. 2, and finish with the consistency analysis in §3.5.",
+        "prerequisites": "Greedy decoding, temperature sampling, and CoT prompting; distinguish token probabilities, answer vote counts, and measured accuracy.",
+        "caveat": "The most frequent answer can be wrong, and vote share is not calibrated model confidence. The original results use specific models, prompts, and 40 samples; they do not establish equal-cost gains for current models.",
+        "sections": [
+          {
+            "heading": "Two-minute overview: turn one answer into multiple attempts",
+            "paragraphs": [
+              "Self-Consistency is an [ICLR 2023 paper](https://iclr.cc/virtual/2023/poster/11718), first released as a 2022 preprint. It gives a fixed model several attempts and aggregates their answers. It neither updates the weights nor trains an additional verifier, a model that judges candidates. This makes it a useful first reading on inference-time computation: locate the extra work before asking whether the gain justifies it."
+            ]
+          },
+          {
+            "heading": "Mechanism: sample reasoning paths and count final answers",
+            "paragraphs": [
+              "Using the same prompt containing worked reasoning examples, sample K outputs, each containing a reasoning path and a final answer. Extract the answers, count their occurrences, and choose the most frequent. Although commonly called majority voting, the winner need not receive more than half the votes. Different calculations can count toward the same normalized answer. [Paper §2](https://arxiv.org/html/2203.11171#S2)",
+              "The aggregation operates on answers. It does not simply select the long output with the highest token likelihood, nor does it arrange a debate between models. Probability weighting is another option discussed in the paper; the basic version counts votes. An implementation needs explicit rules for answer formats, equivalent answers, and extraction failures because these affect the counts."
+            ]
+          },
+          {
+            "heading": "Teaching example: three correct votes do not imply 60% confidence",
+            "paragraphs": [
+              "**Teaching example, not a paper experiment:** A question asks for the number of pencils in three boxes of four, plus two loose pencils. Five samples answer 14, 10, 14, 12, and 14, so aggregation selects 14. The three successful paths might use multiplication, repeated addition, or combine two boxes first; the implementation only needs to extract the same final quantity.",
+              "The fraction 3/5 describes these samples, not a calibrated 60% probability of correctness. One model can repeatedly make the same mistake, including a unanimous wrong answer. The paper observes an empirical relationship between consistency and accuracy. Using that relationship to abstain or stop sampling still requires evaluation on the target task; a vote count is not automatically calibrated confidence."
+            ]
+          },
+          {
+            "heading": "Systems connection: what multiple branches cost",
+            "paragraphs": [
+              "**Systems analysis:** Expanding a prompt into K generation requests creates batching opportunities. An engine with prefix sharing may reuse KV for the identical prefix. Once branches generate different tokens, their subsequent KV and decode work remain necessary. This is an implementation implication, not a cache-speedup result measured by this paper.",
+              "Compare accuracy alongside total output tokens, peak memory, and request completion latency. K parallel requests neither cost nothing nor necessarily take K times the wall-clock time. Unequal branch lengths create tail waiting that can determine when a vote becomes available. Under a finite budget, compare several K values rather than presenting only the highest accuracy.",
+              "A minimal reproduction can fix the evaluation questions, prompts, model, and answer parser while varying the sample count. Record both single-response and aggregated accuracy, with extraction failures, ties, and timeouts reported separately. Early stopping is a different strategy that needs its own comparison: it changes which candidates can participate as well as reducing work. Gold test answers are unavailable during online inference; use a held-out offline evaluation set to measure accuracy."
+            ]
+          },
+          {
+            "heading": "Evidence and limits: keep the sampling budget attached to the gain",
+            "paragraphs": [
+              "The paper runs few-shot experiments with UL2, LaMDA, PaLM, and GPT-3 variants. Main results average ten independent runs of 40 samples against greedy CoT. On GSM8K, PaLM-540B rises from 56.5% to 74.4%, a 17.9-percentage-point gain, with temperature 0.7, top-k 40, and eight arithmetic exemplars. [Paper §3.1–3.2, Table 2](https://arxiv.org/html/2203.11171#S3)",
+              "This does not show a benefit for every question or compare equal token budgets. Final answers must be meaningfully grouped: free-form writing, code, or tasks with several valid solutions cannot simply use raw-string voting. If correct answers are rarely produced, more samples may still fail; repeatedly sampling similar errors does not create independent evidence."
+            ]
+          },
+          {
+            "heading": "Reading path: count one vote before inspecting the budget curve",
+            "paragraphs": [
+              "Start with three concepts: greedy decoding selects the highest-probability token at each step; temperature sampling permits varied outputs; CoT prompts demonstrate reasoning followed by an answer. Then hand-count the votes using §2 and Fig. 1, inspect varying sample counts in Fig. 2, and finish with §3.5. Ask how many extra tokens doubling K consumes, and how to test whether concentrated votes are more reliable. These questions connect serving cost to answer quality."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "lets-verify-step-by-step-2024",
+      "title": "Let's Verify Step by Step",
+      "year": 2024,
+      "venue": "ICLR 2024 · preprint 2023 · OpenAI",
+      "url": "https://proceedings.iclr.cc/paper_files/paper/2024/file/aca97732e30bcf1303bc22ac3924fd16-Paper-Conference.pdf",
+      "role": "optional",
+      "zh": {
+        "contribution": "比较结果监督与过程监督训练出的奖励模型，展示逐步反馈如何帮助从候选解答中选择可靠答案；发布 PRM800K。",
+        "relevance": "补齐“多生成候选之后，谁来挑选”的环节，连接推理时搜索、奖励建模与评估。",
+        "reading": "值得精读 §2.1、§2.4–2.6、Fig. 3–4、Appendix C/F；先理解监督对象和评测预算，再读成绩。",
+        "prerequisites": "分类器、条件概率、监督微调，以及 best-of-N：生成 N 个候选后按评分选一个。",
+        "caveat": "主要评估固定生成器上的数学答案选择，不是用 PRM 做 RL 后的策略性能；78.2% 对应特定 500 题与 best-of-1860。",
+        "sections": [
+          {
+            "heading": "先分清：论文训练的是裁判，不是在这里强化学习生成器",
+            "paragraphs": [
+              "[ICLR 2024 正式论文](https://proceedings.iclr.cc/paper_files/paper/2024/file/aca97732e30bcf1303bc22ac3924fd16-Paper-Conference.pdf)研究如何训练更可靠的 reward model（奖励模型）。生成器先给同一问题产生多个解答，奖励模型给它们打分，再选出一个。§2.1 明确把对生成器做 RL 排除在本文范围之外。因此，下文的过程监督首先是裁判的训练信号，不能自动解释为生成策略每一步都通过 RL 学好了。",
+              "这能帮助拆开两种失败：如果候选里根本没有正确答案，选得再准也救不了；如果已有正确答案却被错误答案排在后面，主要问题在评判与选择。**这是阅读推导**：调大 N 之前，应同时观察候选覆盖率和最终选中答案的准确率；只报告生成数量，无法知道哪一环值得继续投入计算。"
+            ]
+          },
+          {
+            "heading": "ORM 与 PRM：监督信息在哪一层出现",
+            "paragraphs": [
+              "ORM（outcome-supervised reward model）用最终结果是否正确作为训练标签；它仍可以读取整个解答，并不是只看最后一个数字。PRM（process-supervised reward model）则学习预测步骤是否可接受。本文的人类反馈包含正、负、中性标签，并在首个错误处停止继续标注。逐步标签告诉模型错误在哪里，终点标签通常只告诉它这条路径最终失败了。[§2.4–2.6](https://proceedings.iclr.cc/paper_files/paper/2024/file/aca97732e30bcf1303bc22ac3924fd16-Paper-Conference.pdf#page=3)",
+              "**教学例子，非论文样例：** 解 2x + 3 = 11，正确轨迹是 2x = 8，然后 x = 4。另一条轨迹先错写 2x = 6，随后无依据地给出 x = 4。只核对终点，两条都可能获得“答案正确”的标签；检查过程会发现第二条存在断裂。例子说明的是反馈粒度，而不是保证 PRM 一定能识别所有这样的错误。"
+            ]
+          },
+          {
+            "heading": "逐步评分怎样变成整条解答的分数",
+            "paragraphs": [
+              "本文在步骤边界预测标签，整条解答的一次前向计算就可得到各边界的分数；不必把它理解为对每一步都另外生成一段长篇批评。用于排名时，作者把中性视为可接受，再将各步的可接受概率相乘。Appendix F 同时比较了取最小值与相乘等变体。[Appendix F](https://proceedings.iclr.cc/paper_files/paper/2024/file/aca97732e30bcf1303bc22ac3924fd16-Paper-Conference.pdf#page=15)",
+              "**教学例子：** 候选 A 的三个分数为 0.95、0.90、0.95，乘积约 0.812；B 为 0.99、0.30、0.99，乘积约 0.294。B 的中间弱点会明显降低排序分数。但这仍是模型分数，不是形式化正确性证明。相乘也会受到步数与校准影响：把同一解释切成更多步骤，分数可能变化。复现时应把步骤切分、标签处理和聚合规则一并记录。"
+            ]
+          },
+          {
+            "heading": "实验成绩需要连同候选预算一起读",
+            "paragraphs": [
+              "大规模实验以 GPT-4 基础模型衍生的生成器与奖励模型处理 MATH；PRM800K 提供约 80 万条步骤标签。作者把原 MATH 测试集中的 4500 题用于训练相关数据，评估使用余下、随机保留的 500 题。Fig. 3 的 **78.2% 是 PRM 从每题 1860 个候选中挑选后的结果**，同设置 ORM 为 72.4%，多数投票为 69.6%；这既不是单次生成准确率，也不是未经调整的完整 MATH 测试集成绩。[§2–3、Appendix C](https://proceedings.iclr.cc/paper_files/paper/2024/file/aca97732e30bcf1303bc22ac3924fd16-Paper-Conference.pdf#page=5)",
+              "大规模 PRM 与 ORM 使用的训练数据不同，不能把全部差距归因于一个标签开关。论文另用较大 PRM 给较小模型提供合成监督，控制训练样本来做比较。阅读时把这两组证据分开：一组展示各方案尽力做强后的能力，另一组尝试隔离监督方式的作用；后者又依赖教师标签的质量。本文没有提供可直接套用到当前部署上的端到端 GPU 延迟倍数。"
+            ]
+          },
+          {
+            "heading": "为什么难负例比反复标注明显错误更有价值",
+            "paragraphs": [
+              "数据收集会优先寻找“当前 PRM 给高分、但最终答案错误”的候选，让标注者指出模型被哪里误导。可以把这理解为找裁判的盲点，再补上相关训练信号；这和随机增加同样容易判断的数据不同。§4 使用较小模型研究主动选样的作用，不能把该实验的样本效率等同为完整人力成本的统一下降倍数。[§2.4、§4](https://proceedings.iclr.cc/paper_files/paper/2024/file/aca97732e30bcf1303bc22ac3924fd16-Paper-Conference.pdf#page=6)",
+              "**进一步的实验设计建议，非论文结论：** 如果我们据此做数据循环，应独立保留测试题与反馈来源，记录每轮新增了什么类型的错误。否则，训练集上的难例被修好，可能只是对同一分布适配；验证器生成标签、又给自己评分，也会使改进看起来比实际更稳定。"
+            ]
+          },
+          {
+            "heading": "怎样连接今天的主读，以及哪些结论不能外推",
+            "paragraphs": [
+              "主读要回答推理预算该怎么分，这篇则补上“预算花在验证上，验证器从哪里来”。把生成器、验证器、候选数量与任务成功率一起看，才能理解多采样是否有收益。**系统分析：** PRM 带来额外模型计算和显存占用；逐步搜索还可能增加阶段屏障。应比较同一质量目标下的总 GPU 时间、尾延迟与成本，而不能把评分更准确直接当作服务更快。",
+              "数学答案易核对，不代表开放式 Agent 任务的每一步都容易标注；PRM 对文本步骤的认可，也不证明这些文本忠实反映模型内部计算。建议先读 §2.1 明确研究对象，再读 Fig. 3–4 区分实验，最后看 Appendix C/F 理解数据划分与评分。读完试着回答：候选更多但最终正确率不升时，应该先检查生成覆盖、验证器误判，还是评分聚合？这三个诊断方向比记住 78.2% 更有迁移价值。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Compares outcome and process supervision for reward models, showing how step-level feedback helps select reliable solutions, and releases PRM800K.",
+        "relevance": "Explains who selects among generated candidates, connecting inference-time search, reward modeling, and evaluation.",
+        "reading": "Read §2.1, §2.4–2.6, Figures 3–4, and Appendices C/F closely. Establish the supervised object and evaluation budget before interpreting scores.",
+        "prerequisites": "Classification, conditional probability, supervised fine-tuning, and best-of-N selection from N generated candidates.",
+        "caveat": "Primarily evaluates mathematical answer selection with a fixed generator, not a policy trained by PRM-based RL; 78.2% uses a specific 500-problem split and best-of-1860.",
+        "sections": [
+          {
+            "heading": "The trained object is the judge, not an RL-updated generator",
+            "paragraphs": [
+              "The [ICLR 2024 paper](https://proceedings.iclr.cc/paper_files/paper/2024/file/aca97732e30bcf1303bc22ac3924fd16-Paper-Conference.pdf) studies reliable reward models. A generator produces candidate solutions, a reward model scores them, and one is selected. Section 2.1 explicitly excludes reinforcement learning of the generator. Process supervision here is therefore a training signal for the judge; it does not establish that an RL policy has learned to reason correctly at every step.",
+              "This separates two failures: selection cannot recover a correct solution that never appears, whereas choosing incorrectly when a correct candidate exists points toward evaluation and ranking. **Our reading inference:** before increasing N, inspect both candidate coverage and selected-answer accuracy. Candidate count alone cannot identify where additional compute would be useful."
+            ]
+          },
+          {
+            "heading": "ORM and PRM differ in the granularity of supervision",
+            "paragraphs": [
+              "An outcome-supervised reward model (ORM) learns from final-result correctness. It can still read the entire solution; outcome supervision does not mean reading only the last number. A process-supervised reward model (PRM) learns step acceptability. Human feedback in this work uses positive, negative, and neutral labels, stopping at the first error. Step labels locate a failure; an outcome label usually says only that the whole attempt failed. [§2.4–2.6](https://proceedings.iclr.cc/paper_files/paper/2024/file/aca97732e30bcf1303bc22ac3924fd16-Paper-Conference.pdf#page=3)",
+              "**Teaching example, not a paper example:** solving 2x + 3 = 11 correctly gives 2x = 8 and x = 4. Another trajectory mistakenly writes 2x = 6, then jumps without justification to x = 4. Checking only the final answer may label both correct; checking the derivation exposes the break. This illustrates feedback granularity, not a guarantee that a learned PRM catches every such error."
+            ]
+          },
+          {
+            "heading": "Turning step scores into a solution score",
+            "paragraphs": [
+              "The model predicts labels at step boundaries. One forward pass over a complete solution can provide the boundary scores; this need not mean generating a separate lengthy critique of every step. For ranking, the authors treat neutral steps as acceptable and multiply step-acceptability probabilities. Appendix F compares alternatives including minimum aggregation. [Appendix F](https://proceedings.iclr.cc/paper_files/paper/2024/file/aca97732e30bcf1303bc22ac3924fd16-Paper-Conference.pdf#page=15)",
+              "**Teaching example:** candidate A has scores 0.95, 0.90, and 0.95, whose product is approximately 0.812. Candidate B has 0.99, 0.30, and 0.99, yielding approximately 0.294. B's weak middle step sharply reduces its rank. These remain model scores, not formal correctness certificates. Multiplication is sensitive to calibration and step count: splitting the same explanation into more steps can change its score. Reproduction should record segmentation, label handling, and aggregation together."
+            ]
+          },
+          {
+            "heading": "Read the result together with the candidate budget",
+            "paragraphs": [
+              "Large-scale experiments use generator and reward models derived from base GPT-4 on MATH, with roughly 800,000 step labels in PRM800K. The authors use 4,500 problems from the original MATH test split for training-related data and evaluate on the remaining 500 randomly held-out problems. Figure 3 reports **78.2% for PRM selection among 1,860 candidates per problem**, compared with 72.4% for ORM and 69.6% for majority voting. This is neither single-sample accuracy nor a result on the untouched full MATH test split. [§2–3 and Appendix C](https://proceedings.iclr.cc/paper_files/paper/2024/file/aca97732e30bcf1303bc22ac3924fd16-Paper-Conference.pdf#page=5)",
+              "Large-scale PRM and ORM training data differ, so their entire performance gap cannot be attributed to switching label granularity alone. Separate smaller-model comparisons use synthetic supervision from a larger PRM while controlling training samples. Keep these evidence types separate: one compares strong implementations, while the other attempts to isolate supervision and depends on teacher-label quality. The paper supplies no end-to-end GPU latency multiplier that can simply be applied to a present-day deployment."
+            ]
+          },
+          {
+            "heading": "Why informative negatives can beat more obvious errors",
+            "paragraphs": [
+              "Collection prioritizes candidates that the current PRM scores highly but whose final answers are wrong, so annotators can expose the judge's blind spots. This differs from repeatedly adding examples it already finds easy to reject. Section 4 studies active selection with smaller models; its sample-efficiency result should not be treated as a universal reduction in complete human-labeling cost. [§2.4 and §4](https://proceedings.iclr.cc/paper_files/paper/2024/file/aca97732e30bcf1303bc22ac3924fd16-Paper-Conference.pdf#page=6)",
+              "**Our experimental-design suggestion, not a paper result:** an analogous feedback loop should independently hold out evaluation tasks and record which error types each iteration adds. Fixing selected training cases may reflect adaptation to that distribution. A verifier producing labels and then judging its own progress can also make improvements appear more robust than independent tests would support."
+            ]
+          },
+          {
+            "heading": "Connection to the main reading and limits of transfer",
+            "paragraphs": [
+              "Today's main reading asks how to allocate inference compute; this paper explains where a trained verifier can come from. Generator quality, verifier quality, candidate count, and task success must be considered together. **Systems analysis:** a PRM adds model execution and memory demand, and stepwise search can introduce synchronization barriers. Compare total GPU time, tail latency, and cost at the same quality target rather than equating more accurate judging with faster serving.",
+              "Automatically checkable mathematics does not make every step of an open-ended agent task easy to label. Approval of a textual step also does not establish that the text faithfully describes the model's internal computation. Read §2.1 for the research object, Figures 3–4 for the experimental comparisons, and Appendices C/F for splits and scoring. Then ask: when more candidates stop improving selected-answer accuracy, should we inspect generation coverage, judge errors, or aggregation? These distinctions transfer better than memorizing 78.2%."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "star-2022",
+      "title": "STaR: Bootstrapping Reasoning With Reasoning",
+      "year": 2022,
+      "venue": "NeurIPS 2022",
+      "url": "https://arxiv.org/abs/2203.14465",
+      "role": "optional",
+      "zh": {
+        "contribution": "用少量推理示例启动生成，按已知正确答案筛选推理数据，并借助答案提示为失败题补充数据，迭代微调模型。",
+        "relevance": "连接推理时生成与 post-training：rollout、筛选和训练形成闭环，适合思考数据版本、有效样本产率和训练生成阶段的资源分配。",
+        "reading": "作为与纯推理时计算的对照选读，约 30 分钟。重点精读 §3、Algorithm 1，再读 §4.1 与 Table 1，最后检查 §5–6 的错误推理和启动能力边界。",
+        "prerequisites": "监督微调、带答案的数据集、few-shot 提示；理解生成模型版本与训练初始化版本可以不同。",
+        "caveat": "Rationalization 在构造训练数据时使用 gold answer，测试时不提供答案；每轮从固定原始模型重新微调，且答对筛选不保证推理过程正确。",
+        "sections": [
+          {
+            "heading": "两分钟摘要：把生成结果变成下一轮训练数据",
+            "paragraphs": [
+              "STaR 是 [NeurIPS 2022 正式论文](https://proceedings.neurips.cc/paper_files/paper/2022/hash/639a9a172c044fbb64175b5fad42e9a5-Abstract-Conference.html)。与只在一次请求里多采样的 Self-Consistency 相比，它把生成的推理过程用于微调，改变以后作答的模型。输入仍包括大量带正确答案的题目，只是大部分题没有人工推理过程；“自己教自己”并不表示没有外部监督。"
+            ]
+          },
+          {
+            "heading": "机制：生成、筛选、补救，再从固定基座训练",
+            "paragraphs": [
+              "先用少量“题目—推理—答案”示例提示当前模型，为训练题生成推理与答案；答对的保留。对失败题使用 rationalization：把已知正确答案作为提示，再尝试生成推理，最终答案仍须通过检查。两部分合并成下一轮训练数据。[正式论文 §3、Algorithm 1](https://proceedings.neurips.cc/paper_files/paper/2022/file/639a9a172c044fbb64175b5fad42e9a5-Paper-Conference.pdf#page=3)",
+              "关键是每轮用上一轮模型生成数据，却从同一个原始预训练模型 M 开始微调；不是在上一轮权重上一直续训。改进经由新数据传递。补救样本中的答案提示会从训练输入移除，模型学习从题目输出推理和答案；测试题也不会附带正确答案。"
+            ]
+          },
+          {
+            "heading": "教学例子：提示答案用于制数据，不是测试作弊",
+            "paragraphs": [
+              "**教学例子（非论文实验）：**题目仍是“三盒铅笔，每盒四支，另有两支”。第一遍模型错误回答 10，于是制数据阶段给出正确答案 14，再生成“先算三盒共十二支，再加两支”的推理。若最终答案通过检查，训练样本的输入只保留题目，目标输出是推理过程加 14。",
+              "这一步并没有凭空发现未知答案，而是在已有答案监督下寻找可用于学习的过程。它也可能编造错误解释后碰巧写出 14，所以答案匹配只是结果筛选。若要声称过程可信，还需另外检查步骤、做程序验证或人工抽查，不能把“答对”直接替换成“推理正确”。"
+            ]
+          },
+          {
+            "heading": "系统联系：闭环里要管理数据，也要管理模型版本",
+            "paragraphs": [
+              "**系统推演：**可以把一轮拆成生成、答案检查、失败题补救、数据合并和微调。记录生成时用的模型版本、题目来源、补救标记和过滤结果，才能解释下一轮为何变好或变差。固定训练初始化与不断更新的生成模型是两条不同的版本关系，不能只存一个“最新 checkpoint”。",
+              "对 RL infra 的启发是同时看生成吞吐和有效样本产率：答错的高吞吐输出未必带来更多可训练数据，补救则增加额外生成成本。它也连接 RSI（递归自我改进）的讨论，但这里的反馈来自已知答案和固定任务，不能据此推断模型会无限、无监督地自我增强。",
+              "一个实用日志应同时记录普通生成接受了多少题、补救又增加多少题，以及两路各自消耗的 token 和时间。有效样本数相同，也可能由完全不同的成本得到。还应抽查被保留的过程质量；只优化接受率，可能鼓励容易猜对答案的样本，而不是真正有学习价值的样本。"
+            ]
+          },
+          {
+            "heading": "实验与局限：开发集提升不等于通用推理保证",
+            "paragraphs": [
+              "实验基座是 GPT-J 6B，任务包括加法、CommonsenseQA 与 GSM8K。CommonsenseQA 用 9,741 道训练题和十个人工推理示例；Table 1 报告开发集准确率：直接答案微调 60.0%，STaR 不补救 68.8%，加入补救 72.5%。论文迭代到性能饱和并报告最佳结果。[正式论文 §4.1、Table 1](https://proceedings.neurips.cc/paper_files/paper/2022/file/639a9a172c044fbb64175b5fad42e9a5-Paper-Conference.pdf#page=5)",
+              "这些数字不是现代模型排行，也不是同算力 serving 对比。五选一题会让猜中的错误解释进入数据；初始模型若无法产出有用过程，闭环也难以启动。阅读时分开判断最终答案准确率、推理质量和跨任务泛化，别让一个开发集分数替代三项结论。"
+            ]
+          },
+          {
+            "heading": "精读路线：画出两种模型与两条数据路径",
+            "paragraphs": [
+              "先掌握监督微调：给定题目，把目标文本的预测概率提高。随后照 Algorithm 1 画普通生成与答案提示补救两条路径，并在训练箭头旁写清“从 M 初始化”。再读 §4.1、Table 1 与 §5–6。最后问：哪些知识由正确答案提供，哪些过程由模型生成？若最终答案容易猜中，过滤如何失效？若相同题目被反复使用，怎样保留独立评估集？"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Uses a few reasoning examples to bootstrap generation, filters generated rationales against known answers, and uses answer hints to recover training examples from failures before iterative fine-tuning.",
+        "relevance": "Connects inference generation to post-training through a rollout, filtering, and training loop, raising questions about data versions, usable-example yield, and resource allocation between stages.",
+        "reading": "An optional contrast with pure inference-time computation, about 30 minutes. Read §3 and Algorithm 1 closely, then §4.1 and Table 1, and finish with the rationale-quality and bootstrapping limits in §5–6.",
+        "prerequisites": "Supervised fine-tuning, answer-labeled datasets, and few-shot prompts; distinguish the model used to generate data from the checkpoint used to initialize training.",
+        "caveat": "Rationalization uses gold answers while constructing training data, not during testing. Each round fine-tunes the fixed original model, and a correct final answer does not certify a correct reasoning process.",
+        "sections": [
+          {
+            "heading": "Two-minute overview: turn generated reasoning into training data",
+            "paragraphs": [
+              "STaR is a [NeurIPS 2022 paper](https://proceedings.neurips.cc/paper_files/paper/2022/hash/639a9a172c044fbb64175b5fad42e9a5-Abstract-Conference.html). Whereas Self-Consistency samples additional attempts within an inference request, STaR fine-tunes on generated reasoning and changes the model that answers future questions. It still requires many questions with correct final answers; most lack human-written rationales. Self-teaching here does not mean an absence of external supervision."
+            ]
+          },
+          {
+            "heading": "Mechanism: generate, filter, recover failures, then train from the fixed base",
+            "paragraphs": [
+              "A few question–rationale–answer examples prompt the current model to generate rationales and answers for training questions. Correct answers are retained. Failed questions receive rationalization: the known answer becomes a hint for another attempt, whose final answer must still pass the check. Both sets form the next training dataset. [Conference paper §3, Algorithm 1](https://proceedings.neurips.cc/paper_files/paper/2022/file/639a9a172c044fbb64175b5fad42e9a5-Paper-Conference.pdf#page=3)",
+              "Each round uses the preceding model to generate data but starts fine-tuning from the same original pretrained model M, rather than continually updating the previous round's weights. Improvement passes through the new data. The answer hint is removed from the training input of recovered examples: the model learns to produce reasoning and an answer from the question. Test questions also receive no gold-answer hint."
+            ]
+          },
+          {
+            "heading": "Teaching example: answer hints construct data, not test-time answers",
+            "paragraphs": [
+              "**Teaching example, not a paper experiment:** The question again concerns three boxes of four pencils and two loose pencils. An initial attempt incorrectly answers 10. During data construction, the model is given the correct answer 14 and generates an explanation that first counts twelve boxed pencils and then adds two. If the final answer passes, the training input retains only the question, while the target is the rationale followed by 14.",
+              "This does not discover an unknown answer from nothing. It seeks a learnable process under existing answer supervision. A fabricated explanation could also end in 14, so answer matching filters outcomes only. Claims about trustworthy reasoning require additional step checks, executable verification where available, or human inspection; correct output and correct reasoning must remain separate criteria."
+            ]
+          },
+          {
+            "heading": "Systems connection: track data and model versions through the loop",
+            "paragraphs": [
+              "**Systems analysis:** Decompose a round into generation, answer checking, recovery of failures, dataset assembly, and fine-tuning. Track the generating model version, question source, recovery flag, and filtering outcome to explain changes in the next round. A fixed training initialization and an evolving data-generation model represent different version relationships; storing only a latest checkpoint loses that distinction.",
+              "For RL infrastructure, generation throughput should be considered alongside usable-example yield. Fast incorrect generations need not produce more training data, and recovery consumes additional generation work. This also connects to recursive self-improvement, or RSI, but the feedback here comes from known answers and fixed tasks. It does not establish unlimited, unsupervised improvement.",
+              "Useful logs should count examples accepted from ordinary generation, additional examples recovered, and tokens and time spent on each path. Equal usable-example counts may have very different costs. Inspect the quality of retained rationales as well: optimizing acceptance rate alone can favor answers that are easy to guess instead of examples that are valuable to learn from."
+            ]
+          },
+          {
+            "heading": "Evidence and limits: development-set gains are not a universal reasoning guarantee",
+            "paragraphs": [
+              "Experiments use GPT-J 6B on addition, CommonsenseQA, and GSM8K. CommonsenseQA supplies 9,741 training questions and ten manually written rationale examples. Table 1 reports development-set accuracy of 60.0% for direct-answer fine-tuning, 68.8% for STaR without rationalization, and 72.5% with it. The authors iterate until performance saturates and report the best results. [Conference paper §4.1, Table 1](https://proceedings.neurips.cc/paper_files/paper/2022/file/639a9a172c044fbb64175b5fad42e9a5-Paper-Conference.pdf#page=5)",
+              "These are neither current-model rankings nor equal-compute serving comparisons. Five-way multiple-choice questions let guessed correct answers admit poor rationales into training. A base model unable to generate useful processes may also fail to bootstrap. Evaluate final-answer accuracy, rationale quality, and transfer separately; one development-set score cannot establish all three."
+            ]
+          },
+          {
+            "heading": "Reading path: draw two model roles and two data paths",
+            "paragraphs": [
+              "First understand supervised fine-tuning as increasing the probability of a target text given its question. Then draw the ordinary-generation and answer-hint recovery paths from Algorithm 1, labeling the training arrow as initialized from M. Continue with §4.1, Table 1, and §5–6. Ask what information the gold answers provide, what process the model generates, how easy-to-guess answers undermine filtering, and how to preserve an independent evaluation set when training questions are reused."
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

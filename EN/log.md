@@ -125,3 +125,6 @@ updated: 2026-06-15
 - [NOTIFY] Added local Bark publication notifications: verify the public RSS before sending the edition topic and reading link; keep device credentials outside the repository and track delivery per edition to prevent repeat pushes.
 - [NOTIFY] Changed future Bark notification taps to open NetNewsWire, where the MLSys subscription provides the full text. Public article URLs remain the publication and deduplication identity; opening a specific article is not promised.
 - [READING] Broadened selection to LLM and agent capabilities, learning, and systems, including post-training, recursive self-improvement, reasoning compute, lifelong learning, data and evaluation, and architectures. Removed direct applicability as a requirement, admitted both foundational and current main readings, and updated the roadmap, entry points, and RSS description.
+
+## 2026-10-16
+- [READING] Published the 2026-10-16 selection on difficulty-aware test-time compute, with Self-Consistency, Let’s Verify Step by Step, and STaR as optional readings. Added bilingual mechanisms, teaching examples, experimental conditions, and reading routes separating inference compute, verification, and training-time bootstrapping.

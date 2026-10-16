@@ -3,12 +3,12 @@ title: "每日论文推荐"
 category: ml-sys
 tags: [reading-digest]
 description: "LLM 与 Agent 的能力、学习与系统：从经典基础到前沿研究。"
-published: "2026-10-15T13:46:00+08:00"
-date: 2026-10-15
+published: "2026-10-16T09:16:06+08:00"
+date: 2026-10-16
 created: 2026-10-15
-updated: 2026-10-15
+updated: 2026-10-16
 status: growing
-paper_ids: ["hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
+paper_ids: ["test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
 ---
 
 # 每日论文推荐
@@ -21,4 +21,5 @@ paper_ids: ["hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
 
 ## 历史推荐（最新在前）
 
+- [[CN/reading/daily/2026-10-16|2026-10-16 · 推理时计算：从多采样到验证与预算分配]] — 主读: Scaling LLM Test-Time Compute Optimally Can be More Effective than Scaling Parameters for Reasoning
 - [[CN/reading/daily/2026-10-15|2026-10-15 · 从 HybridFlow 理解训练与 rollout 的衔接]] — 主读: HybridFlow: A Flexible and Efficient RLHF Framework
