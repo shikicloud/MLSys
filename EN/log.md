@@ -132,3 +132,6 @@ updated: 2026-06-15
 
 ## 2026-10-17
 - [READING] Published the 2026-10-17 selection: CadenceRL on long-trajectory scheduling and KV recovery, VISR on sequential post-training, and a controlled chess study of pretraining and RL. Added concrete bilingual examples, checked preprint versions and experimental conditions, and bounded each conclusion.
+
+## 2026-10-18
+- [READING] Published the 2026-10-18 edition: AIDE² as the main reading, with SDFT and REUSE as optional readings. Bilingual worked examples distinguish agent-code optimization, learning from demonstrations, and reliable acceptance under benchmark reuse, with experimental conditions, iteration counts, and human involvement stated explicitly.

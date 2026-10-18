@@ -3,12 +3,12 @@ title: "每日论文推荐"
 category: ml-sys
 tags: [reading-digest]
 description: "LLM 与 Agent 的能力、学习与系统：从经典基础到前沿研究。"
-published: "2026-10-17T09:07:24+08:00"
-date: 2026-10-17
+published: "2026-10-18T09:11:03+08:00"
+date: 2026-10-18
 created: 2026-10-15
-updated: 2026-10-17
+updated: 2026-10-18
 status: growing
-paper_ids: ["cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
+paper_ids: ["aide2-recursive-self-improvement-2026","self-distillation-continual-learning-2026","reuse-2026","cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
 ---
 
 # 每日论文推荐
@@ -21,6 +21,7 @@ paper_ids: ["cadencerl-2026","visr-2026","understanding-reasoning-pretraining-po
 
 ## 历史推荐（最新在前）
 
+- [[CN/reading/daily/2026-10-18|2026-10-18 · Agent 怎样改进自己：改程序、学示范与验证收益]] — 主读: Recursive self-improvement of AI research agents
 - [[CN/reading/daily/2026-10-17|2026-10-17 · R1 之后的训练：长回答怎么调度，能力提升怎么判断]] — 主读: Reshaping Rollout Workloads for Asynchronous RL Post-Training on Heterogeneous Accelerators
 - [[CN/reading/daily/2026-10-16|2026-10-16 · 推理时计算：从多采样到验证与预算分配]] — 主读: Scaling LLM Test-Time Compute Optimally Can be More Effective than Scaling Parameters for Reasoning
 - [[CN/reading/daily/2026-10-15|2026-10-15 · 从 HybridFlow 理解训练与 rollout 的衔接]] — 主读: HybridFlow: A Flexible and Efficient RLHF Framework
