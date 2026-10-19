@@ -135,3 +135,6 @@ updated: 2026-06-15
 
 ## 2026-10-18
 - [READING] Published the 2026-10-18 edition: AIDE² as the main reading, with SDFT and REUSE as optional readings. Bilingual worked examples distinguish agent-code optimization, learning from demonstrations, and reliable acceptance under benchmark reuse, with experimental conditions, iteration counts, and human involvement stated explicitly.
+
+## 2026-10-19
+- [READING] Published the 2026-10-19 edition: ReplaySSM on state traffic, speculative rollback, and separate precisions; Gated Delta Networks on the update mechanism; and SuffixReplay on approximate prefix-state recovery. Bilingual explanations include worked examples, evaluation conditions, quality tradeoffs, and explicit paper-version boundaries.

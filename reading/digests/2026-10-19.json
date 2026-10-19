@@ -1,0 +1,487 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-19",
+  "publishedAt": "2026-10-19T09:14:09+08:00",
+  "zh": {
+    "title": "混合模型推理：状态不再增长，为什么还是慢？",
+    "summary": "今天从 10 月 9 日提交的 ReplaySSM 论文入手：模型把历史压进固定大小的状态后，为什么每生成一个 token 仍要付出不小的搬运成本？主读顺着普通解码、投机回退和低精度三个场景解释，怎样把当前输出与完整状态写回分开。选读 Gated Delta Networks，补清状态如何记住、修改和遗忘信息；再读 9 月的 SuffixReplay，看共享前缀时怎样用近似恢复换取更细的复用位置。前者是理解新系统的机制参考，不必先完成整条基础路线；三篇也无需一天全部精读。"
+  },
+  "en": {
+    "title": "Hybrid-model inference: why fixed-size states can still be slow",
+    "summary": "Start with the ReplaySSM paper submitted on October 9: after a model compresses history into fixed-size state, why can generating each token still require expensive memory traffic? The main note follows standard decoding, speculative rollback, and low-precision state to explain the separation between producing an output and writing back the full state. Gated Delta Networks supplies the mechanism behind retaining, editing, and forgetting information. September's SuffixReplay then examines approximate state reconstruction for finer-grained shared-prefix reuse. The architecture paper is an optional reference for understanding these systems, not a prerequisite curriculum; there is no need to read all three closely today."
+  },
+  "papers": [
+    {
+      "id": "replayssm-2026",
+      "title": "ReplaySSM: Cache SSM Inputs, Not State",
+      "year": 2026,
+      "venue": "arXiv 2026 · v1 2026-10-09",
+      "url": "https://arxiv.org/abs/2610.13778v1",
+      "role": "main",
+      "zh": {
+        "contribution": "把循环状态保存为一份完整检查点加一小段近期输入。多数生成步骤只写小记录，隔一段才更新完整检查点；同一表示还能让投机解码通过移动指针回退，并分开处理输出读取与长期状态更新的精度。",
+        "relevance": "混合模型减少了注意力缓存，却可能把瓶颈移到循环状态的读写。本文解释为什么“状态大小不随文本增长”仍可能很慢，以及改变状态的保存方式，怎样同时影响吞吐、投机验证和数值误差。",
+        "reading": "本期主读，建议 35–50 分钟。先跟随第 100–108 个 token 的例子理解检查点和回退，再读两条计算路径；最后对照实验判断哪些负载能获益。低精度部分可第二遍读。",
+        "prerequisites": "知道 GPU 有显存、模型逐个生成 token 即可。正文解释状态空间模型、Gated DeltaNet、投机解码和检查点，不要求先读 Mamba 论文或掌握递推公式。",
+        "caveat": "仍保留且逐步读取检查点；主要减少完整状态回写。大批量结果不能推广到单请求，浮点实现也不保证逐位相同。低精度采用模拟量化实验，不能与 FP32 状态的吞吐结果合成一个已经测得的收益。",
+        "sections": [
+          {
+            "heading": "先看一个新 token 到来时，模型必须做什么",
+            "paragraphs": [
+              "假设模型已经处理前 100 个 token，现在继续处理第 101 个。注意力层保存过去每个位置的 key 和 value，形成 KV cache，供当前步骤查询。另一类层把历史不断合并进一个固定大小的数值矩阵：读旧矩阵，加入这一步的信息，再由新矩阵算出输出。这个矩阵就是循环状态。**以下 token 编号和小窗口都是教学例子，不是论文的测试样本。**",
+              "SSM 是 state-space model，即状态空间模型；Mamba-2 是本文研究的一种 SSM。论文也研究 Gated DeltaNet，简称 GDN，它属于带门控的线性注意力模型，也维护循环状态，但更新规则与 Mamba-2 不同。混合模型同时包含这些循环层与普通注意力层，所以服务系统必须管理两类历史信息。",
+              "ReplaySSM 来自 Princeton 与 NVIDIA，论文 v1 于 2026 年 10 月 9 日提交；作者在参考文献中把早期技术博客标为同年 6 月。这里精读的是论文中的完整机制与实验，不把它说成 10 月才首次出现的想法。[论文 v1](https://arxiv.org/html/2610.13778v1)"
+            ]
+          },
+          {
+            "heading": "状态不再变长，为什么读写仍然很贵",
+            "paragraphs": [
+              "固定大小只表示第 101 步与第 10001 步保存的矩阵一样大，不表示矩阵很小。每步从 HBM，也就是 GPU 的高带宽显存，读出状态，改完再写回，需要搬动整份数据。更新本身可能只做少量乘加，计算单元很快做完，却仍要等待数据搬运。",
+              "论文给出的具体例子是 Nemotron-3-Super-120B-A12B：每个请求、每层的 FP32 状态占 4 MiB，模型有 40 个循环层、8 个注意力层。FP32 表示每个数用 32 位浮点格式保存。当 256 个请求一起生成时，这些状态都要反复读写。在单张 B300 的该设置下，循环状态更新直到约 100K 上下文仍是最大的延迟组成。[§3.1、Figure 1、附录 C.2](https://arxiv.org/html/2610.13778v1)",
+              "因此问题不是继续压缩文本长度，而是有没有必要每处理一个 token，就把改后的完整矩阵写回显存。ReplaySSM 从这项保存规则入手；它没有改变模型的权重，也没有删除混合模型中的注意力层。"
+            ]
+          },
+          {
+            "heading": "把第 100 步的完整状态留下，近期变化另存",
+            "paragraphs": [
+              "设我们保存第 100 步的完整状态 S100，并暂用大小为 4 的窗口。处理第 101 个 token 时，不立即覆盖 S100，而是记录这一更新需要的小量数据。到第 102 步，S100 仍在，旁边已有第 101、102 步的记录。需要当前状态时，把这些更新作用到 S100 上，就能恢复到当前进度。",
+              "这里存的“输入”不是 token 的整数编号，也不是原始文字。对 Mamba-2，每条记录包含该层该步的衰减系数 α，以及向量 v、k：先按 α 缩放旧状态，再把 v、k 形成的矩阵加进去。它们由神经网络计算得到，保存成本远小于完整状态。[§3.4、§4](https://arxiv.org/html/2610.13778v1)",
+              "普通解码到第 104 步时，四条记录一起并入 S100，写出新的检查点 S104，然后清空这段记录。这个合并动作叫 flush。重要的是，旧历史一直保存在检查点里；方法不是丢掉第 100 步之前的内容，只保留最近四个 token。"
+            ]
+          },
+          {
+            "heading": "省下的是回写，不是从此不读状态",
+            "paragraphs": [
+              "在不做 flush 的步骤，普通解码仍读取检查点，并在 GPU 片上的工作空间里恢复当前状态、计算输出；只是不用把完整工作状态写回 HBM。这里要区分“计算过程中构造矩阵”与“把矩阵长期存回显存”：标准算法仍做前者，主要避免后者。[Algorithm 1、§4](https://arxiv.org/html/2610.13778v1)",
+              "若窗口有 L 步，传统实现要读 L 次完整状态、写 L 次；ReplaySSM 仍读 L 次，却只完整写一次，另加小记录的读写。因此论文说主要状态流量大致减半，不是整个模型的全部显存流量减半。复原状态也要计算，省下写入并不等于免费。",
+              "窗口越大，完整回写越少，但每步需要读取、应用的记录越多。作者在批量 256 时比较 L=8、16、32，四个模型都是 16 最快，因此实验主要取 L=16。它是这些设置下的选择，不是所有硬件和批量的通用常数。[附录 E.2.2、Figure 9](https://arxiv.org/html/2610.13778v1)"
+            ]
+          },
+          {
+            "heading": "一次试写四个 token，只接受两个时怎样回退",
+            "paragraphs": [
+              "投机解码先由较便宜的起草过程提出多个 token，再让目标模型一起检查。继续例子：从 S104 出发，试验第 105–108 个位置，但最终只接受前两个。若循环状态已依次覆盖到第 108 步，一般没有便宜的逆运算能退回 106。论文中的常规 vLLM 基线为各候选位置保存完整快照，拒绝后选回正确的那份。",
+              "ReplaySSM 先把四步的输入记录写进缓冲区，检查结束后，只把“已接受到哪里”的指针推进到第二条。后两条不属于已提交历史，下次写入时可以覆盖。于是回退不用恢复一串完整状态快照，也不必为恢复到接受位置重新执行完整递推。[§5.1、Algorithm 2](https://arxiv.org/html/2610.13778v1)",
+              "还有一个容易漏掉的条件：窗口最多保留 L 条已接受记录，另留 T 个位置给本轮候选，所以缓冲区容量为 L+T。若已有 h 条已接受记录且 h+T>L，只把这 h 条旧记录合进检查点，本轮尚未决定是否接受的 T 条不能合进去。我们的 L=4、T=4 例子下一轮会把已接受的 105、106 并入检查点，新候选仍单独保留；新一轮接受判定出来后再推进指针。[附录 D.1](https://arxiv.org/html/2610.13778v1)"
+            ]
+          },
+          {
+            "heading": "验证只需要输出，为什么还要造出每份完整状态",
+            "paragraphs": [
+              "第二项优化来自同一个分离：某个候选位置的完整状态今后不会被保存或读取，验证只需要它产生的输出。以 Mamba-2 的一项更新为例，先用 v、k 构成矩阵，再乘查询向量 q，写作 (vkᵀ)q；也可以先算 kᵀq 得到一个数，再乘 v。结果相同，却不用为这一项展开整个矩阵。这叫 output-only，即只计算输出。[§5.2](https://arxiv.org/html/2610.13778v1)",
+              "实际计算还要加上检查点的贡献、各步衰减，并禁止后面的候选影响前面的输出。这样验证多个位置时，可以一起组织运算，而不用逐个构造完整中间状态。它与上一节的指针回退互补：前者少做验证中的工作，后者少存和恢复状态。",
+              "GDN 不能直接照搬 Mamba-2 的记录。它先查询旧状态对 k 已经保存了什么，再计算还应写入多少，得到修正向量 u。因此 u 依赖此前状态；多个候选的 u 也依赖更早候选。作者把这种依赖整理为一个 T×T 的三角方程求解，再进行只算输出的验证。数学等价仍有浮点误差；实现还会用 FP16 缓存 GDN 的 u，不能声称逐位相同。[附录 B.1–B.3](https://arxiv.org/html/2610.13778v1)"
+            ]
+          },
+          {
+            "heading": "读取用低精度，长期更新为什么还要保留高精度",
+            "paragraphs": [
+              "如果每步都把状态压成更低精度，舍入后的数还会成为下一步更新的起点。误差便可能随递推传播。ReplaySSM 将两种用途分开：多数步骤用较小的低精度副本计算输出，flush 时从高精度检查点恢复、更新，再分别生成新的高低精度副本。低精度读取带来的误差不再直接回写进长期递推状态。[§6](https://arxiv.org/html/2610.13778v1)",
+              "代价是同时保存两份检查点，以及 flush 时的额外工作。这不是让所有误差消失：高精度运算仍会舍入，低精度副本算出的输出仍可能不同，进而影响生成结果。它保护的是循环状态更新这条路径，不能理解成“低精度不会影响后续文字”。",
+              "GDN 还有一个关键例外：普通步骤缓存的 u 已经依赖低精度状态，直接把这些 u 合进高精度检查点，误差仍会进去。因此两精度版本还保存原始的 α、β、v、k；β 控制写入强度。flush 时必须从高精度状态重新计算 u，再更新检查点。只多留一份高精度矩阵，却复用低精度算出的修正，并不能实现论文所说的隔离。[附录 B.4、Algorithm 6](https://arxiv.org/html/2610.13778v1)"
+            ]
+          },
+          {
+            "heading": "普通解码的 1.20–1.47 倍，具体在哪些设置下成立",
+            "paragraphs": [
+              "实验覆盖两组混合模型：Mamba-2 路径用 Nemotron-3-Nano-4B、Nemotron-3-Super-120B-A12B；GDN 路径用 Qwen3.5-4B、Qwen3.5-122B-A10B。4B 模型各用一张 80 GB H100，大模型各用一张功率上限 1100 W 的 B300，不做跨 GPU 的张量并行。小模型权重为 BF16，大模型为 NVFP4；这些性能实验的循环状态统一为 FP32。[§7.1、附录 E.1](https://arxiv.org/html/2610.13778v1)",
+              "两边在同一 vLLM 构建中运行，均启用 CUDA graphs 以减少 GPU 操作提交开销；常规基线还搜索了更快的算子启动配置。在批量 B=256、窗口 L=16 时，四个模型整个解码步骤分别加速 1.47、1.42、1.27、1.20 倍。这里计时的是整模型的一步解码，不是从收到请求到返回完整答案的时间。[Table 6](https://arxiv.org/html/2610.13778v1)",
+              "反例同样重要：B=1 时，整步速度只有基线的 0.96–0.99 倍，略慢。单请求下，状态搬运未必占满显存带宽，减少流量的收益不足以抵消额外工作；上下文很长、注意力占比变大时，总收益也会受限。论文还标注部分 B=512 数字受 B300 功率限制放大，因此这里不拿它们作主要结论。"
+            ]
+          },
+          {
+            "heading": "投机吞吐约 1.8 倍，不能直接读成线上请求快 1.8 倍",
+            "paragraphs": [
+              "投机实验用上面两个大模型，各在一张 B300 上运行，由模型自己的多 token 预测头 MTP 起草。请求来自 GSM8K 数学应用题数据集，固定批量，每条强制生成 256 个 token，忽略提前结束信号。预热后计时包含处理输入的 prefill 阶段，吞吐是生成 token 总数除以实际经过的时间。[附录 E.3](https://arxiv.org/html/2610.13778v1)",
+              "在 B=256、L=16、每轮验证 T=4 个 token 时，相对常规 vLLM 投机解码，Nemotron 与 Qwen 的吞吐分别是 1.77、1.79 倍。平均每轮接受长度分别从 3.43 到 3.44、从 3.56 到 3.57，几乎相同。因此收益主要来自状态管理和验证实现，而不是更容易接受草稿。[Tables 8–10](https://arxiv.org/html/2610.13778v1)",
+              "这证明了固定批量负载下的系统收益，但没有测量真实请求随机到达、长短混合、工具等待时的在线服务。首 token 等待时间、最慢一批请求的尾延迟、服务时延承诺，都不能由这两个吞吐倍数直接推出。它们与上一节的单步延迟也不是同一个计时指标。"
+            ]
+          },
+          {
+            "heading": "低精度证据说明了什么，还没有说明什么",
+            "paragraphs": [
+              "作者另外测试状态低精度的质量影响：固定输入同一段文本，比较模型预测下一个 token 的概率分布；再在知识、科学推理和数学任务上实际生成答案。固定文本实验取 PG-19 的四本书，给定 512 个 token 后，继续喂入真实后文；每配置一个随机种子，统计到指定长度时最后 256 个位置的均值。前一种比较用 KL 散度，数值越小，表示与 FP32 参考分布越接近，但不等于答题准确率直接提高了相同比例。[§7.4、附录 E.4](https://arxiv.org/html/2610.13778v1)",
+              "例如 Qwen3.5-4B 在固定输入 PG-19 文本、逐步处理到 128K token 的比较中（L=16），把 NVFP4 同时用于读取与递推，KL 为 0.136；保留 FP32 递推、只用 NVFP4 读取后降到 0.0038。两条路径分离确实能减少传播误差，但并非所有任务都无损：Table 2 中，Nano-4B 的一种 NVFP4 读取、FP16 递推并采用随机舍入的设置，在 GPQA-Diamond 科学问答上仍下降 6.7 个百分点。",
+              "这些质量实验使用普通解码和模拟量化，即在实验中模拟低位数表示造成的舍入；低精度读取测速另用专门算子。不能把它们与前面的 FP32 状态整模型结果拼接，宣称“低精度质量已全面无损，同时整模型必然获得某个额外倍数”。[附录 E.1、E.4.1–E.4.2、Table 2](https://arxiv.org/html/2610.13778v1)"
+            ]
+          },
+          {
+            "heading": "它解决了哪段服务问题，接下来怎样精读",
+            "paragraphs": [
+              "ReplaySSM 管理的是一条正在运行的序列近期如何更新与回退。它没有自动解决两个请求共享任意前缀、旧检查点该淘汰哪份，或者工具调用暂停时该把状态放到哪里。缓冲区能回退到近期可表示的位置，不等于能从当前矩阵恢复任意更早的历史状态。",
+              "**一个工程推论是**：如果要暂停再恢复采用这类表示的请求，只保存旧检查点还不够，还要正确保留尚未合并的输入记录与提交位置；混合模型的注意力缓存也仍要管理。这可以启发 agent 运行时的状态接口设计，但论文没有测量工具等待或暂停迁移收益，不能把推论当作实测结论。",
+              "精读顺序建议是 Figure 1 → §3–4 与 Algorithm 1 → §5、附录 D.1 → Tables 6、8–10；第二遍再看 §6、附录 B.4 与 Table 2。先回答“哪份数据必须留下、什么时候才能提交”，再读公式会更容易。本文只陈述论文 v1 的实现和结果，不据此推定当前所有服务框架已默认部署该方法。[固定版本全文](https://arxiv.org/html/2610.13778v1)"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Represent recurrent state as a full checkpoint plus a short buffer of recent inputs. Most generation steps write small records and update the full checkpoint only periodically. The same representation supports speculative rollback by moving a pointer and separates output-read precision from the precision used to carry state forward.",
+        "relevance": "Hybrid models can reduce attention-cache costs while moving the bottleneck to recurrent-state traffic. This paper explains why state whose size does not grow with text can still be expensive, and how changing its representation affects throughput, speculative verification, and numerical error together.",
+        "reading": "Main reading; allow 35–50 minutes. Follow the example at token positions 100–108 to understand checkpointing and rollback, then study the two computation paths. Use the experiments to decide which workloads benefit. The low-precision section can wait for a second pass.",
+        "prerequisites": "Knowing that GPUs have device memory and that models generate tokens sequentially is enough. The note introduces state-space models, Gated DeltaNet, speculative decoding, and checkpoints; no prior Mamba paper or recurrence derivation is required.",
+        "caveat": "The checkpoint is retained and still read at every step; the main saving is full-state writes. Large-batch gains do not generalize to a single request, and floating-point implementations are not bitwise identical. Low-precision results use emulated quantization and must not be combined with FP32-state throughput into a single measured gain.",
+        "sections": [
+          {
+            "heading": "What must the model do when one new token arrives?",
+            "paragraphs": [
+              "Suppose the model has processed 100 tokens and now processes token 101. An attention layer retains keys and values for earlier positions in a KV cache that the current step can query. Another type of layer repeatedly incorporates history into a fixed-size numerical matrix: read the old matrix, add the current information, and calculate an output from the updated matrix. This matrix is its recurrent state. **The token positions and small window below are teaching examples, not samples from the paper's benchmark.**",
+              "SSM stands for state-space model; Mamba-2 is one SSM studied here. The paper also studies Gated DeltaNet, or GDN, a gated linear-attention model that maintains recurrent state but uses a different update rule. Hybrid models contain recurrent layers alongside ordinary attention layers, so the serving system has to manage both forms of history.",
+              "ReplaySSM comes from Princeton and NVIDIA. Paper v1 was submitted on October 9, 2026, and its references date the earlier technical blog to June 2026. This note studies the paper's complete mechanisms and evaluation rather than presenting the idea as something that first appeared in October. [Paper v1](https://arxiv.org/html/2610.13778v1)"
+            ]
+          },
+          {
+            "heading": "Why can fixed-size state still be expensive?",
+            "paragraphs": [
+              "Fixed size means the matrix at step 101 has the same dimensions as at step 10001; it does not mean the matrix is small. Each step reads the state from HBM, the GPU's high-bandwidth device memory, and writes it back after updating it. The update may involve relatively little arithmetic. Computation can finish quickly while data movement remains the limiting cost.",
+              "The paper gives a concrete example: Nemotron-3-Super-120B-A12B has 40 recurrent layers and 8 attention layers, with 4 MiB of FP32 state per sequence per recurrent layer. FP32 stores each number in a 32-bit floating-point format. At a batch of 256 sequences, all these states are repeatedly read and written. In this configuration on one B300, recurrent-state updates remain the largest latency component up to approximately 100K context tokens. [§3.1, Figure 1, Appendix C.2](https://arxiv.org/html/2610.13778v1)",
+              "The immediate question is therefore whether processing every token really requires writing the entire updated matrix back to device memory. ReplaySSM changes this storage policy. It does not change the model's weights or remove the attention layers from the hybrid model."
+            ]
+          },
+          {
+            "heading": "Keep the state at token 100 and record recent changes separately",
+            "paragraphs": [
+              "Save the full state after token 100 as S100, and temporarily use a window of four steps. When processing token 101, retain S100 and save the small amount of data needed for this update instead of immediately overwriting the checkpoint. At token 102, S100 still exists, now alongside records for steps 101 and 102. Applying these updates to S100 reconstructs the current state whenever it is needed.",
+              "These cached inputs are neither integer token IDs nor raw text. For Mamba-2, each record contains a decay coefficient α and vectors v and k for that layer and step: scale the old state by α, then add the matrix formed from v and k. These are values computed by the neural network, and they take much less space than the full state. [§3.4–4](https://arxiv.org/html/2610.13778v1)",
+              "In standard decoding, step 104 incorporates all four records into S100, stores the new checkpoint S104, and clears the records. This operation is called a flush. Earlier history remains represented by the checkpoint throughout; the method does not discard everything before token 100 and retain only the last four tokens."
+            ]
+          },
+          {
+            "heading": "The saving is in writes, not the elimination of state reads",
+            "paragraphs": [
+              "On a non-flush step, standard decoding still reads the checkpoint and reconstructs the working state in on-chip storage to calculate the output. It simply does not write that full working state back to HBM. Constructing a matrix during computation and storing it persistently in device memory are different operations: the standard algorithm still does the former and mainly avoids the latter. [Algorithm 1, §4](https://arxiv.org/html/2610.13778v1)",
+              "Over a window of L steps, conventional decoding performs L full-state reads and L full-state writes. ReplaySSM still performs L reads but only one full-state write, plus reads and writes of the small records. This is why the paper describes roughly halving the dominant state traffic, rather than halving all device-memory traffic of the entire model. Reconstructing the state also takes computation; eliminating writes is not free.",
+              "A larger window amortizes full-state writes over more steps but requires reading and applying more buffered records at each step. At batch size 256, the authors compare L=8, 16, and 32; all four models are fastest at 16, which becomes the main experimental setting. This is a choice supported by those configurations, not a universal constant for every GPU and batch size. [Appendix E.2.2, Figure 9](https://arxiv.org/html/2610.13778v1)"
+            ]
+          },
+          {
+            "heading": "How do you roll back after trying four tokens and accepting two?",
+            "paragraphs": [
+              "Speculative decoding uses a cheaper drafting process to propose several tokens, then checks them together with the target model. Continue the example from S104: try positions 105–108, but accept only the first two. If the recurrent state has already been overwritten through step 108, there is generally no cheap inverse update back to step 106. The conventional vLLM baseline in the paper stores a full state snapshot for each candidate position and selects the appropriate snapshot after rejection.",
+              "ReplaySSM first writes the four input records into its buffer. Once verification finishes, it advances the committed-history pointer by only two records. The final two records are outside the committed history and can be overwritten on the next append. Rollback therefore needs neither a collection of full-state snapshots nor a fresh full recurrence solely to recover the accepted position. [§5.1, Algorithm 2](https://arxiv.org/html/2610.13778v1)",
+              "One condition is easy to miss. The buffer has capacity L+T: up to L committed records plus room for T candidates. If h records are already committed and h+T>L, the flush incorporates only those h old records into the checkpoint. It must not incorporate this round's T candidates before acceptance is decided. With our L=4, T=4 example, the next round incorporates accepted positions 105 and 106 into the checkpoint while retaining its new candidates separately, then advances the pointer after the new acceptance decision. [Appendix D.1](https://arxiv.org/html/2610.13778v1)"
+            ]
+          },
+          {
+            "heading": "If verification needs outputs, why construct every full state?",
+            "paragraphs": [
+              "A second optimization follows from the same separation: a candidate position's full state will not subsequently be stored or read, so verification needs only its output. For one Mamba-2 update term, forming a matrix from v and k and then multiplying by query vector q gives (vkᵀ)q. Alternatively, compute the scalar kᵀq first and multiply v by it. The result is the same without expanding the full matrix for that term. The paper calls this output-only evaluation. [§5.2](https://arxiv.org/html/2610.13778v1)",
+              "The actual computation also includes the checkpoint contribution, step-dependent decays, and a restriction preventing later candidates from influencing earlier outputs. Verification can then organize the outputs of several positions together without constructing each full intermediate state. This complements pointer-based rollback: output-only evaluation reduces verification work, while the buffer representation reduces state storage and recovery.",
+              "GDN cannot simply reuse Mamba-2's records. It first queries what the old state already contains for k, then computes a correction vector u describing what still needs to be written. Consequently, u depends on the prior state, and corrections for later candidates depend on earlier candidates. The authors organize these dependencies into a T×T triangular solve before output-only verification. Algebraic equivalence still permits floating-point differences; the implementation also caches GDN corrections in FP16, so bitwise identity must not be claimed. [Appendix B.1–B.3](https://arxiv.org/html/2610.13778v1)"
+            ]
+          },
+          {
+            "heading": "Why use low precision for reads but retain high precision for updates?",
+            "paragraphs": [
+              "If the state is compressed to lower precision every step, rounded values become the starting point of the next update, allowing error to propagate through the recurrence. ReplaySSM separates the two uses: most steps calculate outputs from a smaller low-precision copy; a flush reconstructs and updates from the high-precision checkpoint, then independently creates fresh high- and low-precision copies. Error from low-precision reads is no longer directly written back into the long-lived recurrent state. [§6](https://arxiv.org/html/2610.13778v1)",
+              "This costs storage for two checkpoints and additional work during a flush. It does not remove all error: high-precision arithmetic still rounds, and outputs calculated from the low-precision copy can still differ and affect generated text. The protected path is the recurrent-state update, not every possible influence of low precision on future generation.",
+              "GDN has a crucial exception. Corrections u cached on ordinary steps already depend on the low-precision state; folding them directly into the high-precision checkpoint would reintroduce the error. The two-precision version therefore also retains the original α, β, v, and k inputs, where β controls write strength. At a flush it must recompute u from the high-precision state before updating the checkpoint. Merely keeping an additional high-precision matrix while reusing low-precision corrections does not achieve the claimed separation. [Appendix B.4, Algorithm 6](https://arxiv.org/html/2610.13778v1)"
+            ]
+          },
+          {
+            "heading": "Under what conditions does standard decoding improve by 1.20–1.47×?",
+            "paragraphs": [
+              "The evaluation covers two hybrid-model families. The Mamba-2 path uses Nemotron-3-Nano-4B and Nemotron-3-Super-120B-A12B; the GDN path uses Qwen3.5-4B and Qwen3.5-122B-A10B. Each 4B model runs on one 80 GB H100; each larger model runs on one B300 with a 1100 W power cap. There is no tensor parallelism across GPUs. The smaller models use BF16 weights and the larger ones NVFP4 weights, while all these performance experiments use FP32 recurrent state. [§7.1, Appendix E.1](https://arxiv.org/html/2610.13778v1)",
+              "Both methods run in the same vLLM build with CUDA graphs enabled to reduce GPU-operation submission overhead. The conventional baseline also uses the fastest kernel launch configuration found in a sweep. At batch B=256 and window L=16, whole-model decode-step speedups are respectively 1.47, 1.42, 1.27, and 1.20×. These measurements time one full-model decoding step, not the complete interval from receiving a request to returning its answer. [Table 6](https://arxiv.org/html/2610.13778v1)",
+              "The counterexample matters: at B=1, the whole step reaches only 0.96–0.99× baseline speed and is slightly slower. A single request need not saturate memory bandwidth with state traffic, so the traffic reduction cannot offset the extra work. Gains are also limited as attention takes more of the step at long context lengths. The paper flags some B=512 results as inflated by the B300 power cap; they are not the headline evidence used here."
+            ]
+          },
+          {
+            "heading": "About 1.8× speculative throughput does not mean every online request is 1.8× faster",
+            "paragraphs": [
+              "Speculative experiments use the two larger models, each on one B300, drafting with its own multi-token prediction, or MTP, head. Requests come from the GSM8K math-word-problem dataset and run at a fixed batch size. Every request produces exactly 256 tokens, ignoring early termination signals. After warmup, timing includes prefill, the processing of the input; throughput is the total generated-token count divided by elapsed wall time. [Appendix E.3](https://arxiv.org/html/2610.13778v1)",
+              "With B=256, L=16, and T=4 tokens verified per step, throughput is 1.77× conventional vLLM speculative decoding for Nemotron and 1.79× for Qwen. Mean committed tokens per step change only from 3.43 to 3.44 and from 3.56 to 3.57, respectively. The benefit therefore comes principally from state management and verification rather than a substantially different acceptance rate. [Tables 8–10](https://arxiv.org/html/2610.13778v1)",
+              "This establishes a system benefit for the fixed-batch workload, but it does not measure an online service with stochastic arrivals, mixed request lengths, and tool waits. Time to first token, tail latency for the slowest requests, and adherence to latency targets cannot be inferred directly from these throughput ratios. The ratios also use a different timing metric from the per-step latency in the preceding section."
+            ]
+          },
+          {
+            "heading": "What does the low-precision evidence establish?",
+            "paragraphs": [
+              "The authors separately evaluate the quality effects of low-precision state. They feed the same fixed text to each configuration and compare next-token probability distributions, then also generate answers on knowledge, scientific-reasoning, and mathematics tasks. The fixed-text experiment uses four PG-19 books, with a 512-token prompt followed by teacher-forced continuations. Each configuration uses one seed and averages the final 256 positions at the specified length. The first comparison uses KL divergence: a lower value means closer agreement with the FP32 reference distribution, not an equivalent proportional improvement in answer accuracy. [§7.4, Appendix E.4](https://arxiv.org/html/2610.13778v1)",
+              "For example, Qwen3.5-4B after processing 128K teacher-forced PG-19 tokens at L=16 has KL 0.136 when NVFP4 serves both reads and recurrence. Keeping FP32 recurrence and using NVFP4 only for reads reduces it to 0.0038. Separating the paths does reduce propagated error, but it is not lossless on every task: in Table 2, one NVFP4-read/FP16-recurrence configuration with stochastic rounding still loses 6.7 percentage points on GPQA-Diamond scientific question answering for Nano-4B.",
+              "These quality experiments use standard decoding and emulated quantization, which simulates the rounding caused by low-bit representations. Low-precision read latency is measured using separate dedicated kernels. These results must not be spliced together with the earlier FP32-state whole-model measurements to claim universally lossless low precision plus a particular additional end-to-end speedup. [Appendix E.1, E.4.1–E.4.2, Table 2](https://arxiv.org/html/2610.13778v1)"
+            ]
+          },
+          {
+            "heading": "Which serving problem does this solve, and what should you read closely?",
+            "paragraphs": [
+              "ReplaySSM manages recent updates and rollback within an active sequence. It does not automatically solve arbitrary prefix sharing between requests, decide which old checkpoint to evict, or choose where to place state while a tool call is pending. Rolling back to a recent position represented by the buffer is not the ability to reconstruct any earlier historical state from the current matrix.",
+              "**An engineering inference is** that pausing and restoring a request using this representation requires more than its old checkpoint: unflushed input records and the committed position must also be preserved correctly. A hybrid model's attention cache still needs management. This can inform an agent runtime's state interface, but the paper does not measure benefits for tool waits or pause-and-migrate operations; the inference is not an experimental result.",
+              "For close reading, follow Figure 1 → §3–4 and Algorithm 1 → §5 and Appendix D.1 → Tables 6 and 8–10. On a second pass, read §6, Appendix B.4, and Table 2. Establish which data must survive and when it can be committed before working through the formulas. This note reports the implementation and results in paper v1; it does not infer that all current serving frameworks deploy the method by default. [Fixed-version full text](https://arxiv.org/html/2610.13778v1)"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "gated-delta-networks-2025",
+      "title": "Gated Delta Networks: Improving Mamba2 with Delta Rule",
+      "year": 2025,
+      "venue": "ICLR 2025 · first preprint December 2024 · MIT CSAIL / NVIDIA",
+      "url": "https://arxiv.org/abs/2412.06464",
+      "role": "optional",
+      "zh": {
+        "contribution": "把两种记忆操作结合起来：先按当前输入衰减旧记忆，再有针对性地修正当前内容对应的记忆。它让固定大小的递归状态更好地利用有限空间，并给出适合 GPU 并行训练的计算方法。",
+        "relevance": "今天选它，是为理解 ReplaySSM 和 SuffixReplay 的状态恢复问题提供机制基础。读完可以分清：缓存一段文本的 KV，与缓存读完这段文本后的状态，为什么不能采用完全相同的复用方式。",
+        "reading": "值得围绕状态和混合结构精读：先 Fig. 1 与 §3.4，再 §3.1 的 Eq. 10，最后 Table 4 和 Fig. 3。§3.3 的矩阵推导可留到需要理解 kernel 时读，建议 30–40 分钟。",
+        "prerequisites": "用一个订单地址被更新的例子解释 key、value、递归状态和遗忘门；只需知道模型逐个处理 token，以及矩阵可以把一个向量映射成另一个向量。",
+        "caveat": "它是架构论文，不能据训练吞吐推出线上服务加速。固定大小状态会丢失信息，混合层也有自己的缓存；小规模预训练实验不代表所有现代 agent 模型。初稿发表于 2024 年 12 月，正式发表于 ICLR 2025。",
+        "sections": [
+          {
+            "heading": "同一份订单改了地址，模型应该记住什么",
+            "paragraphs": [
+              "**教学例子，不是论文实验题：**对话先说“订单 A 送到旧地址”，后来改成新地址。再问订单 A 送哪里，模型既要找到订单，又要使用后来的信息。普通注意力可以保留过去各个 token 的 key 和 value，回答时再次查阅；递归模型则不断更新一份固定大小的状态，之后主要从这份状态读取信息。",
+              "可以把状态想成不断改写的工作笔记，但它实际是一组数值，不是一张可逐行查找的订单表。模型权重决定怎样读、写这份笔记；请求状态记录本次对话到目前为止的内容。推理时更新状态，不等于把所有用户的对话训练进模型权重。",
+              "这篇由 Songlin Yang、Jan Kautz、Ali Hatamizadeh 完成的论文，初稿发布于 2024 年 12 月 9 日，正式发表于 ICLR 2025。今天读它，是为了看懂本期新系统论文所处理的状态。[初稿与版本记录](https://arxiv.org/abs/2412.06464)；[正式会议记录](https://proceedings.iclr.cc/paper_files/paper/2025/hash/4904fad153f6434a7bcf04465d4be2cc-Abstract-Conference.html)"
+            ]
+          },
+          {
+            "heading": "先读出旧答案，再按差额修正",
+            "paragraphs": [
+              "继续用订单说明：key 可以理解成“拿什么去查”，value 是“希望查到什么”。真实模型里的 key 和 value 都是由当前输入计算出的向量，并不直接等于订单号和地址字符串。状态矩阵 S 把 key 映射到一个预测的 value。不同内容可能互相干扰，因此不能当成无损数据库。真正使用记忆时，模型另算查询向量 q，用 Sq 读出当前需要的信息。",
+              "delta rule 的直觉是先用当前 key 读取旧状态，看看它会给出什么，再比较这个预测与新 value 的差别，沿这个 key 的方向进行修正。“新地址减去旧预测”描述的是向量差额，不是对文字做减法。这比不管原来记了什么、直接累加新信息，多了一步检查。",
+              "Gated DeltaNet 在修正之前还会衰减旧状态。把衰减后的状态写成 A，当前 key、value 写成 k、v，一步操作可整理成：`A = αS`，`r = v − Ak`，`S_new = A + βrkᵀ`。α 控制旧内容保留多少，β 控制本次修正多大；两者由输入决定。这个写法是对原文 Eq. 10 的等价展开，方便把公式对应到动作。"
+            ]
+          },
+          {
+            "heading": "为什么既要记住，也要允许忘掉",
+            "paragraphs": [
+              "如果一直把内容写入同样大小的状态，新的信息可能与旧信息挤在一起，越来越难准确读取。反过来，如果每读一句就大量衰减旧状态，订单地址又可能在一长段闲聊之后消失。增加遗忘机制解决的是前一个问题，也会带来后一个风险。",
+              "原文 §3.2 把这两种情况拆开检查：在重复而简单的背景里找一条信息，与在包含许多不同内容的文章里找数字或标识符，并不是同一种记忆任务。实验也没有显示加入遗忘后每种情况都更好。因此，不能把“会忘记”直接等同于“会准确判断什么不重要”。",
+              "这里的门不是一张人工规则表，不知道哪个订单必须永远保留。它是训练学出来的数值计算。对实际系统来说，一个请求的状态大小固定，只说明存储量不随该请求长度持续增加，不保证里面的信息可以无限保存，也不保证同时服务更多请求不增加内存。"
+            ]
+          },
+          {
+            "heading": "依赖前一步，为什么还能在 GPU 上高效计算",
+            "paragraphs": [
+              "按刚才的操作逐个计算 token，很容易让人担心 GPU 只能等待前一步。论文把连续一段更新整理成矩阵运算：段与段之间传递状态，段内部尽可能并行计算。这叫分块计算。它改变执行顺序和组织方式，并不意味着模型看见了本不该看到的未来内容。",
+              "用教学示意来说，读完前一段得到 S，下一段的计算既要利用 S，也要处理这一段内部 token 的相互影响；不能只把每段独立算完再拼起来。原文 §3.3 的作用，就是把这些依赖改写成适合 GPU 矩阵乘法的形式，而不是简单删除依赖。",
+              "这也帮助理解两个不同场景：处理已经到齐的一段输入时，有整段内容可以组织计算；逐字生成回答时，下一个 token 尚未确定，只能继续更新当前状态。训练还需要计算梯度。三者的执行成本不同，看到训练图上的吞吐提升，不能直接抄成在线生成的倍率。"
+            ]
+          },
+          {
+            "heading": "为什么还要加回注意力层",
+            "paragraphs": [
+              "假如用户刚刚连续改了几次订单地址，直接查阅最近几句话仍很有用。论文的 H1 交替使用 Gated DeltaNet 和滑动窗口注意力；H2 再加入 Mamba2。主实验的窗口为 2K token：窗口层保留最近一段内容用于直接查阅，递归层则把更早的输入影响带向后面。[§3.4、Fig. 1](https://proceedings.iclr.cc/paper_files/paper/2025/file/4904fad153f6434a7bcf04465d4be2cc-Paper-Conference.pdf)",
+              "“混合”因此不是一种统一的缓存形状。对这里的结构，要同时考虑递归状态和窗口里的 KV；若另一种架构混入全局注意力，后者的 KV 还会随序列继续增长。不能仅凭模型带有线性注意力或状态空间模型（SSM），就断言它整条请求的缓存都是常数。",
+              "原模型模块还含有短卷积，计算会用到最近几个位置。因此，在实现恢复请求的功能时，不能只复制公式里的 S 就默认完整：还要核对该实现是否需要保存卷积历史、注意力缓存及位置。这是从计算依赖推导出的工程检查，不是本文已经完成的服务系统方案。"
+            ]
+          },
+          {
+            "heading": "实验支持什么，又没有支持什么",
+            "paragraphs": [
+              "主要架构对照使用约 1.3B 参数、100B FineWeb-Edu 训练 token，训练长度 4K。Table 4 在输入截到 2K 的六项检索任务上报告平均分：纯 Gated DeltaNet 为 30.6，Transformer++ 为 37.0，混合 H2 为 40.1。它说明在这套设置中，递归更新更好仍不足以完全替代直接查阅，混合结构能补足部分差距。",
+              "这些是预训练模型的任务分数，不是现代指令模型的通用能力排行，也不是端到端 agent 成功率。平均分还会掩盖各任务差异，不能写成 H2 在每道题或每个数据集都更好。比较时应一起保留模型规模、训练预算和输入长度。",
+              "Fig. 3 测的是单张 H100 上的训练吞吐。Gated DeltaNet 与 DeltaNet 接近，Mamba2 更快；高效的短窗口注意力也使混合模型有机会快于纯递归模型。这篇没有提供今天两篇主线系统所需的前缀命中率、状态恢复时间或多请求服务结果。[§4、Table 4、Fig. 3](https://proceedings.iclr.cc/paper_files/paper/2025/file/4904fad153f6434a7bcf04465d4be2cc-Paper-Conference.pdf)"
+            ]
+          },
+          {
+            "heading": "带着一个恢复现场的问题，再读今天的系统论文",
+            "paragraphs": [
+              "**以下是用于理解服务系统的分析：**两个请求共享同一段开头，若已保存读完这个开头时的完整状态，就有机会从这里分别继续。如果只保存了第 1000 个 token 后的状态，另一个请求却在第 800 个 token 开始不同，就不能像截掉一段 KV 那样，把后 200 个 token 从当前状态里直接裁掉。",
+              "一种可行思路是恢复更早保存的状态，再重新处理到分岔点；这段重新处理就是重放。另一个关键是隔离分支：共同前缀可以复用，但两个请求开始更新之后，不能继续修改同一份可变状态。具体存哪些位置、重算多少、怎样批量执行，才是今天系统论文要解决的问题。",
+              "阅读顺序可以是 Fig. 1 看混合层，Eq. 10 看状态怎样变，再拿“第 800 个 token 分岔”的例子读 SuffixReplay；读 ReplaySSM 时，则关注“每生成一个 token，要读写多少状态”。需要追到 kernel 时再读 §3.3；最后回看 Table 4 与 Fig. 3，分别判断模型质量和计算效率，不把两种证据混为一谈。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Combines two memory operations: decay the previous state according to the current input, then correct the association addressed by the current content. This makes better use of a fixed-size recurrent memory and comes with a GPU-friendly parallel training algorithm.",
+        "relevance": "This is the mechanistic background for today's ReplaySSM and SuffixReplay readings. It explains why caching a prefix's token-wise KV entries and caching the state after processing that prefix require different reuse strategies.",
+        "reading": "Worth a focused close read: start with Fig. 1 and §3.4, then Eq. 10 in §3.1, followed by Table 4 and Fig. 3. Leave §3.3's matrix derivation until you need to understand the kernel. Allow 30–40 minutes.",
+        "prerequisites": "An order whose delivery address changes introduces keys, values, recurrent state, and forget gates. You only need the idea of processing tokens sequentially and using a matrix to map one vector into another.",
+        "caveat": "This is an architecture paper, not evidence of an online serving speedup. Fixed-size state loses information, hybrid layers retain their own caches, and small-scale pretraining experiments do not establish results for every modern agent model. The first preprint appeared in December 2024; the conference publication is ICLR 2025.",
+        "sections": [
+          {
+            "heading": "An order changes its address: what should the model remember?",
+            "paragraphs": [
+              "**Teaching example, not a paper benchmark:** a conversation first assigns an old delivery address to order A, then replaces it with a new address. Asked where order A should go, the model must identify the order and use the later information. Ordinary attention can retain keys and values for previous tokens and consult them again. A recurrent model instead keeps updating a fixed-size state and subsequently reads primarily from that state.",
+              "Think of the state as working notes that are continually rewritten, although it is actually a collection of numbers rather than an order table with individually accessible rows. Model weights determine how those notes are read and written; request state represents this conversation so far. Updating state during inference does not mean training every user's conversation into the model weights.",
+              "The paper by Songlin Yang, Jan Kautz, and Ali Hatamizadeh first appeared on December 9, 2024, and was published at ICLR 2025. Its purpose in today's reading is to explain the state manipulated by the new systems papers. [Preprint and version history](https://arxiv.org/abs/2412.06464); [official conference record](https://proceedings.iclr.cc/paper_files/paper/2025/hash/4904fad153f6434a7bcf04465d4be2cc-Abstract-Conference.html)"
+            ]
+          },
+          {
+            "heading": "Read the old prediction, then correct the difference",
+            "paragraphs": [
+              "In the order example, a key is what you look something up with, and a value is what you want to retrieve. Actual keys and values are vectors computed from the current input, not literal order identifiers and address strings. A state matrix S maps a key to a predicted value. Associations can interfere with one another, so this is not a lossless database. To use the memory, the model computes a separate query vector q and reads the information it needs through Sq.",
+              "The delta rule first reads the existing state using the current key, compares the prediction with the new value, and corrects the state along that key's direction. 'New address minus old prediction' refers to a vector difference, not subtraction on text. Unlike unconditional accumulation, the update checks what the state already predicts.",
+              "Gated DeltaNet also decays the previous state before making this correction. Calling the decayed state A and the current key and value k and v, one update can be written as `A = αS`, `r = v − Ak`, and `S_new = A + βrkᵀ`. The input-dependent α controls retention and β controls the correction's magnitude. This is an equivalent expansion of Eq. 10, arranged to connect the formula to concrete actions."
+            ]
+          },
+          {
+            "heading": "Why remembering requires a way to forget",
+            "paragraphs": [
+              "Writing indefinitely into the same-size state can make newer and older information interfere, reducing retrieval accuracy. But aggressively decaying that state at every sentence might erase the delivery address after a long stretch of unrelated conversation. Forgetting addresses the first problem while creating a risk of the second.",
+              "Section 3.2 separates these situations: retrieving one item from repetitive, simple surroundings differs from finding numbers or identifiers in an essay containing many distinct pieces of information. Its experiments do not show that adding forgetting improves every situation. Having a forgetting mechanism does not establish that the model reliably knows which information is unimportant.",
+              "A gate is not a human-written rule that knows which order must be remembered forever. It is a learned numerical computation. For a serving system, fixed-size state means that this component's storage does not continually increase with one request's length. It guarantees neither unlimited retention nor constant memory as the number of concurrent requests grows."
+            ]
+          },
+          {
+            "heading": "How a recurrence can still use the GPU efficiently",
+            "paragraphs": [
+              "Computing the update token by token seems to leave the GPU waiting for every preceding step. The paper reorganizes a sequence of updates into matrix operations: chunks pass state to subsequent chunks, while computation within a chunk is parallelized where possible. Chunkwise computation changes execution organization; it does not reveal future content that the model is not allowed to use.",
+              "As a teaching picture, the previous chunk leaves a state S. The next chunk must account both for S and for interactions among its own tokens; computing every chunk independently and concatenating the results would be incorrect. Section 3.3 rewrites these dependencies into GPU-friendly matrix multiplications rather than simply removing them.",
+              "This also distinguishes processing an input that has already arrived from generating a response one token at a time. In the first case, an entire segment is available for organized computation; in the second, the next token is still unknown and generation continues by updating state. Training additionally computes gradients. Their costs differ, so training throughput cannot be copied into an online generation speedup claim."
+            ]
+          },
+          {
+            "heading": "Why bring attention layers back?",
+            "paragraphs": [
+              "If a user changes an address several times in quick succession, directly consulting the recent sentences remains useful. H1 alternates Gated DeltaNet and sliding-window attention; H2 also includes Mamba2. The main experiment uses a 2K-token window: windowed layers consult recent content directly, while recurrent layers carry forward the influence of earlier inputs. [§3.4, Fig. 1](https://proceedings.iclr.cc/paper_files/paper/2025/file/4904fad153f6434a7bcf04465d4be2cc-Paper-Conference.pdf)",
+              "'Hybrid' therefore does not specify one universal cache layout. This design requires both recurrent state and windowed KV. A different architecture that mixes in global attention will retain KV that continues growing with the sequence. The presence of linear attention or an SSM does not make every component of a request's cache constant-sized.",
+              "The original block also contains short convolutions that depend on recent positions. An implementation restoring a request therefore cannot assume that copying the matrix S is sufficient: it must check for convolution history, attention caches, and position information. This is an engineering deduction from computational dependencies, not a serving design already demonstrated by this paper."
+            ]
+          },
+          {
+            "heading": "What the experiments establish—and their limits",
+            "paragraphs": [
+              "The main architecture comparison uses approximately 1.3B parameters, 100B FineWeb-Edu training tokens, and a 4K training length. Table 4 reports mean scores over six retrieval tasks with inputs truncated to 2K: 30.6 for pure Gated DeltaNet, 37.0 for Transformer++, and 40.1 for hybrid H2. Under this setup, improving recurrent updates still does not fully replace direct retrieval, while the hybrid addresses some of that gap.",
+              "These are task scores for pretrained models, not a general capability ranking for modern instruction models or end-to-end agent success rates. A mean also hides differences between tasks; it does not show H2 winning on every question or dataset. Model size, training budget, and input length belong alongside the comparison.",
+              "Figure 3 measures training throughput on one H100. Gated DeltaNet is close to DeltaNet, while Mamba2 is faster; efficient short-window attention also allows hybrids to outperform purely recurrent models in throughput. The paper does not supply prefix-hit rates, state-restoration times, or multi-request serving results for today's systems questions. [§4, Table 4, Fig. 3](https://proceedings.iclr.cc/paper_files/paper/2025/file/4904fad153f6434a7bcf04465d4be2cc-Paper-Conference.pdf)"
+            ]
+          },
+          {
+            "heading": "Return to today's systems papers with a restoration problem",
+            "paragraphs": [
+              "**The following is our serving analysis:** if two requests share an identical opening and the complete state at that opening's end has been saved, they may continue separately from it. But suppose only the state after token 1,000 is available and another request diverges at token 800. The last 200 tokens cannot simply be sliced out of the current state as one might truncate token-wise KV.",
+              "One approach is to restore an earlier saved state and process tokens again up to the branching point: that repeated computation is replay. Branch isolation matters too. A shared prefix can be reused, but diverging requests must not keep mutating the same state. Which positions to save, how much to recompute, and how to batch that computation are the systems questions in today's readings.",
+              "Start with Fig. 1 to identify the hybrid layers and Eq. 10 to understand state updates, then take the token-800 branching example into SuffixReplay. For ReplaySSM, instead ask how much state must be read and written per generated token. Read §3.3 when you need kernel details. Finally revisit Table 4 and Fig. 3 to assess model quality and computational efficiency separately."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "suffixreplay-2026",
+      "title": "Just Let Linear States Forget the Distant Past: Prefix Caching via Suffix Replay for Hybrid LLMs",
+      "year": 2026,
+      "venue": "arXiv 2026 · v1 2026-09-27",
+      "url": "https://arxiv.org/abs/2609.33477v1",
+      "role": "optional",
+      "zh": {
+        "contribution": "混合模型遇到共享前缀时，用少量缓存的中间输入近似重建线性层状态，使复用位置不再受历史状态检查点限制，并把重建工作与正常推理重叠执行。",
+        "relevance": "适合把 agent 从中间步骤分叉、重试和长文档复用，与混合模型的缓存表示联系起来。它回答前缀命中后怎样恢复状态，与主读 ReplaySSM 的解码状态读写优化不同。",
+        "reading": "值得选读，建议 25–35 分钟。先读 Figure 1–4 理解缓存了什么，再看 Table 3 的质量损失、Figure 9 / 11 的正反性能例子，最后读 §5 的执行流程。",
+        "prerequisites": "知道模型逐个生成 token 即可。正文解释 KV 缓存、递推状态、检查点和中间输入；重放预算按保留的输入行数计算，不等于原始 token 数。",
+        "caveat": "2026 年预印本，恢复是近似的，依赖模型对旧输入的遗忘并按模型离线校准。单卡 H800 上测试三种模型的质量、两种模型的服务性能；既有明显质量损失的子任务，也有比原生缓存更慢的负载。",
+        "sections": [
+          {
+            "heading": "共同读过一段文字，为什么还得重新算",
+            "paragraphs": [
+              "**教学例子，不是论文测量：**一个请求已经处理到第 16,384 个 token，新请求想从第 12,288 个位置分叉。若历史状态只在 8,192 和 16,384 处留下完整副本，就需要从前一个副本再算 4,096 个 token。这个保存的副本叫检查点；它决定哪些旧位置可以立即恢复。",
+              "全注意力层为每个 token 保存供后续查阅的键和值，即 KV 缓存。线性层则不断改写一份固定大小的状态，处理到后面后，没有每个旧位置的独立副本。两类层交替的混合模型，必须同时准备好两种状态才能复用前缀；只有 KV 命中还不够。[§1–2、Figure 1](https://arxiv.org/html/2609.33477v1)",
+              "SuffixReplay 改为保存重建状态需要的部分输入。论文于 2026 年 9 月 27 日发布 v1，作者来自中国电信 TeleAI、上海交大、清华及独立研究者，本文按预印本介绍。[版本与团队](https://arxiv.org/abs/2609.33477v1)"
+            ]
+          },
+          {
+            "heading": "留下的是中间向量，重跑的是最近一部分计算",
+            "paragraphs": [
+              "模型处理文本时，每层接收的不是原始文字，而是一串表示当前信息的向量。论文把缓存下来的这种输入叫 anchor，下面称输入记录。相邻线性层分成一组，只在组入口保存记录；恢复时，各组从自己的记录开始重跑必要计算，不跨越中间的全注意力层。因此重建误差不会在恢复过程中从前一组一路传到下一组。[§4.1、Figure 2](https://arxiv.org/html/2609.33477v1)",
+              "记录还会沿 token 方向抽样：默认每页 64 个 token，只保留末尾四行输入。重放最近 128 行记录，因而不是重跑最后 128 个原始 token，中间有大量未保留的位置。系统只支持缓存页边界恢复，并非任意 token。主要服务实验给 4B、27B 模型的重放上限分别为 512、256 行，实际长度还随命中前缀长度调整。[§4.2–4.3、§7.1](https://arxiv.org/html/2609.33477v1)"
+            ]
+          },
+          {
+            "heading": "为什么少算过去可能有效，又不能保证什么",
+            "paragraphs": [
+              "这些线性层更新状态时，会衰减或擦除一部分旧信息，再加入当前输入。因此论文尝试从空状态重放较近的输入，把更早状态的影响近似忽略。全注意力层的完整前缀 KV 仍然复用，输入记录本身也包含之前计算得到的信息；这不等于把整份长文档的远处内容全部删除。[§2.1、§4](https://arxiv.org/html/2609.33477v1)",
+              "**一个用于理解条件的推导例子：**假设连续后缀输入完全相同，而且每次更新对旧状态差异的影响最多保留一半，那么多重放一步，初始误差上限就再减半。足够多步之后，忽略起始状态才可能合理。真实模型有遗忘门，不代表每条输入都满足这样的强收缩条件。",
+              "更何况实际方法还跳过了部分输入、在组内重算后续层。上述简单条件不能证明整个稀疏重放过程无损。原文未给通用的输出误差上界，也没有一个适合所有模型的固定重放长度；它依靠离线质量实验选预算，不直接适用于保留所有历史贡献、没有相应遗忘性质的递推。[§4.3、§9](https://arxiv.org/html/2609.33477v1)"
+            ]
+          },
+          {
+            "heading": "少存状态以后，怎样不把等待搬到另一处",
+            "paragraphs": [
+              "命中前缀后，需要取回 KV、取回输入记录、重建线性状态。论文让记录单独存放，和 KV 页一起加入或退出缓存，但可以位于不同存储层。记录传输先启动，与 KV 搬运和调度重叠；正常计算只在真正使用某组状态前等待该组恢复完成。若上一轮的当前状态仍在，还可以直接沿用，跳过重放。[§5](https://arxiv.org/html/2609.33477v1)",
+              "这不只是命中时的优化：每次普通处理和生成也要写记录。作者把这些写入放进预先记录的 GPU 执行流程，减少反复调用和同步。记录缺失或尚未发布完整时退回完整前缀计算；这是防止读到不完整缓存，不是在线判断近似答案是否正确。[§5.1–5.2](https://arxiv.org/html/2609.33477v1)",
+              "Table 2 中，Qwen3.5-4B 每 token 的额外输入记录约 2.2 KiB，基线检查点摊销约 6.1 KiB。这里只比较 KV 以外新增的状态存储，不能说总显存降到 36%。执行重放也有固定开销：4B 的预录制执行图约占 1.1 GB 显存。[Table 2、§6](https://arxiv.org/html/2609.33477v1)"
+            ]
+          },
+          {
+            "heading": "质量接近原模型，要看平均数下面的任务",
+            "paragraphs": [
+              "质量实验先完整处理上下文，再模拟在提问位置命中缓存，用近似恢复结果与完整重新计算作配对比较。测试在单张 80 GB H800 上进行，包含 OLMo-Hybrid-7B、BF16 的 Qwen3.5-4B，以及 Qwen3.6-27B-FP8。报告值是任务得分除以完整计算得分，不是回答逐字一致的比例。[§7.1–7.2](https://arxiv.org/html/2609.33477v1)",
+              "Table 3 报告，4B 重放 128 行时，LongBench 问答和 RULER 平均保留原得分的 100% 与 99.7%；但 GovReport 摘要只有 94.8%。OLMo 重放 512 行时，RULER 平均为 91.4%，其中 128K 上下文的变量追踪任务只有 81.7%。平均接近不能代表每项任务无损，也不能由一次模拟命中证明长期反复近似恢复没有累计影响。重放预算必须随模型和目标任务重新验证。[Table 3](https://arxiv.org/html/2609.33477v1)"
+            ]
+          },
+          {
+            "heading": "在哪些请求上更快，在哪些请求上反而更慢",
+            "paragraphs": [
+              "服务实验只测两种 Qwen，因为论文使用的 SGLang v0.5.18 不支持 OLMo-Hybrid。基线与新方案在同一张 80 GB H800 上轮流运行，采用相同调度器、KV 实现和默认 8,192-token 分块处理。这里比较的是论文版本及配置，不是当前所有 SGLang 部署。[§6–7.1](https://arxiv.org/html/2609.33477v1)",
+              "分叉点离检查点越远，基线补算越多，重放越可能占优。Figure 9 的 ToolMind 开环负载、缓存全驻显存条件下，4B 在约 16K 上下文的中位首 token 等待时间下降约 66%；该条件下分叉点比最近检查点晚约三至四千 token。这里的 TTFT 是看到第一个输出之前的等待，不是每个输出 token 都快了 66%。[§7.3、Figure 9](https://arxiv.org/html/2609.33477v1)",
+              "反例同样重要：4B、35K 前缀、八个并发会话、固定输出长度时，分叉正好落在原检查点上，中位 TTFT 从基线 121 ms 变成重放上限 512 行时的 174 ms。固定长度让请求同步结束并再次命中，集中暴露重放开销；改成不同输出长度后，所测差距消失。持续接着上一轮聊天、可沿用当前状态的负载，也没有同样大的加速空间。[Figure 11、Table 4、§9](https://arxiv.org/html/2609.33477v1)"
+            ]
+          },
+          {
+            "heading": "与 ReplaySSM 并读，分别看清在省哪种工作",
+            "paragraphs": [
+              "主读 ReplaySSM 面向解码，把状态检查点与短期输入缓冲组合起来，减少完整状态的频繁写回；SuffixReplay 面向前缀复用，省去持久化的内部历史状态检查点，用稀疏输入近似重建更早的分叉边界。两篇都用“重放”，但恢复起点、保留材料与精度前提不同，不能把一篇的精确性结论直接移到另一篇。[SuffixReplay §4–5](https://arxiv.org/html/2609.33477v1)；[ReplaySSM 原文](https://arxiv.org/html/2610.13778v1)",
+              "**对系统工作的阅读建议：**先确认真实请求是不断往后续写，还是经常从中途分叉；再看需要多长的输入记录才能保住任务质量，最后把记录写入、搬运、重放和固定显存都计入成本。精读 Figure 1–4、Table 3、Figure 9 / 11，再读 §5，能把缓存命中、近似质量和实际等待时间对应起来。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "For shared-prefix hits in hybrid models, reconstructs linear-layer states approximately from a small cache of intermediate inputs. Reuse boundaries are no longer limited to historical state checkpoints, while reconstruction overlaps ordinary inference.",
+        "relevance": "Connects agent branching, retries, and long-document reuse to the cache representation of hybrid models. It addresses state recovery after prefix matching, unlike the main reading ReplaySSM's optimization of state traffic during decoding.",
+        "reading": "Worth an optional close read; allow 25–35 minutes. Start with Figures 1–4 to identify what is cached, then Table 3's quality losses and Figures 9/11's positive and negative performance cases, followed by Section 5's execution path.",
+        "prerequisites": "Only assumes that models generate tokens sequentially. The note introduces KV caches, recurrent states, checkpoints, and intermediate inputs. Replay budgets count retained input rows, not original tokens.",
+        "caveat": "A 2026 preprint using approximate recovery that relies on forgetting and model-specific offline calibration. A single H800 evaluates quality for three models and serving performance for two; some subtasks lose substantial quality and some workloads become slower than the native cache.",
+        "sections": [
+          {
+            "heading": "Why sharing a text prefix can still require recomputation",
+            "paragraphs": [
+              "**Teaching example, not a paper measurement:** one request has processed 16,384 tokens, and a new request branches at position 12,288. If complete historical state copies exist only at positions 8,192 and 16,384, recovery requires computing another 4,096 tokens from the earlier copy. Such a saved copy is a checkpoint; its placement determines which historical positions can be restored immediately.",
+              "Full-attention layers store per-token keys and values for later lookup: the KV cache. Linear layers instead overwrite a fixed-size recurrent state, without keeping a separate copy for every old position. A hybrid model interleaving these layers needs both forms of state before it can reuse a prefix. A KV hit alone is insufficient. [Sections 1–2, Figure 1](https://arxiv.org/html/2609.33477v1)",
+              "SuffixReplay instead retains some inputs needed for reconstruction. Version 1 appeared on September 27, 2026, with authors from China Telecom's TeleAI, Shanghai Jiao Tong University, Tsinghua University, and independent researchers. This note presents it as a preprint. [Version and team](https://arxiv.org/abs/2609.33477v1)"
+            ]
+          },
+          {
+            "heading": "Store intermediate vectors and replay a recent subset of computation",
+            "paragraphs": [
+              "Each layer receives vectors representing the information computed so far, rather than raw text. The paper calls retained input vectors anchors. Consecutive linear layers form a group, with records stored only at the group entrance. Recovery independently replays the necessary computation within each group, without crossing the full-attention layers between groups. Reconstruction errors therefore do not propagate from an earlier group into the next during recovery. [Section 4.1, Figure 2](https://arxiv.org/html/2609.33477v1)",
+              "Inputs are also sampled across positions: the default keeps only the final four input rows of each 64-token page. Replaying 128 retained rows consequently does not mean replaying the last 128 original tokens; many intervening positions were not retained. Recovery supports cache-page boundaries, not arbitrary tokens. The main serving experiments cap replay at 512 rows for the 4B model and 256 for the 27B model, with actual length also depending on the matched prefix. [Sections 4.2–4.3 and 7.1](https://arxiv.org/html/2609.33477v1)"
+            ]
+          },
+          {
+            "heading": "Why omitting history can work, and what it does not guarantee",
+            "paragraphs": [
+              "These linear layers decay or erase some old information before adding the current input. The paper therefore tries replaying recent inputs from an empty state while approximately ignoring the earlier state's influence. Full-attention layers still reuse the complete prefix KV, and retained input vectors already contain information from earlier computation. This does not delete all distant content from the document. [Sections 2.1 and 4](https://arxiv.org/html/2609.33477v1)",
+              "**A derivation example for understanding the condition:** suppose the contiguous suffix inputs are identical, and each update retains at most half the influence of a difference in the old state. Each additional replay step then halves the bound on the initial error. Only after sufficiently many steps might discarding the starting state be reasonable. Having forgetting gates does not establish such strong contraction for every input in a real model.",
+              "The implemented method also skips inputs and recomputes later layers inside each group. The simple condition above cannot prove that this entire sparse replay process is lossless. The paper provides neither a universal output-error bound nor one replay length suitable for all models. It selects budgets through offline quality experiments and does not directly cover recurrences that preserve all historical contributions without the required forgetting behavior. [Sections 4.3 and 9](https://arxiv.org/html/2609.33477v1)"
+            ]
+          },
+          {
+            "heading": "Avoid moving the saved work into another waiting stage",
+            "paragraphs": [
+              "A prefix hit requires fetching KV, fetching input records, and rebuilding linear states. The paper stores records separately: they enter and leave the cache with their KV pages but may occupy different memory tiers. Record transfers start early and overlap KV movement and scheduling. Normal execution waits only when it reaches a group whose reconstructed state is needed. If the previous turn's live state remains available, it can be reused without replay. [Section 5](https://arxiv.org/html/2609.33477v1)",
+              "This also affects non-hit traffic because ordinary prompt processing and generation must write records. The authors put these writes into a pre-recorded GPU execution path to reduce repeated calls and synchronization. Missing or incompletely published records trigger full prefill. That prevents consuming incomplete cache data; it is not an online test that an approximate answer is correct. [Sections 5.1–5.2](https://arxiv.org/html/2609.33477v1)",
+              "In Table 2, Qwen3.5-4B's additional input records occupy about 2.2 KiB per token, versus about 6.1 KiB of amortized baseline checkpoints. This compares extra state storage beyond KV, not total GPU memory reduced to 36%. Replay also has fixed costs: the 4B model's captured execution graphs consume approximately 1.1 GB of device memory. [Table 2, Section 6](https://arxiv.org/html/2609.33477v1)"
+            ]
+          },
+          {
+            "heading": "Look below the average when judging preserved quality",
+            "paragraphs": [
+              "The quality experiment first fully processes the context, then simulates a cache hit at the query boundary and pairs approximate recovery with a full-recomputation reference. Tests use one 80 GB H800 and cover OLMo-Hybrid-7B, BF16 Qwen3.5-4B, and Qwen3.6-27B-FP8. Reported values divide the replay task score by the full-prefill score; they are not percentages of textually identical answers. [Sections 7.1–7.2](https://arxiv.org/html/2609.33477v1)",
+              "Table 3 reports that at 128 replayed rows, the 4B model retains 100% and 99.7% of the LongBench QA and RULER averages, but only 94.8% on GovReport summarization. At 512 rows, OLMo retains 91.4% on RULER on average, with only 81.7% on the 128K-context variable-tracking task. A strong average does not establish lossless performance on every task. A single simulated hit also does not prove that repeated approximate recovery over long usage cannot accumulate effects. Budgets need validation for the particular model and target tasks. [Table 3](https://arxiv.org/html/2609.33477v1)"
+            ]
+          },
+          {
+            "heading": "Which requests improve, and which can become slower?",
+            "paragraphs": [
+              "Serving tests cover only the two Qwen models because the paper's SGLang v0.5.18 does not support OLMo-Hybrid. Baseline and modified systems run alternately on the same 80 GB H800, using the same scheduler, KV implementation, and default 8,192-token chunked prefill. This comparison concerns the paper's version and configuration, not every current SGLang deployment. [Sections 6–7.1](https://arxiv.org/html/2609.33477v1)",
+              "The farther a branch lies beyond a checkpoint, the more work the baseline must repeat and the more replay may help. Under Figure 9's open-loop ToolMind workload with caches resident in GPU memory, the 4B model's median time to first token falls by about 66% near 16K context, where continuation lies roughly three to four thousand tokens beyond the latest checkpoint. TTFT measures waiting before the first output, not a 66% improvement for every generated token. [Section 7.3, Figure 9](https://arxiv.org/html/2609.33477v1)",
+              "The counterexample matters equally. With the 4B model, a 35K prefix, eight concurrent sessions, and fixed output lengths, branches land exactly on native checkpoints. Median TTFT rises from the baseline's 121 ms to 174 ms with a 512-row replay cap. Fixed lengths synchronize request completion and subsequent hits, exposing replay overhead together; varied output lengths remove the measured gap. Traffic that simply continues the previous turn and can reuse a live state likewise offers less room for large speedups. [Figure 11, Table 4, Section 9](https://arxiv.org/html/2609.33477v1)"
+            ]
+          },
+          {
+            "heading": "Read alongside ReplaySSM by identifying what each one saves",
+            "paragraphs": [
+              "The main reading ReplaySSM targets decoding, combining state checkpoints with short-term input buffers to reduce frequent writes of the complete state. SuffixReplay targets prefix reuse: it removes persistent internal historical-state checkpoints and approximately reconstructs earlier branch boundaries from sparse inputs. Both use replay, but their starting points, retained material, and precision assumptions differ. An exactness conclusion from one cannot simply be transferred to the other. [SuffixReplay Sections 4–5](https://arxiv.org/html/2609.33477v1); [ReplaySSM](https://arxiv.org/html/2610.13778v1)",
+              "**A systems-oriented reading suggestion:** first determine whether actual traffic mostly continues forward or branches from earlier positions. Then measure how many input records preserve task quality, and include recording, transfer, replay, and fixed device memory in the cost. Read Figures 1–4, Table 3, and Figures 9/11 before Section 5 to connect cache hits, approximation quality, and the waiting time users actually experience."
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}
