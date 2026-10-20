@@ -1,0 +1,471 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-20",
+  "publishedAt": "2026-10-20T09:09:11+08:00",
+  "zh": {
+    "title": "训练与 rollout 怎么才能真正一致：从 VeXact 到梯度校正",
+    "summary": "同一份权重、同一段输入，生成端和训练端为什么仍会给出不同概率？今天主读 VeXact：通过统一模型与算子、固定归约顺序，建立一个训练与 rollout 数值一致、可用于诊断 RL 训练的参考实现。两篇选读分别补清批次怎样改变计算结果，以及 Score Centering 如何在分布仍不一致时校正梯度。重点区分同权重数值一致、旧权重造成的离策略，以及梯度平均漂移为零这三件事。先读主读的具体例子和实现路径，算法推导可以留到第二遍。"
+  },
+  "en": {
+    "title": "Making training and rollout agree: from VeXact to gradient correction",
+    "summary": "Why can generation and training assign different probabilities to the same input under the same weights? Today's main reading is VeXact: a diagnostic reference for RL that aligns model implementations, operators, and reduction order to remove numerical mismatch. The optional readings explain how batch composition changes numerical results and how Score Centering corrects gradients while the distributions still differ. We distinguish numerical agreement at matched weights, off-policy data from stale weights, and zero expected gradient drift. Start with the worked example and implementation path; the algorithmic derivations can wait for a second pass."
+  },
+  "papers": [
+    {
+      "id": "vexact-zero-mismatch-2026",
+      "title": "Diagnosing Training-Inference Mismatch in LLM Reinforcement Learning via a Zero-Mismatch Reference",
+      "year": 2026,
+      "venue": "arXiv 2026 · v1 2026-05-14 / v2 2026-09-29 · ByteDance & University of Virginia",
+      "url": "https://arxiv.org/abs/2605.14220v2",
+      "role": "main",
+      "zh": {
+        "contribution": "VeXact 构造了一套训练与生成路径数值一致的参考实现，用它检查：同一份权重为什么仍可能给同一个 token 算出不同概率，以及这种偏差怎样干扰强化学习。重点是统一模型实现和浮点计算顺序；“零不一致”并不表示消除了浮点舍入。",
+        "relevance": "适合把 rollout 系统与训练系统接起来的人。它把权重同步之外的风险落到具体实现：矩阵乘法、attention 的 KV 分块、MoE 专家计算，以及最后的 log-probability。它也帮助区分数值不一致与异步训练中的旧策略数据。",
+        "reading": "值得精读。先理解同一前缀重新打分的例子，再读论文 §3.1 与固定版本源码；随后看 Table 2、训练曲线和 §4 的概率分母。本文以 2026 年 9 月 29 日的 v2 为准，代码则单独注明当前核验的 commit。",
+        "prerequisites": "知道模型逐 token 生成即可。正文会解释 teacher forcing、log-probability、浮点归约、MoE 和 REINFORCE；不要求先熟悉 PPO 公式。",
+        "caveat": "这是 2026 年预印本。逐位一致的结论有模型、算子、精度及运行环境条件；当前代码已有 VeOmni 集成，不能当作论文原实验的完整复现。消除数值不一致也不消除策略过期、奖励问题或其他训练不稳定来源。",
+        "sections": [
+          {
+            "heading": "先固定一道题：两套系统为什么会给同一个 token 不同概率？",
+            "paragraphs": [
+              "设模型正在回答一道数学题，已经写完相同的一段推理。生成系统接下来采到了 token A，并记录它的概率。训练时，我们把这条已经写出的回答送进训练系统，要求它给 A 重新打分。这里不让模型重新抽一个答案；我们固定前面的所有 token，只比较“在这个前缀后出现 A”的概率。以下 A 和概率数值都是教学例子。",
+              "这种把已知 token 序列送回模型、逐位置计算概率的做法叫 teacher forcing。训练通常一次处理整条序列，生成则逐步使用缓存，但因果遮罩应保证 A 只能看到同一段前文。如果权重和输入相同，生成端算出 0.400，训练端却算出 0.404，这个差异就不能归因于模型已经学到了新东西。",
+              "训练常保存概率的自然对数，称为 log-probability，简称 log-prob；比较对象仍是同一个条件概率。VeXact 研究这种训练与推理不一致，即 TIM。它追求两条路径给出相同的浮点结果，不追求与无限精度实数计算完全相同。[论文 v2](https://arxiv.org/html/2605.14220v2)"
+            ]
+          },
+          {
+            "heading": "第一步：把模型实现和算子一起对齐",
+            "paragraphs": [
+              "权重只是计算的输入。两份程序可以读相同的权重，却使用不同的归一化实现、不同的中间精度，或把几步计算合成一个 kernel。kernel 是在 GPU 上执行一段计算的底层程序。只要中间结果的舍入位置不同，最终概率就可能不同；复制权重文件并不能自动统一这些路径。",
+              "VeXact 的训练端入口会先开启它的算子替换，再注册模型补丁。这个顺序很有意义：模型层要选对实现，层里面的矩阵乘法等运算也要选对实现。它不是只在训练结束后拿两张概率表做修正。[训练端入口](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/vexact/integrations/verl/fsdp_enable_invariant.py#L17-L29)",
+              "这里须区分两个版本。论文描述的是其 FSDP2 实验系统；FSDP 是把模型状态分片到多张 GPU 的训练方式。本文于 2026 年 10 月 20 日核验的代码 commit 为 `6c170209f334f2cd59147436ef22740878e49437`，当前集成以 VeOmni FSDP 为主。当前模型注册明确接入 VeOmni 的 MoE 实现，不能把这套代码直接说成论文当时的全部实验环境。[模型注册](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/vexact/models/register.py#L29-L72)"
+            ]
+          },
+          {
+            "heading": "为什么同一份矩阵乘法也需要固定加法顺序？",
+            "paragraphs": [
+              "先看一个刻意放大的浮点教学例子。用 float32 计算 `(1e20 + (-1e20)) + 3`，可以得到 3；改成 `1e20 + ((-1e20) + 3)`，小数 3 会在中间舍入时丢失，结果变成 0。这不是论文里实际偏差的大小，只说明有限精度的加法不能随意换括号。",
+              "矩阵乘法要把很多乘积相加，这种求和称为归约。GPU 可以先算不同小块，再合并部分和。单条请求运行时和很多请求一起运行时，库可能选择不同分块。即便每次重跑同一个批次都得到相同结果，换一批同行请求后仍可能改变结果。因此“重复运行确定”与“结果不受批次组成影响”是两个要求。",
+              "VeXact 为矩阵乘法等路径固定计算安排，并替换 `mm`、`addmm`、`log_softmax` 和按维求均值等算子；入口还限制低精度归约并开启 PyTorch 的确定性设置。真正起作用的是这些具体路径共同受到约束，不能把一个确定性开关当作完整答案。约束也不意味着跨 GPU 架构天然一致。[算子注册与设置](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/vexact/batch_invariant_ops/batch_invariant_ops.py#L741-L759)"
+            ]
+          },
+          {
+            "heading": "Attention：保留 KV cache，但不让历史分块改变合并方式",
+            "paragraphs": [
+              "接着看 A 如何查询前面的推理。Attention 会使用历史 token 的 key 和 value；把它们留下来，避免每生成一个 token 都重算历史，这就是 KV cache。历史很长时，一种实现会把它分给多个计算块，各块算出部分结果，再合成最终输出。分几块、怎样合并，都可能影响浮点舍入。",
+              "当前 VeXact 的两条 FlashAttention 调用路径都显式传入 `num_splits=1`，固定这部分计算安排。代码仍传入分页缓存的 `page_table`。因此它限制的是 KV 分块计算与合并这一路径，不是删除 KV cache，也不是禁止分页存储。[两条 attention 路径](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/vexact/batch_invariant_ops/flash_attention.py#L172-L206)",
+              "回到那道题，生成端可能带着一整段缓存只处理新 token，训练端则把整段回答一起送入模型。要比较两者，除了权重，还必须让有效前缀、位置编号和遮罩一致。固定归约解决的是计算顺序问题；若两边本来就看了不同上下文，它不会替你修好输入。这里是由机制推出的核验要求。"
+            ]
+          },
+          {
+            "heading": "MoE：专家选对了，还要保证专家内部算得一样",
+            "paragraphs": [
+              "MoE 是 mixture of experts，即混合专家模型。可以把一层看成若干个不同的子网络：路由器为每个 token 选少数几个专家，再按权重合并它们的输出。服务批次改变时，落到某个专家上的 token 数也会改变，于是专家的矩阵乘法可能选择不同的计算安排。",
+              "因此，仅核对“训练和生成选中了同几个专家”还不够。当前 Qwen3 MoE 路径直接调用 VeOmni 的 `fused_moe_forward`；源码注释说明，目的是让 rollout 与训练端的专家计算采用相同算术。这里的关键是共享实际执行的专家实现，而不只是共享模型名称或路由结果。[Qwen3 MoE 的实际调用](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/vexact/models/qwen3_moe/modeling_qwen3_moe.py#L69-L100)",
+              "这也解释了支持范围为什么需要逐模型说明。当前 README 不支持旧 FSDP 路径的 MoE，对线性注意力等不同计算路径也不作全面保证。“已有一种 MoE 对齐”不能推出任意混合架构都已对齐；换模型时需要重新核验执行到了哪些补丁。[固定版本 README](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/README.md)"
+            ]
+          },
+          {
+            "heading": "最后一道关口：相同隐藏状态还不等于相同 log-prob",
+            "paragraphs": [
+              "模型最后先给词表中每个 token 算一个分数，称为 logit，再用 softmax 把所有分数转成总和为 1 的概率。A 的概率因此不只取决于 A 自己的分数，还取决于整张词表的归一化计算。若一边把中间分数提升到 float32，另一边保留 bfloat16，即使前面的层已经一致，这里也仍可能出现差异。",
+              "当前推理器就显式处理了这个选择：源码说明训练中的融合线性层与交叉熵路径会提升 logits 精度，而另一路径可能保留较低精度，并通过配置控制。读到这里要检查实际启用的分支，不能只检查模型主体。[推理器的精度说明](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/vexact/inferencer/inferencer.py#L78-L85)",
+              "“测试通过”也要看断言。仓库的一个 FA4 批次不变性测试使用 `diff < 1e-5`；重新核验 log-prob 的脚本还可指定容差。这些测试很有用，但容差内接近不是逐位相同。论文的严格结论与某个具体单元测试分别证明什么，应分开阅读。[FA4 测试](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/tests/batch_invariant_ops/test_flash_attention_4_batch_invariance.py#L120-L135) · [可配置核验脚本](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/tests/scripts/verify_logits_vs_native_hf.py#L913-L1033)"
+            ]
+          },
+          {
+            "heading": "零不一致不等于 rollout 永远来自当前策略",
+            "paragraphs": [
+              "现在把时间加入例子。生成系统在权重版本 θ₀ 下写出回答，训练器随后更新到了 θ₁。用 θ₁ 重新计算 A 的概率，本来就应当可能不同。这个变化代表模型参数真的变了；它与同为 θ₀ 时两套程序算出不同结果，是两件事。",
+              "异步 rollout 可能在训练器已经前进后才返回；同一批回答也可能被重复用来更新多次。这些都会使数据来自较旧策略，通常称为 policy staleness。即使 VeXact 让每个固定版本的两条计算路径完全一致，θ₀ 生成的数据也不会自动变成 θ₁ 生成的数据。",
+              "因此，对接系统时应分别记录权重版本和数值差异。前者回答“是不是同一个策略”，后者回答“同一策略有没有被两套程序算成不同概率”。与本期选读的 Score Centering 相比，这里改变的是数值执行路径；把某个估计量的期望漂移归零，并不等价于让这两张概率表一致。"
+            ]
+          },
+          {
+            "heading": "实验的作用：先拿走一个干扰因素，再看训练会怎样",
+            "paragraphs": [
+              "强化学习会根据回答的奖励，提高较好回答中 token 的概率、压低较差回答的概率。REINFORCE 是直接用奖励构造这种更新的一类方法。论文用每批 rollout 做一次更新的设置研究数值不一致，减少把现象与多轮 PPO 更新混在一起的机会；这仍是一个特定训练设置。",
+              "论文 Table 2 中，稠密模型 REINFORCE 使用 16 张 H100，GRPO 使用 8 张 H100；MoE REINFORCE 使用 64 张 H100。后者使用 Qwen3-30B-A3B，在 DAPO-Math-17k 上训练、用 AIME2024 评测，训练批大小参数为 512，提示和回答长度上限分别为 2,048 与 20,480 token。上限不是每条样本的实际长度。[论文 §3 与 Table 2](https://arxiv.org/html/2605.14220v2)",
+              "在这个 MoE 设置中，论文报告 VeXact 的 AIME2024 验证奖励达到 0.534，而 vLLM 运行中的验证奖励下降至 0.067。这支持作者在所测条件下对 TIM 的担忧，但不能读成任意任务都提升同样幅度。它是该训练过程的结果，不是吞吐数字，也不能单凭它断言别的训练崩溃都由 TIM 引起。[论文训练曲线与实验说明](https://arxiv.org/html/2605.14220v2)"
+            ]
+          },
+          {
+            "heading": "一个分母例子：为什么训练端重新打分会掩盖差异？",
+            "paragraphs": [
+              "继续用教学数值。令 q_old = 0.400，表示真正生成 A 时记录的概率；p_old = 0.404，表示训练端用同一份旧权重重新算出的概率。在更新前，当前训练端概率 p_new 也等于 0.404。于是 p_new / p_old = 1，而 p_new / q_old = 1.01。",
+              "第一个比值准确表达“训练端这份程序还没改变”，却看不出它与真正产生数据的程序有差别。第二个比值把这个差别显露出来。论文 §4 讨论的 recompute 与 bypass，正涉及用哪个旧概率作分母。比值可以进入更新中的重加权和裁剪，因此分母选择不只是日志格式。[论文 §4](https://arxiv.org/html/2605.14220v2)",
+              "但换分母也没有把模型内部的算术统一起来。这不意味着重要性采样的数学原理失效，而是说具体训练算法还包含裁剪、近似和其他实现条件。这个小例子只解释两种比值为何不同，既不证明某种修正永远无效，也不保证精确对齐之后每一步更新都会变好。"
+            ]
+          },
+          {
+            "heading": "读结果时要保留的三条边界",
+            "paragraphs": [
+              "第一，逐位一致是指定计算路径下的性质。换 GPU、算子版本、精度、模型结构或补丁是否生效，都可能改变前提。两边可以执行同样的浮点舍入，因此得到相同结果；这并不说明它们等于更高精度参考答案。“零数值误差”不是这里合适的表述。",
+              "第二，一致性与效率需要分别测量。固定某些并行分块可能改变性能，chunked prefill、CUDA Graph 等服务优化又可能节省时间。不能把机制上减少不确定性直接换算成某个未测量的加速百分比。工程上应同时记录概率差异、生成耗时和训练达到目标质量所用的总时间，这是本文给出的评估建议。",
+              "第三，论文中的证据范围不能被仓库更新悄悄扩大。大多数报告实验使用 seed 42，补充的多 seed 检查主要针对部分 GRPO 设置。当前 VeOmni 集成也不是论文 FSDP2 环境的同义词。读者应把论文实验、后续代码支持范围以及自己的新配置视作三层证据。"
+            ]
+          },
+          {
+            "heading": "如何精读，以及怎样把它变成自己的诊断实验",
+            "paragraphs": [
+              "建议先读 §3.1，回答一个问题：两边到底在哪些层、哪些算子上共享了实现？然后按本文的固定链接查看训练端入口、基础算子、attention 和 MoE 调用。接着对照 Table 2 看训练曲线；最后读 §4，拿纸写清每个概率来自哪个权重版本、哪一套程序。这个顺序比一开始追所有损失公式更容易建立判断。",
+              "若要在自己的系统里做一个最小诊断，可以先冻结一份 checkpoint，保存一条 rollout 的 token、有效长度、位置与遮罩，再让训练端对同一序列打分。随后只改变批次组成、长度和 prefill/decode 路径，检查差异是否出现。这个实验流程是本文的建议，不是我们已经替读者跑过的验证。",
+              "输出至少保留最大绝对差和出现非零差异的位置，并区分严格相等与容差内接近；只看平均差或最终答案是否相同，会漏掉问题。通过后再加入权重更新和异步流水线，单独检查策略过期。这样得到的是一条能定位问题的证据链，而不是一句“同权重，所以应该没问题”。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "VeXact builds a numerically aligned reference for training and generation. It uses that reference to investigate why the same weights can still produce different token probabilities in the two systems, and how this discrepancy can interfere with reinforcement learning. The mechanism aligns model implementations and floating-point execution; zero mismatch does not mean eliminating rounding.",
+        "relevance": "Useful when connecting rollout infrastructure to a trainer. It identifies concrete risks beyond weight synchronization: matrix multiplication, attention's KV splitting, MoE expert computation, and the final log-probability calculation. It also separates numerical mismatch from data generated by an older policy in asynchronous training.",
+        "reading": "Worth a close read. Start with rescoring an identical prefix, then read §3.1 and the pinned source paths. Follow with Table 2, the training curves, and the probability denominators in §4. This note uses the September 29, 2026 v2 paper and separately identifies the current code commit inspected.",
+        "prerequisites": "Knowing that a model generates one token at a time is sufficient. The note introduces teacher forcing, log-probability, floating-point reductions, MoE, and REINFORCE. Prior familiarity with PPO equations is not required.",
+        "caveat": "A 2026 preprint. Bitwise agreement depends on the model, operators, precision, and execution environment. The current code includes VeOmni integration and should not be treated as a complete reproduction of the paper's original experiments. Numerical alignment does not remove policy staleness, reward problems, or every other cause of training instability.",
+        "sections": [
+          {
+            "heading": "Fix one problem first: why can two systems assign different probabilities to the same token?",
+            "paragraphs": [
+              "Suppose a model is solving a mathematics problem and has already produced a particular reasoning prefix. The generation system samples token A next and records its probability. During training, we feed that already generated answer into the trainer and ask it to score A again. We are not asking it to sample another answer: we hold every preceding token fixed and compare the probability of A after that prefix. A and all probability values below are teaching examples.",
+              "Feeding a known token sequence back into a model to score its positions is called teacher forcing. Training usually processes the sequence together, whereas generation uses a cache step by step, but the causal mask should give A access to the same preceding context. If the weights and inputs are identical yet generation returns 0.400 and training returns 0.404, the difference cannot be explained by the model having learned something new.",
+              "Training often stores the natural logarithm of a probability, called its log-probability or log-prob. The underlying comparison is still between the same conditional probabilities. VeXact studies this training–inference mismatch, or TIM. Its objective is agreement between the two floating-point results, not agreement with infinite-precision real arithmetic. [Paper v2](https://arxiv.org/html/2605.14220v2)"
+            ]
+          },
+          {
+            "heading": "First align the model implementation and its operators",
+            "paragraphs": [
+              "Weights are inputs to a computation. Two programs can read identical weights while using different normalization implementations, different intermediate precision, or a kernel that combines several operations. A kernel is a low-level program executing a piece of computation on the GPU. Changing where intermediate values are rounded can change the final probability; copying a weight file does not automatically align these execution paths.",
+              "VeXact's training-side entry point first enables its operator replacements and then registers model patches. Both levels matter: a model layer needs the intended implementation, and operations such as matrix multiplication inside it need the intended implementation too. This is not merely a correction applied to two probability tables after training. [Training entry point](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/vexact/integrations/verl/fsdp_enable_invariant.py#L17-L29)",
+              "Two versions must remain distinct. The paper describes its FSDP2 experimental system; FSDP is a way to shard model states across GPUs for training. The code was separately checked on October 20, 2026, at commit `6c170209f334f2cd59147436ef22740878e49437`, whose current integration centers on VeOmni FSDP. Its model registration explicitly connects VeOmni's MoE implementation. This code should not simply be described as the paper's complete original experimental environment. [Model registration](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/vexact/models/register.py#L29-L72)"
+            ]
+          },
+          {
+            "heading": "Why must even the order of additions in matrix multiplication be fixed?",
+            "paragraphs": [
+              "Consider a deliberately exaggerated floating-point teaching example. In float32, `(1e20 + (-1e20)) + 3` can produce 3. With `1e20 + ((-1e20) + 3)`, the small value 3 is lost to intermediate rounding and the result becomes 0. This is not the magnitude of the paper's measured errors. It illustrates why finite-precision addition does not allow arbitrary rearrangement of parentheses.",
+              "Matrix multiplication adds many products together; combining these terms is a reduction. A GPU can compute different tiles first and then combine partial sums. A library may choose different tiling for one request and for a larger batch. Repeating an identical batch may therefore be deterministic while changing its neighboring requests still changes the result. Repeatability and independence from batch composition are separate requirements.",
+              "VeXact fixes computation arrangements for paths such as matrix multiplication and replaces operators including `mm`, `addmm`, `log_softmax`, and dimension-wise means. Its entry point also restricts reduced-precision reductions and enables PyTorch determinism settings. The constraints on the concrete paths work together; a single determinism switch is not the complete solution. Nor do these constraints imply automatic agreement across GPU architectures. [Operator registration and settings](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/vexact/batch_invariant_ops/batch_invariant_ops.py#L741-L759)"
+            ]
+          },
+          {
+            "heading": "Attention: keep the KV cache while fixing how history partitions are combined",
+            "paragraphs": [
+              "Next consider how A reads the preceding reasoning. Attention uses earlier tokens' keys and values. Retaining them to avoid recomputing history for every new token creates the KV cache. For a long history, an implementation can distribute that history over several computation blocks, calculate partial results, and combine them. The number of partitions and their combination can affect floating-point rounding.",
+              "Both current VeXact FlashAttention call paths explicitly pass `num_splits=1`, fixing this part of the computation. They still pass a `page_table` for paged caching. The restriction concerns this KV-splitting and merging path; it does not remove the KV cache or prohibit paged storage. [Both attention paths](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/vexact/batch_invariant_ops/flash_attention.py#L172-L206)",
+              "Returning to the example, generation may process one new token with a populated cache while training processes the answer sequence together. A valid comparison must align the effective prefix, position indices, and masks as well as the weights. Fixing a reduction addresses computation order. It does not repair a comparison in which the programs were given different contexts. This verification requirement is a deduction from the mechanism."
+            ]
+          },
+          {
+            "heading": "MoE: choosing the right experts is not enough",
+            "paragraphs": [
+              "MoE means mixture of experts. A layer contains several different subnetworks; a router selects a small number for each token, and their outputs are combined using routing weights. When the serving batch changes, the number of tokens assigned to a particular expert can change too. Its matrix multiplication may consequently use a different computation arrangement.",
+              "Checking that training and generation selected the same experts is therefore insufficient. The current Qwen3 MoE path directly calls VeOmni's `fused_moe_forward`. A source comment explains that the purpose is identical expert arithmetic on rollout and training sides. The important detail is sharing the implementation that actually executes expert computation, not merely sharing a model name or routing decisions. [Actual Qwen3 MoE call](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/vexact/models/qwen3_moe/modeling_qwen3_moe.py#L69-L100)",
+              "This also explains why coverage must be stated per model. The current README excludes MoE support on the legacy FSDP path and does not offer a blanket guarantee for different paths such as linear attention. Aligning one MoE architecture does not establish alignment for every hybrid architecture. A model change requires checking which patches its execution actually reaches. [Pinned README](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/README.md)"
+            ]
+          },
+          {
+            "heading": "The final gate: identical hidden states do not yet establish identical log-probs",
+            "paragraphs": [
+              "At the output, a model first computes a score for every vocabulary token, called a logit. Softmax converts those scores into probabilities summing to one. A's probability therefore depends on the vocabulary-wide normalization, not just on A's own score. If one path promotes intermediate scores to float32 and another retains bfloat16, this final stage can still differ even after earlier layers agree.",
+              "The current inferencer handles this choice explicitly. Its source explains that the training-side fused linear and cross-entropy path promotes logits, whereas another path may retain lower precision; a configuration controls the choice. This is a reason to inspect the active branch rather than stop at the model's main layers. [Inferencer precision explanation](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/vexact/inferencer/inferencer.py#L78-L85)",
+              "\"The tests pass\" also requires reading the assertion. One repository FA4 batch-invariance test uses `diff < 1e-5`, and the log-prob verification script accepts configurable tolerances. These are useful checks, but agreement within a tolerance is not bitwise identity. Read the paper's strict claim separately from what each particular test establishes. [FA4 test](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/tests/batch_invariant_ops/test_flash_attention_4_batch_invariance.py#L120-L135) · [Configurable verification script](https://github.com/verl-project/vexact/blob/6c170209f334f2cd59147436ef22740878e49437/tests/scripts/verify_logits_vs_native_hf.py#L913-L1033)"
+            ]
+          },
+          {
+            "heading": "Zero mismatch does not mean every rollout comes from the current policy",
+            "paragraphs": [
+              "Now add time to the example. Generation produces the answer using weight version θ₀, after which the trainer updates to θ₁. Rescoring A with θ₁ can legitimately produce a different probability. That difference reflects an actual parameter change. It is distinct from two programs producing different probabilities when both use θ₀.",
+              "An asynchronous rollout can return after the learner has advanced, and a training system can reuse the same answers for several updates. Both can leave the data associated with an older policy, commonly called policy staleness. Even if VeXact perfectly aligns the two numerical paths at every fixed weight version, data generated by θ₀ does not become data generated by θ₁.",
+              "A system integration should therefore record weight versions and numerical discrepancies separately. One answers whether the policy is the same; the other asks whether two programs evaluate that same policy differently. Compared with this edition's optional Score Centering reading, VeXact changes numerical execution: zero expected drift in an estimator does not establish equality between these probability tables."
+            ]
+          },
+          {
+            "heading": "What the experiment does: remove one confounder, then examine training",
+            "paragraphs": [
+              "Reinforcement learning uses answer rewards to raise token probabilities for relatively better answers and lower them for worse ones. REINFORCE is a family of methods that directly builds such updates from rewards. The paper studies numerical mismatch with one update per rollout batch, reducing entanglement with repeated PPO updates. This remains a particular training setup.",
+              "In Table 2, dense REINFORCE uses 16 H100s and dense GRPO uses 8; MoE REINFORCE uses 64. The MoE experiment uses Qwen3-30B-A3B, DAPO-Math-17k training data, and AIME2024 evaluation, with a training batch-size parameter of 512 and prompt/response caps of 2,048/20,480 tokens. These are limits, not the realized length of every sample. [Paper §3 and Table 2](https://arxiv.org/html/2605.14220v2)",
+              "In that MoE setup, VeXact reportedly reaches an AIME2024 validation reward of 0.534, whereas the vLLM run degrades to 0.067. This supports the authors' concern about TIM under the tested conditions. It is neither a universal improvement factor nor a throughput measurement, and does not establish that TIM causes every other training collapse. [Training curves and experimental description](https://arxiv.org/html/2605.14220v2)"
+            ]
+          },
+          {
+            "heading": "A denominator example: how rescoring can hide a discrepancy",
+            "paragraphs": [
+              "Continue with the teaching values. Let q_old = 0.400 be A's probability recorded during generation, and p_old = 0.404 be the trainer's probability under the same old weights. Before an update, the current trainer probability p_new also equals 0.404. Consequently, p_new / p_old = 1, whereas p_new / q_old = 1.01.",
+              "The first ratio correctly says that the training program has not changed. It does not reveal its discrepancy from the program that actually generated the data. The second ratio exposes that discrepancy. The recompute and bypass variants discussed in §4 involve which old probability enters the denominator. Such ratios can affect reweighting and clipping in an update, so the choice is more than a logging convention. [Paper §4](https://arxiv.org/html/2605.14220v2)",
+              "Changing a denominator still does not align the model's internal arithmetic. This does not invalidate the mathematics of importance sampling: practical training algorithms also involve clipping, approximations, and other implementation conditions. The small example explains why the ratios differ. It proves neither that a correction can never work nor that every update improves once numerical alignment is exact."
+            ]
+          },
+          {
+            "heading": "Three boundaries to retain when reading the results",
+            "paragraphs": [
+              "First, bitwise agreement is a property of specified execution paths. Different GPUs, operator versions, precision choices, architectures, or inactive patches can change its premises. The two paths can perform the same rounding and therefore return identical results without matching a higher-precision reference. Calling this 'zero numerical error' would be misleading.",
+              "Second, consistency and efficiency require separate measurements. Fixing some parallel partitions can affect performance, while serving optimizations such as chunked prefill and CUDA Graphs can save time. Reducing numerical variability does not imply an unmeasured speedup percentage. An engineering evaluation should record probability differences, generation time, and total time to reach a target training quality. That is this note's evaluation recommendation.",
+              "Third, repository updates must not silently expand the paper's evidence. Most reported experiments use seed 42; additional multi-seed checks mainly cover some GRPO settings. The current VeOmni integration is also not synonymous with the paper's FSDP2 environment. Treat the original experiments, subsequent code coverage, and a new configuration of your own as three distinct levels of evidence."
+            ]
+          },
+          {
+            "heading": "A reading route and a minimal diagnostic experiment",
+            "paragraphs": [
+              "Start with §3.1 and one question: exactly which model layers and operators share an implementation? Follow the pinned links through the training entry point, base operators, attention, and MoE. Then compare Table 2 with the training curves. Read §4 last, writing down which weight version and which program produced every probability. This establishes a basis for judgment before working through all the loss equations.",
+              "For a minimal diagnosis in your own system, freeze a checkpoint and save one rollout's tokens, effective lengths, positions, and masks. Have the trainer score exactly that sequence. Then vary only batch composition, lengths, and prefill/decode paths to see whether discrepancies appear. This is a proposed experiment, not a verification that we have already performed on the reader's system.",
+              "Retain at least the maximum absolute difference and the positions with nonzero differences, distinguishing strict equality from agreement within a tolerance. Mean differences alone, or agreement on the final answer, can miss problems. After this passes, introduce weight updates and asynchronous execution to examine staleness separately. The result is an evidence trail that can locate a failure, rather than an assumption that identical weights are sufficient."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "batch-invariance-2025",
+      "title": "Defeating Nondeterminism in LLM Inference",
+      "year": 2025,
+      "venue": "Thinking Machines Lab · technical article · 2025-09-10",
+      "url": "https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/",
+      "role": "optional",
+      "zh": {
+        "contribution": "解释为什么请求、模型权重和数值格式都没变，换一批同时执行的请求仍可能改变结果；提供让计算不随 batch 改变的算子示范。",
+        "relevance": "为今天的 VeXact 补上底层原因：调度和缓存切分会改变数值计算，因此权重已同步不代表训练端与生成端的概率已对齐。",
+        "reading": "值得精读机制部分，特别是 attention 的固定切分长度；结合固定版本代码看矩阵乘法，再回读 VeXact §3.1。",
+        "prerequisites": "知道模型逐 token 生成即可；正文会解释 batch、浮点舍入、归约与 KV 缓存。",
+        "caveat": "这是 2025 年技术文章。演示有性能成本，不能据此宣称任意框架、硬件或张量并行配置默认实现完全一致。",
+        "sections": [
+          {
+            "heading": "1. 同一个请求，只换旁边一起算的请求",
+            "paragraphs": [
+              "先看一个教学例子，并非原文实验：你两次提交相同问题，模型权重也没更新。第一次服务器只处理你的请求，第二次把它和另外七条请求一起计算。这组一起执行的工作叫 batch。即使各条请求不读取彼此内容，矩阵形状也变了，底层可能因此换一种算法。PyTorch 的[数值精度说明](https://docs.pytorch.org/docs/main/notes/numerical_accuracy.html)明确指出，整批计算后取一行，与单独计算那一行，不保证逐比特相同。",
+              "假设两个候选词的分数原本非常接近，细小误差就可能交换第一名。温度设为 0 时采用 greedy，也就是每次选当前分数最高的 token；它不会把两次算出的分数变成一样。第一个词一旦不同，后续输入也不同，回答便可能越走越远。要排查这种问题，应固定目标请求，主动改变同批请求数量，再比较该请求的数值结果。"
+            ]
+          },
+          {
+            "heading": "2. 相同 dtype，没有规定先加哪几个数",
+            "paragraphs": [
+              "用只保留三位有效数字的十进制玩具计算器说明舍入：计算 1000＋1－1000，若先算 1000＋1，1001 会舍入成 1000，最后得到 0；若先算 1－1000，得到可表示的 −999，再加 1000，结果是 1。这是教学算例，不是 BF16 的精确模拟。实际浮点数同样只能保存有限精度；[NVIDIA 的浮点说明](https://docs.nvidia.com/cuda/floating-point/index.html)解释了运算顺序为何影响结果。",
+              "dtype 是数值存储格式，例如 BF16；它不规定所有中间运算的顺序和精度。把很多项合成一个和称为归约。GPU 可以让一组线程加完整行，也可以先分几段各自相加再合并。两条路线在实数数学里相等，实际舍入可能不同。因此，固定同一完整 batch 重跑稳定，与改变 batch 后目标请求仍稳定，是两个不同要求；固定随机种子也不能指定这些加法顺序。"
+            ]
+          },
+          {
+            "heading": "3. 前两处修复：按行求和与矩阵乘法",
+            "paragraphs": [
+              "先看 RMSNorm：它用一个 token 向量中各元素平方的平均值调整整行大小。教学向量 [1, 2, 3, 4] 的平方和是 30；在真实长向量里，重点是怎样把这些平方项加起来。若固定每行的处理方式，旁边多出几行只增加工作量，不改变本行的加法路线。这有助于实现 batch invariance，即本行结果不随同批工作改变。",
+              "矩阵乘法也要为每个输出累加很多乘积。代码可以固定每块输出的形状以及沿内部维度累加的顺序，避免只因 batch 变小就改成另一套计算。下面链接的实现按 dtype 选择固定配置，不按 batch 大小选择配置；因此不能误读成所有 dtype 都使用同一配置。代价也容易理解：小 batch 仍使用较大的计算块时，部分工作可能用不上。[固定版本算子源码](https://github.com/thinking-machines-lab/batch_invariant_ops/blob/f22b1fbe534b1fe045080f44a970a441caaf3c4f/batch_invariant_ops/batch_invariant_ops.py)。"
+            ]
+          },
+          {
+            "heading": "4. 第三处修复：attention 怎样读取旧内容",
+            "paragraphs": [
+              "attention 会利用前面 token 的 K/V 向量；保存它们避免重算的空间就是 KV 缓存。这里还要控制缓存边界：教学例子中，每块处理 4 个位置，旧缓存有 6 个、新增有 6 个。两部分分别处理需要 2＋2 块，先接成 12 个再处理只需 3 块，归约路径可能不同。文章的处理方式是先更新缓存和页表，再让 attention 按统一的逻辑位置读取。",
+              "长上下文常被分段计算，称为 split-KV。为什么固定段数仍不够？看另一个教学例子：同一因果 attention 查询位于第 8 个 token，在长度为 8 的 chunk 中，两段均分的边界是 4；若把它放进长度为 12 的 chunk，边界变成 6，尽管它仍只能看前 8 个位置。固定每段 4 个位置，才能保持它看到的分组为 1–4、5–8；后面位置被遮住。实际实现还须固定段内与合并时的运算方式。[FlashInfer 的相关接口说明](https://docs.flashinfer.ai/api/attention.html)也把固定切分长度与确定性的结果合并联系起来；这不表示所有后端默认启用。"
+            ]
+          },
+          {
+            "heading": "5. 代码实现了哪些部分",
+            "paragraphs": [
+              "本次于 2026-10-20 核对代码，固定在提交 f22b1fbe534b1fe045080f44a970a441caaf3c4f。库通过 torch.Library 替换矩阵乘法、带偏置矩阵乘法、log-softmax 和部分均值运算。log-softmax 把候选分数转换为对数概率，也包含需要控制的归约。[该版本 README](https://github.com/thinking-machines-lab/batch_invariant_ops/blob/f22b1fbe534b1fe045080f44a970a441caaf3c4f/README.md)把 vLLM 示例定位为概念验证。",
+              "不要把这个算子包等同于完整服务系统。原文发表时，固定切分长度所需的内部 FlexAttention 修改尚未包含在发布代码中，这是当时的状态。实际接入时仍要核对模型使用的算子与 attention 后端；能导入库，不等于每条执行路径都已被替换。本文也不据历史示例判断你当前安装的框架默认行为。"
+            ]
+          },
+          {
+            "heading": "6. 代价是多少，哪些条件还不知道",
+            "paragraphs": [
+              "原文性能实验是单 GPU 的 Qwen3-8B API 服务，完成 1000 个请求，每个输出 90–110 token：默认 vLLM 总耗时 26 秒，未优化的确定性版本 55 秒，改进 attention 后 42 秒。文章没有注明该测试的 GPU 型号，也没有给出完整输入长度与到达负载协议。因此这些数值只能说明该演示有成本，不能变成普遍适用的开销比例。[原文 Performance](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/)。",
+              "从机制看，需要关注的是稳定性要求限制了哪些优化选择，以及你的实际负载会不会常碰到这些选择。另一个边界是 TP，即把一个算子的工作拆到多张 GPU 上：它需要跨卡合并结果，而原文把并行通信带来的归约排除在讨论范围之外。单卡算子处理好，不自动保证换 TP 数量、硬件或软件版本仍逐比特相同。"
+            ]
+          },
+          {
+            "heading": "7. 回到 VeXact：同一句话，还要比较概率",
+            "paragraphs": [
+              "把这篇接到今天主读，可以提出两个检查：第一，同一生成端换 batch，结果是否变化；第二，同一权重和同一段 token，生成端与训练端计算的对数概率是否一致。VeXact 针对第二个问题建立参照，在统一模型和算子实现的基础上使用 batch-invariant 算子；它的 attention 选择直接关闭 KV splitting，上文固定每段长度是另一种处理方式。只得到相同的 greedy 文本还不够：两个分布可以第一名相同、其余概率不同。[VeXact v2 §3.1](https://arxiv.org/html/2605.14220v2#S3.SS1)。",
+              "所以，权重没有过时，只排除了参数版本造成的差异，不能排除训练和推理计算不一致造成的差异。建议先读本文的矩阵乘法与 attention 机制，再看固定版本代码，最后回到 VeXact 的对齐检查。对系统工作最有用的追问是：这次缓存、调度或并行优化改变的，是否也包括同一 token 的计算路径？这是读完材料后可带回代码审查的问题，并非声称现有系统已经出错。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Explains why changing the other requests in a batch can alter a result even with identical requests, weights, and storage dtypes, and provides demonstrative batch-invariant operators.",
+        "relevance": "Supplies the numerical background for VeXact: scheduling and cache partitioning can change arithmetic, so synchronized weights do not establish matching trainer and generator probabilities.",
+        "reading": "Read the mechanism sections closely, especially fixed split sizes in attention; inspect the pinned matrix-multiplication implementation before returning to VeXact §3.1.",
+        "prerequisites": "An understanding of token-by-token generation is sufficient; the note introduces batches, floating-point rounding, reductions, and the KV cache.",
+        "caveat": "This is a 2025 technical article. Its demonstration incurs performance costs and does not establish default bitwise agreement across arbitrary frameworks, hardware, or tensor-parallel configurations.",
+        "sections": [
+          {
+            "heading": "1. The same request, different neighbors in the batch",
+            "paragraphs": [
+              "Start with a teaching example, not an experiment from the article. You submit an identical question twice without updating the weights. The server first processes your request alone, then processes it alongside seven others. This group of work executed together is a batch. Requests need not read each other's contents for the matrix shape to change and trigger a different underlying algorithm. PyTorch's [numerical accuracy documentation](https://docs.pytorch.org/docs/main/notes/numerical_accuracy.html) explicitly warns that computing a whole batch and selecting one element need not be bitwise identical to computing that element separately.",
+              "If two possible next tokens have nearly tied scores, a small numerical difference can reverse their ranking. At temperature zero, greedy decoding chooses the current highest-scoring token; it does not make the scores from separate executions equal. Once one token differs, subsequent inputs differ too, and the answers can diverge further. A useful diagnostic keeps the target request fixed, changes the number of neighboring requests, and compares that request's numerical results."
+            ]
+          },
+          {
+            "heading": "2. The dtype does not specify which numbers get added first",
+            "paragraphs": [
+              "Consider a toy decimal calculator that retains three significant digits. To evaluate 1000 + 1 − 1000, adding the first pair rounds 1001 to 1000, leaving zero. Computing 1 − 1000 first gives the representable value −999, and adding 1000 then gives one. This teaching example is not an exact simulation of BF16. Real floating-point formats likewise retain finite precision; [NVIDIA's floating-point guide](https://docs.nvidia.com/cuda/floating-point/index.html) explains why operation order affects results.",
+              "A dtype specifies a storage format such as BF16, rather than every intermediate operation's order and precision. Combining many terms into a sum is a reduction. A GPU can assign a complete row to one group of threads or sum several pieces and combine them afterward. These routes agree over real numbers but may round differently. Repeating an unchanged complete batch reliably and preserving a target request's result after changing its batch are therefore different requirements. Fixing a random seed does not specify these addition orders either."
+            ]
+          },
+          {
+            "heading": "3. The first two fixes: row reductions and matrix multiplication",
+            "paragraphs": [
+              "RMSNorm rescales a token's vector using the mean of its squared elements. For the teaching vector [1, 2, 3, 4], the squared elements sum to 30; with real, long vectors, the question is how those terms are accumulated. Fixing the processing of each row allows additional rows to increase the workload without changing this row's addition path. This supports batch invariance: the row's result remains unchanged when the surrounding work changes.",
+              "Matrix multiplication also accumulates many products for each output. An implementation can fix its output tile shape and accumulation order along the inner dimension, instead of switching computation strategies merely because the batch becomes smaller. The linked implementation selects fixed configurations by dtype, not by batch size; this does not mean all dtypes share one configuration. The tradeoff is intuitive: using a large computational tile for a small batch may leave some work unused. See the [pinned operator source](https://github.com/thinking-machines-lab/batch_invariant_ops/blob/f22b1fbe534b1fe045080f44a970a441caaf3c4f/batch_invariant_ops/batch_invariant_ops.py)."
+            ]
+          },
+          {
+            "heading": "4. The third fix: how attention reads earlier content",
+            "paragraphs": [
+              "Attention uses earlier tokens' K/V vectors; the KV cache stores these to avoid recomputation. Cache boundaries matter too. In a teaching example with blocks of four positions, six cached positions and six new positions require 2 + 2 blocks if handled separately, versus three blocks if combined into twelve positions first. That can change the reduction path. The article updates the cache and page table before attention, allowing it to read a unified sequence of logical positions.",
+              "Long contexts are often processed in separate pieces, called split-KV. Why is fixing the number of pieces insufficient? Consider another teaching example: the same causal-attention query is at token eight. Two equal splits put the boundary at four in an eight-token chunk, but at six when that query is included in a twelve-token chunk, although it still sees only the first eight positions. Fixing each split at four positions preserves its groups of 1–4 and 5–8; later positions are masked. Actual implementations must also control arithmetic within and between splits. [FlashInfer's interface documentation](https://docs.flashinfer.ai/api/attention.html) likewise connects fixed split sizes to deterministic merging, without implying that every backend enables this by default."
+            ]
+          },
+          {
+            "heading": "5. What the released code actually contains",
+            "paragraphs": [
+              "The code was checked on 2026-10-20 at commit f22b1fbe534b1fe045080f44a970a441caaf3c4f. The library uses torch.Library to replace matrix multiplication, matrix multiplication with a bias, log-softmax, and certain mean operations. Log-softmax converts candidate scores into log-probabilities and also involves reductions that require control. The [README at that revision](https://github.com/thinking-machines-lab/batch_invariant_ops/blob/f22b1fbe534b1fe045080f44a970a441caaf3c4f/README.md) describes the vLLM example as a proof of concept.",
+              "The operator package should not be equated with a complete serving system. At publication, the article said that the internal FlexAttention modifications needed for fixed split sizes were absent from its code release; that is a statement about its historical release. Integration still requires checking the operators and attention backend actually used by the model. Importing the package does not demonstrate that every execution path has been replaced, and this historical example does not establish the defaults of your current installation."
+            ]
+          },
+          {
+            "heading": "6. Measured cost and missing experimental conditions",
+            "paragraphs": [
+              "The performance experiment served Qwen3-8B on one GPU: 1,000 requests, each producing 90–110 tokens. Total time was 26 seconds for default vLLM, 55 for the unoptimized deterministic variant, and 42 with improved attention. The GPU model and complete input-length and arrival-load protocol were unspecified, so this demonstrates a cost for that setup rather than a universal overhead percentage. See the article's [Performance section](https://thinkingmachines.ai/blog/defeating-nondeterminism-in-llm-inference/).",
+              "The mechanism suggests asking which optimization choices the consistency requirement restricts and how often your workload needs them. Another boundary is tensor parallelism, or TP: splitting an operator across GPUs introduces cross-device result reductions, which the article excludes from its discussion. Fixing single-device operators therefore does not automatically preserve bitwise results after changing the TP degree, hardware, or software version."
+            ]
+          },
+          {
+            "heading": "7. Back to VeXact: compare probabilities, not just text",
+            "paragraphs": [
+              "This reading motivates two checks. First, does changing a batch alter the same generator's result? Second, for identical weights and token sequences, do the generator and trainer compute identical log-probabilities? VeXact builds a reference for the second question by unifying model and operator implementations and using batch-invariant operators. Its attention implementation disables KV splitting; fixed split sizes, explained above, are a different approach. Matching greedy text alone is insufficient: two distributions can share the same top token while assigning different probabilities elsewhere. See [VeXact v2 §3.1](https://arxiv.org/html/2605.14220v2#S3.SS1).",
+              "Having no stale weights excludes differences caused by parameter versions; it does not exclude differences between training and inference computations. Read the matrix-multiplication and attention mechanisms first, inspect the pinned code, and then return to VeXact's alignment checks. A useful question to take back to a systems code review is whether a cache, scheduling, or parallelism optimization also changes the computation path of the same token. That is a diagnostic question, not a claim that an existing system is already faulty."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "score-centering-2026",
+      "title": "Score Centering Stabilizes Off-policy Reinforcement Learning",
+      "year": 2026,
+      "venue": "arXiv 2026 · v1 2026-09-17 · Together AI",
+      "url": "https://arxiv.org/abs/2609.20807v1",
+      "role": "optional",
+      "zh": {
+        "contribution": "在采样概率与训练概率不同的情况下，减去训练更新中不区分好坏结果的平均推动。官方实现只记录采样器的高概率项，用训练器估计剩余词表，并可与重要性采样组合。",
+        "relevance": "与主读 VeXact 对照：一条路线让生成和训练的数值计算一致，另一条路线允许不一致、调整更新规则。可据此区分数值一致性、梯度偏差和训练稳定性三个目标。",
+        "reading": "值得选读，建议 25–35 分钟。先读本文的记录数据与尾部例子，再看固定版本 README、losses.py 和 tests/test_loss.py，最后核对论文 §5 与附录 B 的实验边界。",
+        "prerequisites": "知道一次 RL 更新会先生成回答、评分，再训练模型即可。正文解释 logprob、score、top-k、stop-gradient 和重要性权重；公式都对应具体操作。",
+        "caveat": "完整分布下的中心化可以消去所定义的漂移，但不消除训练与推理的分布差异。top-k 使用尾部近似；主要实验是短序列和故意放大的失配，不能据此保证长程 agent 训练稳定。",
+        "sections": [
+          {
+            "heading": "两边概率还不同，训练为什么可能先稳下来",
+            "paragraphs": [
+              "生成器写出回答，训练器随后重新计算这些 token 的概率并更新权重。量化、不同计算顺序或旧权重，都可能让两边概率不同。VeXact 尝试对齐计算路径；Score Centering 接受差异仍在，改动的是训练更新。因此这里的 zero 指消去一种平均推动，不是让两边输出概率完全一致。",
+              "score 也不是奖励分数，而是“让某个 token 的对数概率增大，需要怎样改变参数”的梯度方向。若所有结果都得到相同奖励，本来没有理由偏爱哪个结果；但采样来自另一套概率时，这些方向的平均值仍可能不为零。中心化先减去这个平均方向，再用奖励或 advantage 加权；advantage 表示奖励相对比较基准的好坏程度。论文作者为 Together AI 的 Martin Marek、Max Ryabinin，v1 发布于 2026 年 9 月 17 日，按预印本介绍。[论文记录](https://arxiv.org/abs/2609.20807v1)"
+            ]
+          },
+          {
+            "heading": "top-k 是记录哪些概率，不是只准生成哪些词",
+            "paragraphs": [
+              "以下按官方仓库提交 `64842967077ea105470ca73fc5d714366d3f7bdb` 阅读，源码核验日期为 2026 年 10 月 20 日。logits 是转换为概率前，每个候选 token 的原始得分。生成时仍从完整 logits 对应的分布采样；另存每个位置概率最高的 k 个 token 的编号和 logprob，即概率的对数。被实际抽中的 token 即使不在这 k 项中，它的 logprob 也单独保留。后者让训练器知道这次真实选择原来有多大概率，供重要性权重使用。[采样代码](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/models/sampling.py)",
+              "收集过程先缓冲 32 步，再在各个词表分片选局部 top-k，从候选集合选全局 top-k。这些高概率项本身是精确选出的；近似发生在未保存的长尾。训练器必须查询相同 token 编号的概率，不能另选自己的 top-k，也不能把已保存项重新归一化为总和 1，否则会抹掉尾部还占多少概率。[收集实现](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/models/topk.py)；[接口要求](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/README.md)",
+              "记录也有真实存储成本：该实现的头部编号是 int32，logprob 是 float32。按 k=128 计算，每个位置仅这两项就约 1 KiB，另外还有 32 步的完整词表环缓冲。这是按代码形状计算的开销，不是论文的吞吐测量；接入分离部署的训练与生成服务时，还要测传输成本。[缓冲布局](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/models/topk.py)"
+            ]
+          },
+          {
+            "heading": "没有保存的尾部，怎样进入校正",
+            "paragraphs": [
+              "**教学例子，不是实验结果：**已保存项占采样器概率的 80%，却占训练器的 90%。剩余概率分别是 20% 和 10%，于是令 `rho = 0.20 / 0.10 = 2`。对未保存项，暂时用训练器的概率乘二，凑出采样器的尾部。这只匹配总量，不保证尾部每个 token 都估计准确。",
+              "设 p 是训练概率、q 是采样概率。实现为每个已保存项计算 `q − rho × p`，乘该项的训练 logprob 后求和，得到可从普通训练项中扣除的校正。尾部无需逐项保存，是因为完整训练分布下 score 的平均为零，可以把尾部平均换成头部平均的负值。[损失实现](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/losses.py)",
+              "这些系数必须 stop-gradient，即本次反向传播把它们当常数，梯度只穿过最后相乘的 logprob；否则会额外对系数求导，得到另一种更新。实现还保护接近零的尾部质量，并分块计算完整词表的训练 log-softmax。因此“只保存 k 项”节省的是采样历史，并不代表整个训练只计算 k 个词。[MIT 许可证实现](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/losses.py)"
+            ]
+          },
+          {
+            "heading": "官方零漂移测试，为什么不能证明任意尾部都精确",
+            "paragraphs": [
+              "官方测试枚举三个 token，按真实采样概率加权各自的梯度，检查平均是否接近零。top-k 测试取 k=2，尾部只剩一个 token：知道尾部总量，就知道它的概率，所以近似在这里恰好精确。这是有意义的实现检查，但没有覆盖复杂尾部。[测试条件](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/tests/test_loss.py)测试算的是枚举后的期望；一次有限批量仍会有采样波动，不能要求每步实际梯度都为零。",
+              "**独立推导例子：**若四词表中两个尾部 token 的真实概率都是 0.10，建模后却是 0.15 和 0.05，总量仍正确。对于直接以 logits 为参数的教学模型，奖励恒为 +1 时校正后的平均更新等于真实概率减去建模概率：这两个位置还剩 −0.05 和 +0.05。因此尾部总量正确，不等于漂移精确为零；实际模型还要经过参数到 logits 的导数，影响大小需实测。"
+            ]
+          },
+          {
+            "heading": "为什么还要和重要性采样一起用",
+            "paragraphs": [
+              "重要性采样用 p/q 调整样本的权重，试图把来自 q 的数据换算成来自 p 的统计。完整、未截断的修正与只减平均方向，目标不同：后者仍然依据 q 中哪些结果更常出现来学习。实际常把过大权重截断，或丢掉超出范围的权重，以减少极端样本的影响。",
+              "代码组合二者时，先确定权重函数 f，再中心化“加过权的 score”，而不是原来的 score。尾部所有建模概率都等于 rho×p，所以尾部的 p/q 都是 1/rho；校正中使用 `alpha = rho × f(1/rho)`。这说明组合需要重新计算平均，不能随意把两个独立损失相加。固定版本给出截断重要性采样（TIS，截断过大的权重）和掩码重要性采样（MIS，把指定区间外的权重置零）的入口；实际按 token 修正也不应直接说成恢复了完整轨迹分布。[组合实现](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/README.md)"
+            ]
+          },
+          {
+            "heading": "实验把失配放大了，配置还要读到代码",
+            "paragraphs": [
+              "公开配置用 Qwen3-0.6B 做 Countdown、Qwen3-30B-A3B-Base 做 INTELLECT-2 数学。总序列缓冲分别为 512、1024 token，每题八个回答，每批 64、16 道题；每批做一次随机梯度下降（SGD），学习率 0.01。训练计算用 BF16，故意对采样侧施加较强量化或旧权重。这是受控训练实验，不是长程工具调用服务的完整复现。[小模型配置](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/sweeps/06b_quant_stale.yaml)；[30B 配置](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/sweeps/30b_math.yaml)",
+              "论文的旧权重实验描述为每 64 个训练步刷新采样器，且此时与重要性采样组合优于单独中心化。要注意固定代码的配置是 `staleness=64`，刷新条件却是 `step % (staleness + 1) == 0`，实际间隔 65 步；不能把两者写成完全一致，更不能解释成异步系统任意样本的最大延迟。[论文 §5.3](https://arxiv.org/html/2609.20807v1)；[刷新逻辑](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/train_rl.py)",
+              "论文明确用短序列、较大失配来加快区分方法；量化与旧权重图主要报告训练准确率。小模型实验多种子，30B 部分方法只有一个种子。因此这些结果支持继续验证这一修正，不能直接推出在长序列、轻微数值误差或真实异步队列中同样有效。[§5、附录 B](https://arxiv.org/html/2609.20807v1)"
+            ]
+          },
+          {
+            "heading": "带回自己的训练系统，先测哪三个问题",
+            "paragraphs": [
+              "**以下是工程推导：**先用相同前缀核对采样器记录的概率，确保它对应实际生成时的权重和采样规则；再检查头部覆盖率、尾部近似与恒定奖励下的剩余平均梯度；最后在真实序列长度和权重更新节奏下比较奖励、方差与吞吐。前两项定位校正是否算对，最后一项判断是否真的有用。",
+              "精读顺序可从 README 的输入张量开始，顺着 sampling.py、topk.py 到 losses.py，再读测试和实验配置。与 VeXact 并读时始终分开两个问题：能否让两套计算得出相同概率，以及概率仍不同时如何减少有害更新。稳定性改善是结果证据，不能自动替代数值一致性的检查。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Subtracts an average push in training updates that does not distinguish successful from unsuccessful outcomes when sampling and training probabilities differ. The implementation retains high-probability sampler entries, models the tail with the trainer, and supports composition with importance sampling.",
+        "relevance": "Contrasts with the main reading VeXact: one route aligns generation and training numerics, while the other permits a mismatch and changes the update rule. This separates numerical agreement, gradient bias, and training stability as different objectives.",
+        "reading": "Worth an optional close read; allow 25–35 minutes. Start with the recorded-data and tail examples below, then the pinned README, losses.py, and tests/test_loss.py, followed by the experimental limits in Section 5 and Appendix B.",
+        "prerequisites": "Assumes only that an RL update generates answers, scores them, and then trains the model. The note introduces logprobs, scores, top-k, stop-gradient, and importance weights, with formulas tied to operations.",
+        "caveat": "Full-distribution centering cancels the defined drift without removing the difference between training and inference distributions. Top-k models the tail approximately. The main experiments use short sequences and deliberately amplified mismatch, not a guarantee for long-horizon agent training.",
+        "sections": [
+          {
+            "heading": "Why training can stabilize while the probabilities still differ",
+            "paragraphs": [
+              "The generator writes an answer; the trainer later recomputes its token probabilities and updates weights. Quantization, different operation orders, or older weights can make the two probabilities disagree. VeXact tries to align computation paths. Score Centering permits disagreement and modifies the training update instead. Its zero concerns an average push, not identical output probabilities.",
+              "A score is not the reward. It is the gradient direction for increasing a token's log-probability. Constant rewards provide no reason to prefer one outcome, yet these directions can have a nonzero average when tokens come from another distribution. Centering subtracts that average before weighting by reward or advantage; advantage expresses reward relative to a comparison baseline. The preprint by Together AI's Martin Marek and Max Ryabinin first appeared on September 17, 2026. [Paper record](https://arxiv.org/abs/2609.20807v1)"
+            ]
+          },
+          {
+            "heading": "Top-k determines what is recorded, not what may be generated",
+            "paragraphs": [
+              "Source was checked on October 20, 2026, at official repository commit `64842967077ea105470ca73fc5d714366d3f7bdb`. Logits are raw scores for candidate tokens before conversion to probabilities. Generation still samples from the distribution defined by the full logits. Separately, it retains the identifiers and log-probabilities of the k most likely tokens at each position. The sampled token's log-probability is retained even when that token is outside the head. It records the probability of the actual choice for importance weighting. [Sampling code](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/models/sampling.py)",
+              "Collection buffers 32 steps, selects a local top-k on each vocabulary shard, then selects the global top-k from those candidates. The retained head is selected exactly; approximation concerns the unrecorded tail. The trainer must look up the same token identifiers, rather than choose its own head. Renormalizing recorded entries to sum to one would erase the remaining tail mass. [Collection implementation](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/models/topk.py); [interface requirements](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/README.md)",
+              "Recording has a real storage cost: head identifiers use int32 and log-probabilities use float32. At k=128, these two arrays alone require approximately 1 KiB per position, alongside a 32-step full-vocabulary ring buffer. This is a calculation from code shapes, not a measured throughput result. Integrating separately deployed trainers and generators also requires measuring transfer costs. [Buffer layout](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/models/topk.py)"
+            ]
+          },
+          {
+            "heading": "How the unrecorded tail enters the correction",
+            "paragraphs": [
+              "**Teaching example, not an experimental result:** suppose recorded entries cover 80% of sampler probability but 90% of trainer probability. The tails contain 20% and 10%, so `rho = 0.20 / 0.10 = 2`. For unrecorded tokens, provisionally double the trainer probabilities to model the sampler tail. This matches its total mass, not necessarily each tail token.",
+              "Let p denote training probabilities and q sampling probabilities. For every recorded entry, the implementation computes `q − rho × p`, multiplies it by the corresponding training log-probability, and sums the terms into a correction subtracted from the ordinary training term. It avoids recording individual tail entries because the expected score under the full training distribution is zero, allowing the tail contribution to be replaced by the negative head contribution. [Loss implementation](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/losses.py)",
+              "The coefficients must use stop-gradient: treat them as constants during this backward pass and differentiate only the log-probabilities they multiply. Otherwise, differentiating the coefficients adds a different update. The implementation also protects near-zero tail masses and computes full-vocabulary training log-softmax in chunks. Keeping k entries reduces stored sampling history; it does not reduce all training computation to k vocabulary entries. [MIT-licensed implementation](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/losses.py)"
+            ]
+          },
+          {
+            "heading": "Why the zero-drift test does not prove exactness for every tail",
+            "paragraphs": [
+              "The official test enumerates three tokens, weights their gradients by the actual sampling probabilities, and checks that the average is near zero. Its top-k case uses k=2, leaving a single tail token. Knowing the tail mass then determines that token's probability, making the approximation exact. This is a useful implementation test, but it does not cover a complex tail. [Test conditions](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/tests/test_loss.py) The test evaluates an enumerated expectation; a finite batch still has sampling noise, so its actual gradient need not vanish on every step.",
+              "**Independent derivation example:** in a four-token vocabulary, suppose two tail tokens each have true probability 0.10 but are modeled as 0.15 and 0.05. Their total mass remains correct. In a teaching model parameterized directly by logits, the centered mean update with reward fixed at +1 equals actual probability minus modeled probability, leaving −0.05 and +0.05 at those positions. Matching tail mass therefore does not ensure exact zero drift. A real model additionally maps parameter changes into logits, so the resulting impact requires measurement."
+            ]
+          },
+          {
+            "heading": "Why combine it with importance sampling?",
+            "paragraphs": [
+              "Importance sampling weights observations by p/q to convert statistics from q into statistics under p. A full, untruncated correction has a different objective from merely removing the average direction: the latter still learns from outcomes as they occur under q. Practical methods often cap large weights or discard weights outside a band to limit extreme samples.",
+              "The combined implementation first chooses a weighting function f, then centers the weighted score rather than the original score. Every modeled tail probability is rho×p, making its p/q ratio 1/rho; the correction therefore uses `alpha = rho × f(1/rho)`. Composition recomputes the appropriate mean instead of arbitrarily adding two independent losses. The pinned README supplies truncated importance sampling (TIS, capping large weights) and masked importance sampling (MIS, zeroing weights outside a specified band) entry points. Applying corrections per token should also not be described as recovering the complete trajectory distribution. [Composition implementation](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/README.md)"
+            ]
+          },
+          {
+            "heading": "Amplified mismatch, and why the configuration matters",
+            "paragraphs": [
+              "Public configurations train Qwen3-0.6B on Countdown and Qwen3-30B-A3B-Base on INTELLECT-2 mathematics. Total sequence buffers hold 512 and 1,024 tokens respectively; each prompt has eight completions, with 64 and 16 prompts per batch. Each batch receives one stochastic gradient descent (SGD) step at learning rate 0.01. Training computation uses BF16, while the sampler deliberately receives strong quantization or stale weights. This is controlled training, not a complete long-horizon tool-using serving system. [Small-model configuration](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/sweeps/06b_quant_stale.yaml); [30B configuration](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/sweeps/30b_math.yaml)",
+              "The paper describes refreshing the sampler every 64 training steps; composition with importance sampling outperforms centering alone in that setting. The pinned code instead sets `staleness=64` and refreshes when `step % (staleness + 1) == 0`, giving a 65-step interval. These specifications are not identical, and neither should be presented as an asynchronous system's maximum sample delay. [Section 5.3](https://arxiv.org/html/2609.20807v1); [refresh logic](https://github.com/martin-marek/score-centering/blob/64842967077ea105470ca73fc5d714366d3f7bdb/train_rl.py)",
+              "The paper deliberately combines short sequences with severe mismatch to separate methods sooner. Quantization and staleness plots primarily report training accuracy. Small-model experiments use multiple seeds, while some 30B methods have only one. This supports further testing, not a direct extrapolation to long sequences, mild numerical error, or production asynchronous queues. [Section 5, Appendix B](https://arxiv.org/html/2609.20807v1)"
+            ]
+          },
+          {
+            "heading": "Three checks to bring back to a training system",
+            "paragraphs": [
+              "**Engineering deductions:** first check recorded probabilities on identical prefixes against the weights and sampling rules actually used during generation. Next measure head coverage, tail approximation, and the remaining mean gradient under constant rewards. Finally compare reward, variance, and throughput at real sequence lengths and refresh schedules. The first two checks diagnose whether the correction is computed as intended; the last determines whether it helps.",
+              "Begin with the README's input tensors, follow sampling.py and topk.py into losses.py, then inspect tests and experiment configurations. Alongside VeXact, keep two questions distinct: can the computations produce matching probabilities, and how can harmful updates be reduced when they do not? Improved stability is outcome evidence, not a substitute for checking numerical agreement."
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

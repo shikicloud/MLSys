@@ -3,12 +3,12 @@ title: "每日论文推荐"
 category: ml-sys
 tags: [reading-digest]
 description: "LLM 与 Agent 的能力、学习与系统：从经典基础到前沿研究。"
-published: "2026-10-19T09:14:09+08:00"
-date: 2026-10-19
+published: "2026-10-20T09:09:11+08:00"
+date: 2026-10-20
 created: 2026-10-15
-updated: 2026-10-19
+updated: 2026-10-20
 status: growing
-paper_ids: ["replayssm-2026","gated-delta-networks-2025","suffixreplay-2026","aide2-recursive-self-improvement-2026","self-distillation-continual-learning-2026","reuse-2026","cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
+paper_ids: ["vexact-zero-mismatch-2026","batch-invariance-2025","score-centering-2026","replayssm-2026","gated-delta-networks-2025","suffixreplay-2026","aide2-recursive-self-improvement-2026","self-distillation-continual-learning-2026","reuse-2026","cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
 ---
 
 # 每日论文推荐
@@ -21,6 +21,7 @@ paper_ids: ["replayssm-2026","gated-delta-networks-2025","suffixreplay-2026","ai
 
 ## 历史推荐（最新在前）
 
+- [[CN/reading/daily/2026-10-20|2026-10-20 · 训练与 rollout 怎么才能真正一致：从 VeXact 到梯度校正]] — 主读: Diagnosing Training-Inference Mismatch in LLM Reinforcement Learning via a Zero-Mismatch Reference
 - [[CN/reading/daily/2026-10-19|2026-10-19 · 混合模型推理：状态不再增长，为什么还是慢？]] — 主读: ReplaySSM: Cache SSM Inputs, Not State
 - [[CN/reading/daily/2026-10-18|2026-10-18 · Agent 怎样改进自己：改程序、学示范与验证收益]] — 主读: Recursive self-improvement of AI research agents
 - [[CN/reading/daily/2026-10-17|2026-10-17 · R1 之后的训练：长回答怎么调度，能力提升怎么判断]] — 主读: Reshaping Rollout Workloads for Asynchronous RL Post-Training on Heterogeneous Accelerators

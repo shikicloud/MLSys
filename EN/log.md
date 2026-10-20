@@ -138,3 +138,6 @@ updated: 2026-06-15
 
 ## 2026-10-19
 - [READING] Published the 2026-10-19 edition: ReplaySSM on state traffic, speculative rollback, and separate precisions; Gated Delta Networks on the update mechanism; and SuffixReplay on approximate prefix-state recovery. Bilingual explanations include worked examples, evaluation conditions, quality tradeoffs, and explicit paper-version boundaries.
+
+## 2026-10-20
+- [READING] Published the 2026-10-20 edition: VeXact as the main diagnostic reference, with batch-invariant operators and Score Centering as optional readings. Bilingual examples, pinned source code, and evaluation conditions distinguish matched-weight numerical agreement, policy staleness, and gradient-drift correction.
