@@ -141,3 +141,6 @@ updated: 2026-06-15
 
 ## 2026-10-20
 - [READING] Published the 2026-10-20 edition: VeXact as the main diagnostic reference, with batch-invariant operators and Score Centering as optional readings. Bilingual examples, pinned source code, and evaluation conditions distinguish matched-weight numerical agreement, policy staleness, and gradient-drift correction.
+
+## 2026-10-21
+- [READING] Published the 2026-10-21 edition: token cues and causal training-data edits as the main reading, with Thinking Leakage and feature-level RL generalization as optional readings. Bilingual examples distinguish capability elicitation, mode changes, and representation interventions, with evaluation budgets and claim boundaries.

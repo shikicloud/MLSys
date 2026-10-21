@@ -1,0 +1,455 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-10-21",
+  "publishedAt": "2026-10-21T09:05:48+08:00",
+  "zh": {
+    "title": "答得更好了，模型究竟学到了什么？",
+    "summary": "准确率提高之后，我们还需要问：模型掌握了什么新东西，又有哪些变化只是让已有能力更容易发挥？今天主读 10 月的 token cue 研究，从固定回答开头两个 token 的实验，一直追到修改训练数据的因果对照。两篇选读分别检查混合推理模型的模式切换，以及 RL 与监督微调怎样改变内部特征。三篇都重视对照实验，但研究对象和结论范围不同；不能把某组结果外推成所有强化学习都没有学到新能力。先读主读的具体例子，表征与干预部分可以第二遍再看。"
+  },
+  "en": {
+    "title": "What has a model learned when its answers improve?",
+    "summary": "When accuracy improves, what has a model learned, and what changes simply make existing capabilities easier to express? The main reading is an October study of token cues, moving from fixing two opening tokens to causal interventions on training data. Two optional readings examine mode switching in hybrid reasoning models and the internal features changed by RL and supervised fine-tuning. All three use controlled comparisons, but their subjects and claims differ; none establishes that all reinforcement learning adds no new capability. Start with the concrete example and return to representations and interventions on a second pass."
+  },
+  "papers": [
+    {
+      "id": "base-model-token-cues-2026",
+      "title": "Base Models Can Reason By Taking a Cue From Training Data",
+      "year": 2026,
+      "venue": "arXiv 2026 · MIT / UC Berkeley / UW / Ai2 · v1 2026-10-05",
+      "url": "https://arxiv.org/abs/2610.06851v1",
+      "role": "main",
+      "zh": {
+        "contribution": "通过固定回答开头、比较 RL 前后行为，以及直接改写训练数据，论文说明：一些基础模型已有的推理行为，能被极短的文本线索引出。部分 RL 收益来自更常选择这些开头；数据干预则提供证据，说明线索的作用怎样从训练中的关联而来。",
+        "relevance": "适合重新理解“后训练究竟教会了什么”。它把默认答对率、给定条件后能做出的行为，以及训练数据怎样决定这种条件区分开，也提示我们评估数据质量时不能只看答案和推理步骤，开头格式同样可能影响后续行为。",
+        "reading": "值得精读。优先看 Figure 1–5 和 §2–3，再用 Table 6、Table 16 与 Appendix B/F 核对采样和数据干预条件。最重要的不是记住一个好用的词，而是学习作者怎样检验“能力已经存在，但默认没有用出来”这个解释。",
+        "prerequisites": "只需了解模型逐 token 续写。正文会解释基础模型、回答预填充、pass@1、GRPO 和隐藏状态；概率公式只有一行，跳过也能理解主线。",
+        "caveat": "2026 年 10 月 5 日的预印本 v1，MIT、UC Berkeley、University of Washington 与 Ai2 合作，采用 CC BY 4.0。结论主要涉及所测基础模型、数学/代码任务与直接从基础模型开始的 RL；不能推出所有现代后训练都只改变开头，也不存在跨模型通用的万能词。",
+        "sections": [
+          {
+            "heading": "同一道题，只替模型写好开头，后面的解法就变了",
+            "paragraphs": [
+              "论文展示了一道题：834 名学生上音乐课，占全校学生的三分之二，学校共有多少人？正确计算是 834 × 3 / 2 = 1251。对同一个 Olmo-3-7B 基础模型，作者先填入不同的回答开头，再让它自己续写。以 Answer 开头的一次回答直接给出错误的 1002；以 Okay 开头的另一条回答列出关系、算出 1251，还检查了计算。这是论文中的具体样例，不是每次生成都会重复的结果。",
+              "这里没有把正确答案塞进开头，也没有在两次生成之间训练模型。干预只是预先写入极短的回答前缀，称为 prefill，即预填充。它让我们能问一个更具体的问题：模型原本不会求解，还是在默认生成时更容易选择另一种回答方式？单个例子不能回答这个问题，所以论文随后做了跨题评测、RL 对照和训练数据干预。",
+              "本文精读的是 2026 年 10 月 5 日发布的 v1，作者 Sophie L. Wang、Amil Dravid 等来自 MIT、UC Berkeley、University of Washington 与 Allen Institute for AI。论文采用 CC BY 4.0。它的新意主要在后面的对照链条：不只找到一个有效提示，还回到训练数据检验它为何有效。[论文 v1 与 Figure 1](https://arxiv.org/pdf/2610.06851v1) · [作者项目页](https://www.sophielwang.com/cues)"
+            ]
+          },
+          {
+            "heading": "开头出现的概率，与给定开头后会怎么写，是两回事",
+            "paragraphs": [
+              "Olmo 的有效前缀写作 `.\\n\\nOkay`：其中 `\\n` 表示换行，不是要输入反斜杠和字母 n。对该模型的分词器，句点加两个换行是一枚 token，Okay 是另一枚。Token 是模型处理的文本单位，不一定等于一个单词。作者把这种能影响后续行为的短前缀称为 token cue，本文称为“开头线索”。",
+              "给定一道题，一条完整回答的概率可以拆成 `开头的概率 × 给定开头后续写的概率`。两项影响不同：模型可能很少自己写出某个开头，但一旦收到它，就能继续写出不错的解法。强制预填充跳过了第一项的选择过程，因此可以单独观察后面的续写能力；它并没有直接改变模型权重。",
+              "“基础模型”也不意味着没有看过推理文本。本文的 Olmo 等模型在预训练和后续的中期训练中已经接触到这类数据，尚未接受所比较的 RL 更新。评测的原始提示模板本身也要求逐步求解。因此准确的说法是：保持原有题目和指令，只改变回答开头，再观察额外效果。[§2 与 Appendix B.2](https://arxiv.org/html/2610.06851v1#S2)"
+            ]
+          },
+          {
+            "heading": "怎样找线索：用训练题上的答案一致性，而不是测试题正确率",
+            "paragraphs": [
+              "作者先取 30 道 MATH 训练题，用 beam search 搜索模型本来较可能生成的开头。这里的 beam search 只是每一步保留一组概率较高的候选；宽度为 20，深度为两个 token，最后得到 20 个短开头。随后对每个开头、每道题各生成 16 条完整回答，比较最终答案是否集中。",
+              "选择标准叫答案熵：同一道题的 16 条回答越集中在少数答案上，熵越低。研究者选平均熵最低的候选，不需要查询标准答案；同时过滤掉答案缺失率明显恶化的候选，防止“总是不输出答案”显得很一致。选定后，同一模型和提示模板使用同一个开头，跨所有评测题与基准保持不变。[§2.1](https://arxiv.org/html/2610.06851v1#S2.SS1)",
+              "这里的“无答案标签”不等于没有成本。仅上述候选评分就需要 20 × 30 × 16 = 9,600 次续写，这是由设置算出的数量，还未计候选搜索。答案一致也可能是大家都答错，所以它是本实验验证过的一种选择指标，不是正确性的保证。新数据分布下仍需要独立评测，不能在测试集反复挑到一个最好的词再报告收益。"
+            ]
+          },
+          {
+            "heading": "收益有多大：先分清单次成功率与多次尝试",
+            "paragraphs": [
+              "MATH-500 是包含 500 道数学题的测试集。Table 6 中，Olmo-3-7B 在固定 RL-Zero 提示下，从不预填充时的 42.2% 提升到 77.9%；Qwen3-14B 在自己的 boxed 提示下，从 72.2% 提升到 86.6%，使用的开头是带前导空格的 ` Alright,`。这些是各自模型内的对照，不是把两种提示混在一起比较模型强弱。",
+              "指标 pass@1 表示一次随机生成答对的概率。作者每题采样 32 次来估计它，而不是从 32 次里选一条对的就算成功。后者属于另一类多次尝试指标。默认采样温度为 0.6、top-p 为 0.95、最多生成 31,744 token；温度和 top-p 控制随机采样方式，token 上限控制最长回答。误差棒反映采样轮次的变化，不代表多次独立训练的差异。[Appendix B.1 与 Table 6](https://arxiv.org/html/2610.06851v1#A2.SS1)",
+              "同一线索也被原样用于其他数学题和 HumanEval 代码测试。Olmo 的数学与代码成绩都改善；Qwen 的代码成绩则仍接近本来就较高的基线，并非所有任务都有同样收益。Olmo 在 MATH-500 的 pass@16（16 次尝试至少一次答对的概率）只从 94.0% 变为 95.4%，说明单次成功率的大幅提升，不应直接说成“可解题范围扩大了一倍”。"
+            ]
+          },
+          {
+            "heading": "RL 改变了什么：先看同样的前文，再比较下一步",
+            "paragraphs": [
+              "若两个模型前面已经写出不同内容，后面的差异可能只是由不同上下文造成。作者因此把完全相同的 token 历史分别送给基础模型和 RL 模型，逐位置比较下一 token 的概率分布。用来量化分布差异的指标是 KL divergence；这里不必先掌握公式，只需知道它用于检查两套预测有多不同。",
+              "在所测轨迹上，最大的分布差异集中在最开始的两个位置，后面明显减小。Olmo 的目标开头概率从 0.14 升到 0.65，Qwen 从 0.04 升到 0.58。作者还让基础模型接着 RL 模型写出的开头继续生成，恢复了接近 RL 的成绩。这个交换实验的切换点是首个空行之后再过两个 token，不能误写成严格只交换最前面两个 token。[§2.3 与 Appendix D.3](https://arxiv.org/html/2610.06851v1#S2.SS3)",
+              "另一组实验比较普通 RL 与始终强制给定线索的 RL。它使用 GRPO：同题生成多份回答，以正确与否的奖励相对组内平均值来更新。作者用 LoRA 训练 300 步，即只学习一组紧凑的权重增量，训练回答上限为 4,096 token；这与前面的评测预算不同。强制线索在训练前就获得很高成绩，后续改善较少，支持“这些运行中相当一部分收益来自更常进入已有续写方式”，而非证明所有 RL 只学了开头。"
+            ]
+          },
+          {
+            "heading": "会不会只是写得更长，碰巧多算了几步？",
+            "paragraphs": [
+              "这是必须排除的解释。Olmo 加线索后，平均回答确实从约 4,800 token 增至 6,700 token。但其他候选开头有的生成长度约为有效线索的两倍，正确率却低于不加线索。多输出文字本身不足以解释为什么某些开头有效。",
+              "作者进一步把已经生成的回答截到相同 token 数，再检查截断范围内是否已有可提取的正确答案。Olmo 的有效线索从约 1,000 token 的截断点起仍优于无开头线索的条件。这能支持“收益不完全由长度增加解释”，但不是让模型提前知道预算后重新作答，也不是测量相同 GPU 时间下的服务效果。[§2.4 与 Appendix E.1](https://arxiv.org/html/2610.06851v1#S2.SS4)",
+              "这一控制也有边界：Qwen3-14B 在很小的截断预算下，带线索反而可能更差。若线索使模型先写很长的推理，而使用场景要求极短回答，它未必合适。因此，判断一种生成方式是否更好，应连同答案正确率、输出长度和实际延迟一起看；最后一项是面向应用的评估建议，并非论文已测的结果。"
+            ]
+          },
+          {
+            "heading": "真正的因果检验：把训练中的 Okay 改成 Chicken",
+            "paragraphs": [
+              "作者发现 Olmo 中期训练数据里，83% 的合成推理轨迹以 Okay 开头。但仅有这个统计，还不能确认它造成了效果。于是研究者从同一份预训练 checkpoint 重启中期训练，保持训练配方、数据顺序和随机种子相同，只改数据里的词。中期训练是预训练后继续吸收特定数据混合的阶段，与按答题奖励进行的 RL 不同。",
+              "第一组用原文，第二组把混合数据中完整单词 Okay/okay 替换成 Chicken/chicken，称为 rename。两组都训练 100 亿 token。在 MATH-500、7,168 token 回答上限下，Chicken 线索的 pass@1 从 2.4% 变为 37.2%，接近改名后 Okay 的 38.3%。这些数字属于较短的重训实验，不能接在前面已发布基础模型的 77.9% 后面当作一次连续变化。[Appendix F.1 与 Table 16](https://arxiv.org/html/2610.06851v1#A6.SS1)",
+              "这说明 Chicken 无须在自然语言中表达“认真思考”，也能在特定上下文里获得推理线索的作用。关键是训练时它反复出现在什么文本之前。不过，改名后无条件答题成绩也从 13.8% 升到 23.3%，所以不能宣称这次数据改动只影响了一个词、其他行为完全不变；因果证据来自整组有明确对照的行为变化。"
+            ]
+          },
+          {
+            "heading": "删掉旧关联还不够：让 Okay 转而表示“下面是一道新题”",
+            "paragraphs": [
+              "改名实验有一个很有价值的结果：即使这批中期训练文本不再出现 Okay，强行填入 Okay 仍能引出推理。它自然出现的概率大幅降低，但给定它之后的续写功能保留下来。作者指出，这个开头在更早的预训练 checkpoint 上就已有效；早期关联可能解释了为何作用没有被简单删词抹去。",
+              "第三组从 rename 数据继续修改，把短问答数据中段首的 Question: 换成 Okay,，称为 redirect。现在 Okay 更常接着“一个问题是什么”，而非“这道题如何求解”。训练后，Okay 线索的 MATH-500 成绩降至 0.2%，Chicken 仍为 40.1%，无前缀条件为 26.7%。这不是模型整体失去了解题能力，而是某个开头与后续行为的关系发生变化。[§3.1 与 Table 16](https://arxiv.org/html/2610.06851v1#S3.SS1)",
+              "补充实验在 SmolLM3 上观察到类似模式；另一次完整的 1,000 亿 token Olmo 改名实验中，Chicken 从未改名对照的 18.2% 达到 76.9%。后者是另一训练预算，不能与 100 亿实验混用。这些复验增强了数据关联解释，但两个干预模型的训练混合都含合成推理文本，尚不能据此保证任意预训练数据与模型都会出现同样效应。"
+            ]
+          },
+          {
+            "heading": "模型内部的证据支持什么，又没有证明什么？",
+            "paragraphs": [
+              "隐藏状态是模型在各层处理文本时产生的数值向量。作者取 Olmo 第 24 层的回答向量，与训练文档经过同层所得的向量比较，寻找最相似的十个邻居，再看这些邻居更多来自哪类文本。有效线索之后的状态，更接近合成推理轨迹中的状态；Answer 等开头则更接近短问答文本。",
+              "这是生成过程与训练文本类型之间的相关证据，不是模型在运行时检索了这些文档，也不是已经找到一个控制推理的独立神经电路。论文自己的反例很重要：某个开头也能使状态接近“推理相关”文本，但模型只重述任务和列步骤，没有算出答案。风格像推理，不等于推理正确。[§3.2](https://arxiv.org/html/2610.06851v1#S3.SS2)",
+              "位置同样影响结果。研究者在回答前面的一两个段落插入 Okay 时，状态相似性的变化能保持较久，正确率也提高；更晚插入时，变化短暂，成绩甚至低于基线。它说明线索的效果依赖已经积累的上下文，不是随时插入一个词就能让模型重新正确思考。"
+            ]
+          },
+          {
+            "heading": "应带走的结论，以及精读时最该核对的地方",
+            "paragraphs": [
+              "最有用的结论是把两个问题分开：模型在适当条件下能做什么，以及默认有多大概率采用那种行为。本文通过回答前缀、RL 对照、数据改名与重定向把这一区别落实成实验。它为所测设置提供了具体解释，不能替所有 R1 之后的复杂后训练作结论；作者明确限制在直接从基础模型开始的 RL-Zero 风格比较。",
+              "其他边界也应保留：测试过的 Llama-3.1-8B 开头没有找到有效线索，数学与代码迁移并不均匀，而且短重训实验的 AIME 成绩仍很低。表格中的采样误差也不能代替多训练种子的可靠性检验。因此这篇值得读的原因是干预设计清楚，而不是它证明“两枚 token 可以取代现代 RL”。[§6](https://arxiv.org/html/2610.06851v1#S6)",
+              "精读可按 Figure 1 的例子、§2.1 的选择过程、§2.3 的 RL 对照、§3.1 的三组数据干预、§3.2 的内部证据这个顺序。复现实验则要固定模型版本、分词器、提示模板、前缀字节、采样设置和评测预算，并把选线索的题与评测题分开；这是从实验设计提炼的建议。官方代码已公开，但本文没有重新运行模型实验。[官方代码](https://github.com/sophicle/cues)"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "By fixing response openings, comparing behavior before and after RL, and directly editing training data, the paper shows that extremely short textual cues can elicit reasoning behaviors already available in some base models. Part of the observed RL gain comes from choosing these openings more often; data interventions provide evidence for how training associations give the cues their effects.",
+        "relevance": "Useful for reconsidering what post-training actually teaches. It separates default accuracy, behavior available under a given condition, and the training data that makes that condition effective. It also suggests that assessing data quality requires attention to response openings and formatting, alongside answers and reasoning steps.",
+        "reading": "Worth a close read. Start with Figures 1–5 and §2–3, then check Table 6, Table 16, and Appendices B/F for sampling and intervention conditions. The main lesson is how the authors test the explanation that a behavior is already available but not usually expressed, rather than memorizing a useful word.",
+        "prerequisites": "Only familiarity with next-token generation is needed. The note introduces base models, response prefilling, pass@1, GRPO, and hidden states. There is just one simple probability decomposition; the argument remains understandable without it.",
+        "caveat": "An October 5, 2026 v1 preprint from MIT, UC Berkeley, the University of Washington, and Ai2, licensed CC BY 4.0. Its conclusions primarily concern the tested base models, mathematics/code tasks, and RL directly from a base model. It does not show that all modern post-training merely changes openings, or that a universal cue works across models.",
+        "sections": [
+          {
+            "heading": "The same problem, a supplied opening, and a different continuation",
+            "paragraphs": [
+              "The paper shows a problem in which 834 students take music and represent two-thirds of a school's students. The correct calculation is 834 × 3 / 2 = 1251. Using the same Olmo-3-7B base model, the authors supply different response openings and let it continue. One Answer-opening response immediately gives the incorrect 1002. An Okay-opening response writes down the relationship, calculates 1251, and checks the calculation. This is a concrete example from the paper, not an outcome guaranteed on every generation.",
+              "The opening does not contain the correct answer, and the model is not trained between those generations. The intervention supplies a very short response prefix, called a prefill. This permits a more specific question: could the model not solve the problem, or was its default generation more likely to choose another way of responding? A single example cannot settle this, so the paper follows it with evaluations across problems, RL comparisons, and training-data interventions.",
+              "This note reads the October 5, 2026 v1 paper, whose authors Sophie L. Wang, Amil Dravid, and colleagues are affiliated with MIT, UC Berkeley, the University of Washington, and the Allen Institute for AI. It is licensed CC BY 4.0. Its main contribution is the sequence of controls: the authors do not merely find an effective prompt, but return to the training data to investigate why it works. [Paper v1 and Figure 1](https://arxiv.org/pdf/2610.06851v1) · [Authors' project page](https://www.sophielwang.com/cues)"
+            ]
+          },
+          {
+            "heading": "How often an opening appears differs from what follows when it is given",
+            "paragraphs": [
+              "The effective Olmo prefix is written `.\\n\\nOkay`, where `\\n` denotes a newline rather than a literal backslash and letter n. For this model's tokenizer, the period and two newlines form one token, and Okay forms another. Tokens are the text units processed by the model; they are not necessarily words. The authors call a short prefix that influences subsequent behavior a token cue.",
+              "For a fixed problem, the probability of a complete answer decomposes into `probability of the opening × probability of the continuation given that opening`. These factors have different roles. A model may rarely produce an opening by itself yet continue with a good solution when it receives that opening. Forced prefilling bypasses the first choice and lets us inspect the conditional continuation; it does not directly modify the weights.",
+              "A base model need not be unfamiliar with reasoning text. The Olmo and other models here have already encountered such material during pretraining and subsequent mid-training, before the RL updates being compared. The original evaluation prompts also request step-by-step solutions. The precise intervention is therefore to retain the problem and instructions, change only the response opening, and examine the additional effect. [§2 and Appendix B.2](https://arxiv.org/html/2610.06851v1#S2)"
+            ]
+          },
+          {
+            "heading": "Finding a cue through answer agreement on training problems",
+            "paragraphs": [
+              "The authors take 30 MATH training problems and use beam search to find openings the model is relatively likely to generate. Here beam search simply retains a set of high-probability candidates at each step: a width of 20 and a depth of two tokens produce 20 short openings. For every opening and problem, they then sample 16 complete responses and inspect how concentrated the final answers are.",
+              "The selection metric is answer entropy. When the 16 responses to a problem concentrate on fewer answers, entropy is lower. The authors select the candidate with the lowest average entropy without consulting reference answers. They also filter candidates whose missing-answer rate worsens substantially, preventing a consistently absent answer from looking attractive. Once selected, one cue is held fixed across all evaluation problems and benchmarks for that model–prompt pair. [§2.1](https://arxiv.org/html/2610.06851v1#S2.SS1)",
+              "No answer labels does not mean no cost. Candidate scoring alone requires 20 × 30 × 16 = 9,600 continuations, calculated from the stated setup and excluding candidate search. Agreement can also mean that every response is wrong. It is an empirically supported selection proxy here, not a guarantee of correctness. A new distribution still needs independent evaluation; repeatedly choosing the best word on the test set would not provide the same evidence."
+            ]
+          },
+          {
+            "heading": "How large is the gain? Separate one-attempt accuracy from repeated attempts",
+            "paragraphs": [
+              "MATH-500 is a 500-problem mathematics test set. In Table 6, Olmo-3-7B under its fixed RL-Zero prompt improves from 42.2% without a prefill to 77.9% with one. Qwen3-14B under its own boxed prompt improves from 72.2% to 86.6%, using ` Alright,` with a leading space. These are comparisons within each model, not a cross-model ranking that treats the two prompt formats as identical.",
+              "Pass@1 is the probability that one sampled response is correct. The authors sample 32 responses per problem to estimate it; a problem does not count as solved merely because one of those 32 is correct. That would be a different repeated-attempt metric. Default sampling uses temperature 0.6, top-p 0.95, and a 31,744-token generation cap. Temperature and top-p control stochastic sampling, while the cap limits response length. Error bars capture variation across rollout indices, not independent training runs. [Appendix B.1 and Table 6](https://arxiv.org/html/2610.06851v1#A2.SS1)",
+              "The same cue is reused on other mathematics benchmarks and HumanEval coding tests. Olmo improves in both mathematics and code; Qwen's coding results remain close to its already high baseline. Gains are not uniform across tasks. Olmo's MATH-500 pass@16—the probability of at least one correct response in 16 attempts—moves only from 94.0% to 95.4%, so the large one-attempt improvement should not be described as a doubling of the range of solvable problems."
+            ]
+          },
+          {
+            "heading": "What RL changes: compare predictions after exactly the same history",
+            "paragraphs": [
+              "If two models have already written different text, later differences may simply follow from their different contexts. The authors therefore supply identical token histories to the base and RL models and compare the next-token distributions at each position. They measure distributional discrepancy with KL divergence. Knowing the formula is not necessary here; its role is to reveal where the predictions differ.",
+              "On the tested trajectories, the largest differences occur at the first two positions and become much smaller afterward. The target opening's probability rises from 0.14 to 0.65 for Olmo and from 0.04 to 0.58 for Qwen. The authors also let the base model continue an RL-generated opening, recovering approximately RL-level performance. That swapping experiment switches models two tokens after the first blank line; it must not be described as exchanging strictly the first two tokens. [§2.3 and Appendix D.3](https://arxiv.org/html/2610.06851v1#S2.SS3)",
+              "Another experiment compares ordinary RL with RL that always supplies the cue. It uses GRPO, sampling several answers to a problem and updating from binary correctness rewards relative to the group's mean. The authors train LoRA for 300 steps, learning only a compact set of weight updates, with a 4,096-token training response cap, distinct from the evaluation budget above. Cue forcing starts at high accuracy before training and leaves less subsequent improvement. This supports the explanation that much of the gain in these runs comes from more often entering an existing continuation behavior, not a claim that all RL only learns openings."
+            ]
+          },
+          {
+            "heading": "Could the improvement simply come from writing longer answers?",
+            "paragraphs": [
+              "This alternative explanation needs a control. With the cue, Olmo's average response does grow from roughly 4,800 to 6,700 tokens. But some other candidate openings produce responses about twice as long as the effective cue while scoring below the no-cue baseline. More generated text alone cannot explain why particular openings work.",
+              "The authors also truncate already generated responses to the same token count and check whether an extractable correct answer appears within that prefix. The effective Olmo cue remains ahead of no cue from truncation lengths of roughly 1,000 tokens onward. This supports an advantage beyond length alone. It is not a fresh generation in which the model was told its budget in advance, nor a serving comparison at equal GPU time. [§2.4 and Appendix E.1](https://arxiv.org/html/2610.06851v1#S2.SS4)",
+              "The control has a boundary too: at very small truncation budgets, Qwen3-14B can do worse with the cue. A cue that encourages extended reasoning may be unsuitable when an application requires a very short answer. Comparing generation methods should therefore consider correctness, output length, and actual latency together. That last measurement is an application-oriented recommendation, not a result already measured in this paper."
+            ]
+          },
+          {
+            "heading": "The causal intervention: replace Okay with Chicken in training data",
+            "paragraphs": [
+              "The authors find that 83% of synthetic reasoning traces in Olmo's mid-training data start with Okay. That statistic alone does not establish the cause of its effect. They therefore restart mid-training from the same pretrained checkpoint, keeping the recipe, data order, and random seed fixed while editing words in the data. Mid-training continues learning on a particular data mixture after pretraining; it differs from RL driven by answer rewards.",
+              "One run uses the original text. A second replaces whole-word Okay/okay with Chicken/chicken throughout the mixture, called the rename condition. Both train for 10 billion tokens. On MATH-500 with a 7,168-token response cap, Chicken-cued pass@1 changes from 2.4% to 37.2%, close to Okay's 38.3% after renaming. These are shorter retraining experiments. Their values cannot be attached to the released base model's earlier 77.9% as though they describe one continuous trajectory. [Appendix F.1 and Table 16](https://arxiv.org/html/2610.06851v1#A6.SS1)",
+              "Chicken need not mean 'think carefully' in ordinary language to become a reasoning cue in a particular context. What matters is the text it repeatedly precedes during training. However, no-cue accuracy also rises from 13.8% to 23.3% after renaming. We cannot claim that the data edit changes only one word's behavior and leaves everything else untouched; the causal evidence comes from the complete pattern across explicitly controlled conditions."
+            ]
+          },
+          {
+            "heading": "Removing the old association is not enough: redirect Okay toward a new question",
+            "paragraphs": [
+              "The rename experiment reveals an important distinction. Even when this mid-training text no longer contains Okay, forcibly supplying it still elicits reasoning. Its probability of appearing naturally decreases dramatically, while its conditional continuation effect persists. The authors note that the cue already works at an earlier pretrained checkpoint; older associations may explain why simply deleting the word from this stage does not erase its effect.",
+              "The third condition edits the rename data further, replacing paragraph-initial Question: in short question–answer data with Okay,. This is the redirect condition. Okay is now associated with a question coming next rather than a solution to the supplied problem. After training, Okay-cued MATH-500 accuracy falls to 0.2%, while Chicken remains at 40.1% and no cue scores 26.7%. The model has not globally lost its ability to solve problems; a particular opening's relationship with subsequent behavior has changed. [§3.1 and Table 16](https://arxiv.org/html/2610.06851v1#S3.SS1)",
+              "Supplementary experiments find similar patterns in SmolLM3. A separate full 100-billion-token Olmo rename run raises Chicken-cued accuracy from the unedited control's 18.2% to 76.9%. That is a different training budget and must not be mixed with the 10-billion-token comparison. These replications strengthen the data-association account, but both intervention models include synthetic reasoning traces in their training mixtures. They do not guarantee the same effect for arbitrary pretraining data and models."
+            ]
+          },
+          {
+            "heading": "What the internal evidence supports—and what it does not establish",
+            "paragraphs": [
+              "Hidden states are numerical vectors produced as a model processes text through its layers. The authors compare Olmo layer-24 vectors from generated responses with vectors produced by training documents at the same layer. They find the ten most similar neighbors and inspect which document categories those neighbors belong to. After an effective cue, response states resemble states from synthetic reasoning traces more closely. Openings such as Answer instead shift similarity toward short question–answer text.",
+              "This is correlational evidence connecting generation to types of training text. It does not mean the model retrieves those documents at runtime, and it does not identify an independent neural circuit controlling reasoning. The paper includes a useful counterexample: an opening can move states toward reasoning-related text while the model merely restates the task and lists steps without calculating an answer. A reasoning-like style does not establish correct reasoning. [§3.2](https://arxiv.org/html/2610.06851v1#S3.SS2)",
+              "Position matters as well. Inserting Okay in the first or second paragraph produces a more sustained similarity shift and improves accuracy. Later insertion yields a brief shift and can perform worse than the baseline. Its effect therefore depends on the context already accumulated. It is not a word that can be inserted anywhere to restart correct reasoning."
+            ]
+          },
+          {
+            "heading": "What to take away, and what to check during a close read",
+            "paragraphs": [
+              "The most useful distinction is between what a model can do under appropriate conditions and how likely it is to express that behavior by default. Response prefills, RL comparisons, renaming, and redirection turn this distinction into experiments. They provide a concrete explanation for the tested settings, not a verdict on every complex post-R1 pipeline. The authors explicitly limit the comparison to an RL-Zero-style setting that starts directly from base models.",
+              "Other boundaries matter too. None of the tested openings yields an effective cue for Llama-3.1-8B, transfer across mathematics and code is uneven, and AIME performance in the short retraining experiments remains low. Sampling error bars do not substitute for checks across independently trained seeds. The paper deserves attention for its clear intervention design, not because it proves that two tokens replace modern RL. [§6](https://arxiv.org/html/2610.06851v1#S6)",
+              "A useful reading order is the Figure 1 example, cue selection in §2.1, RL comparisons in §2.3, the three data conditions in §3.1, and internal evidence in §3.2. A reproduction should fix the model version, tokenizer, prompt template, prefix bytes, sampling settings, and evaluation budget, while separating cue-selection problems from evaluation problems. This is a recommendation distilled from the experimental design. Official code is available; this note has not rerun the model experiments. [Official code](https://github.com/sophicle/cues)"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "thinking-leakage-2026",
+      "title": "The Thinking Leakage in Reinforcement Learning for LLMs",
+      "year": 2026,
+      "venue": "arXiv preprint · v1 · 2026-10-09",
+      "url": "https://arxiv.org/abs/2610.14270v1",
+      "role": "optional",
+      "zh": {
+        "contribution": "在 Qwen3 的非思考模式下做强化学习，再通过权重、内部数值和注意力头干预，检验增益有多少依赖模型原有的思考模式。",
+        "relevance": "提醒 rollout 与评测系统同时记录模板、生成长度和采样条件：非思考模式准确率提高，可能伴随原有长推理行为重新出现，不能仅凭分数归因于新能力。",
+        "reading": "值得精读 §5.2 的双向激活交换，接着看 §5.3 区分内部机制证据与解题效果；和今天主读一起理解模型能力如何被调用。",
+        "prerequisites": "先知道模型逐 token 生成、奖励会改变训练方向即可；正文解释模式模板、LoRA、激活、注意力头和 advantage。",
+        "caveat": "证据来自三个 Qwen3 规模与数学任务，核心准确率干预集中在 8B；不能推出所有强化学习都不产生新能力，同生成上限也不等于同实际计算成本。",
+        "sections": [
+          {
+            "heading": "1. 没有展开思考，不等于模型不会思考",
+            "paragraphs": [
+              "想象同一道数学题交给同一个模型：一条路径先写推导，再给答案；另一条路径直接回答。这是教学说明。论文研究的 Qwen3 两种模式共用权重，即模型保存的参数；区别在聊天模板。THINK 允许生成 &lt;think&gt; 内的推导，NO-THINK 则在输入末尾预先放入空思考块：&lt;think&gt; 后换两行，接着放 &lt;/think&gt; 并再换两行，表示这部分已经结束。这里的混合推理指同一模型支持两种模式，与前几天 attention/SSM 混合架构的“混合”含义不同。“原模型”是已发布的推理模型，并非未经后训练的纯预训练模型。[§3：模式与模板](https://arxiv.org/html/2610.14270v1#S3)。",
+              "如果对第二条路径训练后，模型答得更好却又写起长推导，至少存在两种解释：学到了新解法，或者更愿意调用原来已有的推理方式。作者把后一种现象称为 thinking leakage。这里的 leakage 指模式间行为重新出现，不是测试答案泄漏。区分这两种解释，需要比较原模型的 THINK 模式，并干预内部计算。[§1：研究问题](https://arxiv.org/html/2610.14270v1#S1)。"
+            ]
+          },
+          {
+            "heading": "2. 训练改什么，评测又允许做多少工作",
+            "paragraphs": [
+              "作者用 DAPO-Math-17k 训练 Qwen3-1.7B、4B、8B，始终使用 NO-THINK 模板。每步取 256 道题，每题生成 5 个回答，温度为 1。GRPO 根据同题回答的奖励差异调整生成概率；训练的是所有线性层上的 rank-64 LoRA，即给权重附加一组受低秩结构约束、可学习的更新，而非直接训练全部原始参数。[§3：训练设置](https://arxiv.org/html/2610.14270v1#S3)。",
+              "评测使用 AIME 2022–2024 的 I、II 卷共 90 题，按最后一个 boxed 答案判分，缺失则算错。两模式生成上限都是 32,768 token，Fig.1 每题采样两次、温度为 1。训练上限则不同：8B 为 8k，另两个规模为 16k。相同评测上限只意味着都允许写这么长，并不保证实际生成量相同。[§3](https://arxiv.org/html/2610.14270v1#S3)、[附录 H](https://arxiv.org/html/2610.14270v1#A8)。"
+            ]
+          },
+          {
+            "heading": "3. 先观察：变准的同时，也变得更像 THINK",
+            "paragraphs": [
+              "Fig.1 中，8B 的 NO-THINK 准确率约从 17% 升至 43%，平均回答由 2.7k 增至 7.2k token；原模型 THINK 准确率约 74%。作者还把同一回答分别接在两种模板后，让原模型计算文本出现的概率。训练后的回答比原来的 NO-THINK 回答更偏向 THINK 模板，在两两比较中胜出约 94%；这不是 94% 的解题准确率，也不是人工评价。[§4、Fig.1](https://arxiv.org/html/2610.14270v1#S4)。",
+              "模型内部每层计算出的临时向量叫激活。作者固定回答文本，只更换模板或模型权重，发现 RL 后的激活也向原模型 THINK 状态移动。这样排除了“只是读到了不同文字”的解释，但相关性仍不够：新学到的方法也可能产生相似激活。因此，后面三组实验主动改变权重或激活，再看行为怎样变化。[§3 的测量定义](https://arxiv.org/html/2610.14270v1#S3)、[§5](https://arxiv.org/html/2610.14270v1#S5)。"
+            ]
+          },
+          {
+            "heading": "4. 放大权重更新：看训练方向通向哪里",
+            "paragraphs": [
+              "把训练前权重记为 W₀，训练改变的部分记为 ΔW。作者不追加训练，而是测试 W₀＋cΔW：相当于沿已有更新方向走得更远。8B 第 67 步的更新放大至 c＝3 时，NO-THINK 准确率达到 72.2%，约 50.6% 回答自行写出 &lt;/think&gt;，尽管模板已经关闭过思考块。这比仅统计“wait”等词，更具体地指向原有模式行为重新出现。[§5.1](https://arxiv.org/html/2610.14270v1#S5.SS1)、[附录 B、Table 5](https://arxiv.org/html/2610.14270v1#A2)。",
+              "但系数是在同一批 90 题上探索的，每题两次采样；这不是在新测试集确认的最佳设置。更大系数还会让回答过长、触及上限。所测系数没有超过原 THINK 的约 74%，只能描述这次实验，不能把 74% 当作理论能力上限，也不能说放大权重总比继续训练有效。[附录 B](https://arxiv.org/html/2610.14270v1#A2)。"
+            ]
+          },
+          {
+            "heading": "5. 交换内部数值：增益能否被拿走或移过去",
+            "paragraphs": [
+              "更强的检验是只交换一小部分激活。作者用原模型和 128 道训练题，找出每层与两种模式差异有关的 8 个方向，合起来称为 8 维子空间。生成时，两个模型都使用 NO-THINK 模板，读取完全相同的 token；在第 1–35 层、所有位置，用来源模型的这部分数值替换目标模型对应部分，其余分量保留。维度和层范围预先固定，没有用 AIME 成绩挑选。[§5.2](https://arxiv.org/html/2610.14270v1#S5.SS2)、[附录 C](https://arxiv.org/html/2610.14270v1#A3)。",
+              "这组独立采样实验仍是 8B 第 67 步、90 题各两次、32k 上限。未干预的原模型准确率为 18.9%，RL 模型为 41.1%，差值 22.2 个百分点。把原模型的 THINK 子空间分量换回 RL 模型后，准确率降到 24.4%，去掉约 75% 的这次增益；反向交换让原模型升至 30.0%，转移约 50% 的增益。这里的百分比不是全部推理能力的比例。[§5.2、Fig.3](https://arxiv.org/html/2610.14270v1#S5.SS2)、[附录 C、Table 6](https://arxiv.org/html/2610.14270v1#A3)。",
+              "同样交换 8 维、但选原激活变化最大的 PCA 方向，只移除约 22% 的增益，反向转移约 25%；随机方向影响更小。这说明不是随便扰动一块内部数值都会产生同样效果。不过，干预也改变了回答长度，且并未移除全部增益，因此它支持特定模式机制的重要作用，不等于完整解释 RL 的所有改变。[§5.2](https://arxiv.org/html/2610.14270v1#S5.SS2)。"
+            ]
+          },
+          {
+            "heading": "6. 哪些注意力头把模板信号传进回答",
+            "paragraphs": [
+              "注意力头可以理解为模型读取前文信息的一条计算通道。作者找到特别关注空 think 块的头，再禁止它们读取那几个模板 token，其他输入不变。8B 中，对最关注该块的 5% 头做这项干预，下一 token 分布与 THINK 的 KL 差异减少 72%；同数量随机头的五次抽取平均只减少 3%。KL 在这里衡量两个概率分布的差异，72% 不是准确率。[§5.3、Table 1](https://arxiv.org/html/2610.14270v1#S5.SS3)。",
+              "这些实验让模型读取固定回答的前 2,048 token，并未自由生成新答案。单头交换进一步发现，最能传递 RL 后激活变化的头，也高度关注空 think 块；用 30 条文本排名后，在另外 60 条检查。它补上“模板通过哪些通道影响内部状态”的证据，但不能据此声称删掉这些头就能提升解题率，单头影响也不能直接相加。[§5.3、Table 2](https://arxiv.org/html/2610.14270v1#S5.SS3)、[附录 E](https://arxiv.org/html/2610.14270v1#A5)。"
+            ]
+          },
+          {
+            "heading": "7. 奖励为什么可能把模型推向这种行为",
+            "paragraphs": [
+              "GRPO 的 advantage 表示一个回答比同组回答好多少，并影响更新力度。比如五个回答只有一个答对时，这个正确回答比“四个都答对”时得到更强的正向信号。作者另取 256 道训练题、每题生成 20 个回答，观察到受奖励的回答更像 THINK；再从初始模型计算一次受控梯度更新，内部状态也向 THINK 移动。这提供一种可能原因，并非所有 GRPO 训练必然如此的证明。[§6](https://arxiv.org/html/2610.14270v1#S6)、[附录 G](https://arxiv.org/html/2610.14270v1#A7)。",
+              "最值得带回评测工作的结论是：报告提升时，应同时给模式模板、原 THINK 基线、生成长度及干预证据。这里研究的是三个 Qwen3 规模的数学任务，核心准确率交换只做了 8B；原文未报告多训练种子的完整重复与准确率置信区间。它不能推出“RL 从不学新能力”。本文为 Wenxuan Zhu 等 KAUST 与上海交大研究者于 2026-10-09 发布的预印本；本笔记依据 v1，以中文解释和英文转述改写，原作采用 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。建议优先读 [§5.2](https://arxiv.org/html/2610.14270v1#S5.SS2) 与[附录 C](https://arxiv.org/html/2610.14270v1#A3)，再读 §5.3、§6。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Trains Qwen3 in no-think mode, then intervenes on weights, activations, and attention heads to investigate how much of the improvement depends on its existing think-mode behavior.",
+        "relevance": "Motivates recording templates, generated lengths, and sampling conditions in rollout and evaluation systems: higher no-think accuracy can accompany the return of existing extended reasoning, so accuracy alone does not identify new capabilities.",
+        "reading": "Read the bidirectional activation exchanges in §5.2 closely, then §5.3 to distinguish internal mechanism evidence from task performance; pair this with today's main reading on eliciting model capabilities.",
+        "prerequisites": "Token-by-token generation and reward-directed training are sufficient starting points; the note explains mode templates, LoRA, activations, attention heads, and advantages.",
+        "caveat": "Evidence covers three Qwen3 sizes and mathematical tasks, with the central accuracy interventions concentrated on 8B. It does not establish that RL never creates new abilities, and equal output caps do not imply equal realized compute.",
+        "sections": [
+          {
+            "heading": "1. Not displaying extended reasoning does not remove the ability",
+            "paragraphs": [
+              "Imagine giving the same mathematical problem to the same model through two paths: one first writes a derivation, then answers; the other answers directly. This is a teaching illustration. The Qwen3 modes studied share weights—the model's stored parameters—and differ in their chat templates. THINK permits a derivation inside &lt;think&gt;, whereas NO-THINK appends an empty thinking block to the input: &lt;think&gt;, two newlines, &lt;/think&gt;, and two more newlines. This indicates that the thinking portion has already ended. Here, hybrid reasoning means two modes in one model; it differs from the attention/SSM hybrid architecture discussed in earlier readings. The paper's original model is a released reasoning checkpoint, not a purely pretrained model without post-training. See [§3: models and templates](https://arxiv.org/html/2610.14270v1#S3).",
+              "If training the second path improves accuracy while long derivations reappear, at least two explanations remain: the model learned new methods, or it became more willing to use an existing reasoning behavior. The authors call the latter thinking leakage. Leakage here refers to behavior reappearing across modes, not leaked test answers. Distinguishing the explanations requires a comparison with the original THINK mode and interventions on internal computation. See [§1](https://arxiv.org/html/2610.14270v1#S1)."
+            ]
+          },
+          {
+            "heading": "2. What training changes and how much evaluation permits",
+            "paragraphs": [
+              "The authors train Qwen3-1.7B, 4B, and 8B on DAPO-Math-17k using the NO-THINK template throughout. Each step samples 256 problems and five responses per problem at temperature one. GRPO adjusts generation probabilities using reward differences among answers to the same problem. They train rank-64 LoRA adapters on every linear layer: learnable updates constrained to a low-rank structure, rather than directly training all original parameters. See [§3: training](https://arxiv.org/html/2610.14270v1#S3).",
+              "Evaluation covers 90 problems from AIME I and II in 2022–2024. The final boxed answer is graded, and a missing boxed answer counts as incorrect. Both modes allow 32,768 generated tokens; Figure 1 uses two samples per problem at temperature one. Training caps differ: 8k for 8B and 16k for the other sizes. Equal evaluation caps establish permission to generate equally long responses, not equal realized output lengths. See [§3](https://arxiv.org/html/2610.14270v1#S3) and [Appendix H](https://arxiv.org/html/2610.14270v1#A8)."
+            ]
+          },
+          {
+            "heading": "3. First observe: greater accuracy accompanies more THINK-like behavior",
+            "paragraphs": [
+              "In Figure 1, 8B NO-THINK accuracy rises from approximately 17% to 43%, while mean response length increases from 2.7k to 7.2k tokens; the original THINK accuracy is approximately 74%. The authors also place the same response after each template and ask the original model to assign its likelihood. Trained responses favor the THINK template more strongly than original NO-THINK responses in approximately 94% of pairwise comparisons. This is neither 94% problem-solving accuracy nor human judgment. See [§4 and Figure 1](https://arxiv.org/html/2610.14270v1#S4).",
+              "The temporary numerical vectors computed inside each layer are activations. Holding response text constant while changing the template or weights, the authors find that RL activations also move toward the original THINK state. This excludes the explanation that the measurement merely follows different text. Correlation is still insufficient, however: newly learned methods might produce similar activations. The next experiments actively change weights or activations and examine the resulting behavior. See [§3's measurement definitions](https://arxiv.org/html/2610.14270v1#S3) and [§5](https://arxiv.org/html/2610.14270v1#S5)."
+            ]
+          },
+          {
+            "heading": "4. Scale the weight update to probe its direction",
+            "paragraphs": [
+              "Write the original weights as W₀ and the learned change as ΔW. Without further training, the authors test W₀ + cΔW, moving farther along the learned update. For the 8B step-67 update at c = 3, NO-THINK accuracy reaches 72.2%, and approximately 50.6% of responses spontaneously emit &lt;/think&gt;, although the template already closed the thinking block. This points more specifically to returning mode behavior than merely counting words such as 'wait.' See [§5.1](https://arxiv.org/html/2610.14270v1#S5.SS1) and [Appendix B, Table 5](https://arxiv.org/html/2610.14270v1#A2).",
+              "The factors were explored on the same 90 problems, with two samples per problem; the selected setting was not confirmed on a fresh test set. Larger factors can produce excessively long responses that reach the cap. No tested factor exceeded the original THINK accuracy of approximately 74%, but this observation neither establishes a theoretical ability ceiling nor shows that scaling weights generally beats further training. See [Appendix B](https://arxiv.org/html/2610.14270v1#A2)."
+            ]
+          },
+          {
+            "heading": "5. Exchange activations: can the gain be removed or transferred?",
+            "paragraphs": [
+              "A stronger test exchanges only a small component of the activations. Using the original model and 128 training problems, the authors identify eight directions per layer associated with the mode difference: an eight-dimensional subspace. During generation, both models use the NO-THINK template and read exactly the same tokens. At layers 1–35 and every position, the source model supplies the target's component within this subspace; other components remain unchanged. The dimension and layer range were fixed in advance, rather than selected using AIME results. See [§5.2](https://arxiv.org/html/2610.14270v1#S5.SS2) and [Appendix C](https://arxiv.org/html/2610.14270v1#A3).",
+              "This independently sampled experiment uses 8B at step 67, two samples for each of 90 problems, and a 32k cap. Unpatched accuracy is 18.9% for the original and 41.1% for the RL model, a 22.2-percentage-point gain. Replacing the RL model's THINK-subspace component with the original model's reduces accuracy to 24.4%, removing approximately 75% of that gain. The reverse exchange raises original-model accuracy to 30.0%, transferring approximately 50% of the gain. These percentages are not fractions of all reasoning ability. See [§5.2, Figure 3](https://arxiv.org/html/2610.14270v1#S5.SS2) and [Appendix C, Table 6](https://arxiv.org/html/2610.14270v1#A3).",
+              "Exchanging an equally sized PCA subspace—the directions of greatest variation in original activations—removes only approximately 22% of the gain and transfers approximately 25%; random directions have smaller effects. Arbitrarily disturbing a component therefore does not reproduce the same result. However, patching also changes response lengths and does not remove the entire improvement. It supports an important role for this particular mode mechanism without completely explaining every change made by RL. See [§5.2](https://arxiv.org/html/2610.14270v1#S5.SS2)."
+            ]
+          },
+          {
+            "heading": "6. Which attention heads carry the template signal?",
+            "paragraphs": [
+              "An attention head can be understood as one computational channel for reading preceding information. The authors identify heads that strongly attend to the empty think block and prevent those heads from reading its template tokens, without changing other inputs. In 8B, intervening on the top 5% of heads reduces the next-token distribution's KL divergence from THINK by 72%, versus an average 3% for five random selections of equally many heads. KL here measures a difference between probability distributions; 72% is not an accuracy figure. See [§5.3, Table 1](https://arxiv.org/html/2610.14270v1#S5.SS3).",
+              "These experiments process the first 2,048 tokens of fixed responses without freely generating new answers. Single-head exchanges further show that heads transmitting the strongest RL-induced activation changes also attend strongly to the empty block. Heads are ranked using 30 texts and checked on another 60. This adds evidence about the channels through which templates affect internal states; it does not show that deleting these heads improves problem-solving accuracy, and individual head effects cannot simply be added. See [§5.3, Table 2](https://arxiv.org/html/2610.14270v1#S5.SS3) and [Appendix E](https://arxiv.org/html/2610.14270v1#A5)."
+            ]
+          },
+          {
+            "heading": "7. Why might the reward push in this direction?",
+            "paragraphs": [
+              "A GRPO advantage expresses how a response compares with its group and influences the update strength. For example, the sole correct answer among five receives a stronger positive signal than a correct answer in a group where four succeed. The authors separately sample 20 answers to each of 256 training problems and observe that rewarded responses are more THINK-like. A controlled gradient update computed from the initial model also moves its internal state toward THINK. This suggests a possible mechanism, not an inevitable property of every GRPO run. See [§6](https://arxiv.org/html/2610.14270v1#S6) and [Appendix G](https://arxiv.org/html/2610.14270v1#A7).",
+              "For evaluation work, report the template, original THINK baseline, generated length, and intervention evidence alongside the improvement. This study covers mathematics with three Qwen3 sizes; its central accuracy exchanges use only 8B. The paper does not report complete repetitions across multiple training seeds or accuracy confidence intervals. It cannot establish that RL never learns new abilities. This is a 2026-10-09 preprint by Wenxuan Zhu and collaborators at KAUST and Shanghai Jiao Tong University. This note adapts v1 into Chinese explanations and English paraphrases; the original is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Prioritize [§5.2](https://arxiv.org/html/2610.14270v1#S5.SS2) and [Appendix C](https://arxiv.org/html/2610.14270v1#A3), followed by §5.3 and §6."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "rl-feature-generalization-2026",
+      "title": "Why Does Reinforcement Learning Generalize? A Feature-Level Mechanistic Study of Post-Training in Large Language Models",
+      "year": 2026,
+      "venue": "ACL 2026 · Long Papers · July 2026",
+      "url": "https://aclanthology.org/2026.acl-long.1808/",
+      "role": "optional",
+      "zh": {
+        "contribution": "把训练前后的模型放进共同的内部特征坐标，直接关闭或增强候选特征，检验它们是否影响数学训练之外的答题行为。",
+        "relevance": "为后训练实验补上机制诊断：成绩变好之后，还可以追问哪些内部变化参与了改进；同时提醒系统评测区分完整测试集、用于找特征的题集和干预验证题集。",
+        "reading": "值得精读 §3.2 与 §7 的特征筛选和干预，再用附录 A、B.4 核对训练差异与测试范围；不必先啃全部特征分布图。",
+        "prerequisites": "知道模型会生成答案、训练会更新权重即可；正文解释 SFT、GRPO、中间激活和稀疏特征，公式可第二遍再看。",
+        "caveat": "主要证据来自两个 Qwen 模型的特定数学后训练配方。SFT 与 RL 的监督、生成量和学习率不同；干预表格评测的是“base 错、RL 对”的筛选子集，不能当成完整测试集的提升。",
+        "sections": [
+          {
+            "heading": "1. 数学训练之后，为什么科学题也会变好",
+            "paragraphs": [
+              "先看一个教学情境：模型只用数学题继续训练，之后却更容易答对“哪种材料导电”这样的科学选择题。改善可能来自更好地调用原有知识，也可能涉及新的内部计算。仅看最终答案，分不清这些解释。这篇论文进一步打开模型，寻找参与改变答案的内部特征。这里的泛化指超出本次数学后训练领域的表现，不等于证明测试知识从未出现在预训练中。",
+              "今天主读关注提示中的训练数据线索如何引出 base 的表现；这篇则实际更新权重，再动手修改模型内部活动，观察答案是否随之改变。两者可以共同帮助判断“原来就有的能力怎样被调用”，但都不能单独裁定所有 RL 只是在重排旧答案，或一定创造了全新的能力。"
+            ]
+          },
+          {
+            "heading": "2. 题目相同，两种训练看到的答案却不同",
+            "paragraphs": [
+              "作者分别从 Qwen3-4B-Base 和 Qwen2.5-7B 出发，使用同一批约 47K 数学题。SFT，即监督微调，学习 Qwen3-32B-Instruct 写出的、最终答案正确的完整推理过程。RL 使用 GRPO：每题让模型自己生成 8 份回答，根据最终答案对错给奖励，再比较同组回答来更新模型；它没有看到教师的中间解题步骤。",
+              "两者都更新全部参数，训练一轮后评测最后的权重，但并非等计算预算实验。RL 学习率是 1e−6，SFT 是 5e−5；RL 的生成上限为 16K token。训练使用 H100/H200 GPU。相同起点与题源减少了一些差异，却没有固定监督文本、生成量和优化设置，不能把观察结果归结为一个孤立变量。[附录 A.2–A.3](https://aclanthology.org/2026.acl-long.1808.pdf#page=13)。",
+              "完整评测的 Table 1 中，Qwen3 在 SciQ 科学问答的正确率为 base 78.5%、SFT 51.8%、RL 89.5%。不过，Qwen2.5 在 CommonsenseQA 上从 base 的 77.6% 变成 RL 的 76.1%。这些数值同时说明该配方有跨领域收益，也提醒我们不要把“RL 比这里的 SFT 好”读成“RL 每项都比原模型好”。"
+            ]
+          },
+          {
+            "heading": "3. 先给不同模型建立同一张坐标纸",
+            "paragraphs": [
+              "模型处理一个 token 时，会在中间层留下一个数值向量，称为激活。直接比较向量的第几个数，很难知道它代表什么。作者训练一个 Sparse Crosscoder：把不同模型的激活一起编码成一组共同的数值，再用各模型自己的解码器重建原向量。训练要求重建接近原值，同时让每次只有少量数值活跃；这些共同坐标就是这里的稀疏特征，并非已经命名好的“逻辑神经元”。",
+              "用于训练这个分析工具的语料另有 4 亿 token，一半来自 OpenThoughts-114K，一半来自 RedPajama 通用文本；它们不是前述 47K 题的 RL 训练输入。工具包含 32,768 个特征，重建各模型中间层的激活。比较 base、SFT、RL 时，作者还让三者共享同一个 Crosscoder，避免把独立工具里碰巧同号的特征误认成同一种东西。",
+              "图中的 NRN、MAS 根据解码器向量的大小，衡量一个特征在重建不同模型时更偏向谁。作者观察到该配方的 RL 表征较多保留与 base 共享的成分，SFT 的模型专属成分更明显。这是分析工具中的相对分布，不是“保留了百分之多少推理能力”，也不意味着 RL 没有产生新特征。[§3.1、§5.1、§6](https://aclanthology.org/2026.acl-long.1808.pdf#page=3)。"
+            ]
+          },
+          {
+            "heading": "4. 从答题差异中找候选特征",
+            "paragraphs": [
+              "接着，作者在五个通用问答任务中，分别挑出 base 答错、RL 答对的题。对这些题，取最后一个 token 位置的激活，通过各自编码分支得到特征值，计算每个特征在 RL 中比 base 平均高多少。这一步是在找与改进一起出现的候选变化，还没有证明这些变化造成了改进。",
+              "每个任务保留分数超过本任务最大值 20% 的特征，再取五个任务的交集，得到 Qwen3 的 50 个、Qwen2.5 的 16 个候选特征。交集让候选不只来自某一类题，但选题本身已经利用了模型答对与否的信息。这一点会决定下一节的数字应当怎样读。[§3.2、§7](https://aclanthology.org/2026.acl-long.1808.pdf#page=4)。"
+            ]
+          },
+          {
+            "heading": "5. 真正改动这些特征后，答案会不会变",
+            "paragraphs": [
+              "作者在推理时做两种操作：把 RL 模型的候选特征值置零；把 base 的对应值设为 3.0。后者是设置数值，并非把原值乘以三。这些操作不再训练模型权重，而是直接改变中间激活，测试候选特征是否确实参与产生答案。置零后 RL 表现下降，设置后 base 表现改善，提供了比“数值一起变大”更强的干预证据。",
+              "最容易误读的是分母：Table 2–3 仍在“base 错、RL 对”的题集上评测。例如 Qwen3 的 OpenBookQA 项为 −46.2，表示这些原本由 RL 答对的筛选题中，约 46.2% 在置零后答错；不是完整 OpenBookQA 降低 46.2 个百分点。主实验也没有明确说明找特征与验证干预使用了分离的题集，所以不应把它当成新测试集上的无偏性能估计。"
+            ]
+          },
+          {
+            "heading": "6. 换任务仍有效，结论又能走多远",
+            "paragraphs": [
+              "附录 B.4 把同一批特征用于 LogiQA 逻辑题和 PIQA 物理常识题，这两项没有参与特征筛选，干预仍影响答题。但 Table 4–5 依然只评测各任务里 base 错、RL 对的子集。“未见任务”指没有参与找特征，不是证明模型预训练时从未见过这些知识，也不是报告完整任务的收益。[附录 B.4](https://aclanthology.org/2026.acl-long.1808.pdf#page=15)。",
+              "因此，较稳妥的结论是：在这些模型、训练配方和筛选题中，一小组可被共同表示的特征参与了答题变化。Crosscoder 只是近似重建一个中间层，不能覆盖全部计算；改动特征能改变答案，也不自动证明它就是某个人类推理概念。若要推广为训练方法，还需要独立题集、其他配方及完整性能评测。"
+            ]
+          },
+          {
+            "heading": "7. 怎样精读，怎样带回自己的实验",
+            "paragraphs": [
+              "建议先读 Table 1 与附录 A，弄清真实训练差异；再读 §3.2 的选题和选特征步骤，最后读 §7、附录 B.4 的干预结果。理解这条证据链后，再补 §3.1 的公式。对系统实验的启发是保留两份报告：完整评测回答“整体有没有变好”，筛选题的诊断回答“哪些变化可能参与其中”。这是本文引出的实验建议，不是论文已经验证的部署方案。",
+              "论文由 Dan Shi、Zhuowen Han 等来自天津大学 TJUNLP、DFKI 和萨尔大学的研究者完成，正式发表于 [ACL 2026 长文集，2026 年 7 月](https://aclanthology.org/2026.acl-long.1808/)。原文适用 [ACL 的 CC BY 4.0 政策](https://aclanthology.org/faq/copyright/)；本篇是中文解释与评议，教学情境并非原文实验。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Places models before and after training in a common feature space, then disables or strengthens candidate features to test whether they affect answering outside the mathematics training domain.",
+        "relevance": "Adds a mechanistic diagnostic to post-training experiments: after scores improve, ask which internal changes participate in the improvement, while separating full evaluations, feature-selection samples, and intervention-validation samples.",
+        "reading": "Study feature selection and intervention in §3.2 and §7, then check training differences and evaluation scope in Appendices A and B.4; the complete collection of feature-distribution plots can wait.",
+        "prerequisites": "Knowing that models generate answers and training updates weights is sufficient. This note introduces SFT, GRPO, intermediate activations, and sparse features; equations can wait for a second pass.",
+        "caveat": "The main evidence concerns a particular mathematics post-training recipe on two Qwen models. SFT and RL differ in supervision, generation volume, and learning rate. Intervention tables evaluate selected base-wrong/RL-correct subsets, not improvements over complete test sets.",
+        "sections": [
+          {
+            "heading": "1. Why might mathematics training also improve science answers?",
+            "paragraphs": [
+              "Consider a teaching scenario: a model continues training only on mathematics but subsequently becomes more likely to answer a science multiple-choice question such as which material conducts electricity. It might be using existing knowledge more effectively, or new internal computations might be involved. Final answers alone do not distinguish these explanations. This paper looks inside the model for features participating in changed answers. Generalization here concerns performance outside the current mathematics post-training domain, not proof that test knowledge was absent from pretraining.",
+              "Today's main reading examines how training-data cues in a prompt elicit base-model performance. This paper instead updates the weights and then modifies internal activity to observe whether answers change. Together they help investigate how existing capabilities are accessed, but neither alone establishes that all RL merely reorders old answers or necessarily creates entirely new capabilities."
+            ]
+          },
+          {
+            "heading": "2. The questions match, but the training answers differ",
+            "paragraphs": [
+              "The authors start separately from Qwen3-4B-Base and Qwen2.5-7B, using the same pool of approximately 47K mathematics problems. Supervised fine-tuning, or SFT, learns complete reasoning traces generated by Qwen3-32B-Instruct and filtered for correct final answers. RL uses GRPO: the model generates eight responses per question, receives rewards for final-answer correctness, and updates by comparing responses within the group. It does not see the teacher’s intermediate solution steps.",
+              "Both methods update all parameters, train for one epoch, and evaluate the final checkpoint, but this is not a compute-matched experiment. RL uses a learning rate of 1e−6, versus 5e−5 for SFT, and permits generations up to 16K tokens. Training uses H100/H200 GPUs. Matching initialization and question sources removes some differences without fixing supervision text, generation volume, or optimization settings, so the observations cannot be attributed to one isolated variable. See [Appendices A.2–A.3](https://aclanthology.org/2026.acl-long.1808.pdf#page=13).",
+              "In the complete evaluations in Table 1, Qwen3 achieves 78.5% on SciQ science questions before training, 51.8% after SFT, and 89.5% after RL. However, Qwen2.5 drops from a base score of 77.6% to 76.1% after RL on CommonsenseQA. These results demonstrate cross-domain gains for this recipe while warning against reading “RL beats this SFT setup” as “RL beats the original model on every task.”"
+            ]
+          },
+          {
+            "heading": "3. Build a common coordinate system for different models",
+            "paragraphs": [
+              "As a model processes a token, it produces an intermediate numerical vector called an activation. Comparing individual vector coordinates does not readily reveal what they represent. The authors train a Sparse Crosscoder: it jointly encodes activations from different models into shared numerical coordinates, then reconstructs each original vector through that model’s decoder. Training encourages accurate reconstruction while activating only a small number of coordinates at a time. These shared coordinates are the sparse features here, rather than already identified “logic neurons.”",
+              "The analysis tool is trained on a separate 400 million tokens, half from OpenThoughts-114K and half from RedPajama general text; these are not the 47K-problem RL training inputs. It has 32,768 features and reconstructs middle-layer activations. For the joint comparison of base, SFT, and RL models, all three also share one Crosscoder, avoiding the mistake of treating coincident feature indices in separately trained tools as the same feature.",
+              "The plotted NRN and MAS measurements use decoder-vector magnitudes to assess which model a feature favors when reconstructing activations. Under this recipe, RL retains more components shared with the base model, whereas SFT has more strongly model-specific components. These are relative distributions inside an analysis tool, not percentages of reasoning capability preserved, and they do not mean RL produces no new features. See [§3.1, §5.1, and §6](https://aclanthology.org/2026.acl-long.1808.pdf#page=3)."
+            ]
+          },
+          {
+            "heading": "4. Find candidate features through answering differences",
+            "paragraphs": [
+              "The authors next select questions that the base model gets wrong and the RL model gets right, separately for five general question-answering tasks. For these questions, they take final-token-position activations, encode them through the respective model branches, and calculate how much higher each feature’s activation is in RL on average. This identifies candidate changes that accompany improved answers; it has not yet established that those changes cause improvement.",
+              "Within each task they retain features scoring above 20% of the maximum score, then intersect the five task-specific sets. This yields 50 candidate features for Qwen3 and 16 for Qwen2.5. The intersection keeps candidates from depending on only one task type, but sample selection already uses knowledge of which model answered correctly. That fact determines how to interpret the numbers that follow. See [§3.2 and §7](https://aclanthology.org/2026.acl-long.1808.pdf#page=4)."
+            ]
+          },
+          {
+            "heading": "5. Do answers change when the features are modified?",
+            "paragraphs": [
+              "The authors perform two inference-time interventions: zero the candidate feature values in the RL model, and set the corresponding base-model values to 3.0. The latter sets a value rather than multiplying the original by three. These operations modify intermediate activations without retraining the model weights, testing whether the candidates participate in producing answers. RL performance declines after zeroing, and base performance improves after setting the values, providing stronger intervention evidence than observing activations increase together.",
+              "The easily missed detail is the denominator: Tables 2–3 still evaluate base-wrong/RL-correct samples. For example, the −46.2 reported for Qwen3 on OpenBookQA means approximately 46.2% of those selected questions, originally answered correctly by RL, become wrong after zeroing. It is not a 46.2-percentage-point drop on the complete OpenBookQA test set. The main experiment also does not explicitly describe disjoint sample sets for feature discovery and intervention validation, so it should not be treated as an unbiased performance estimate on a fresh test set."
+            ]
+          },
+          {
+            "heading": "6. Transfer to other tasks, with explicit boundaries",
+            "paragraphs": [
+              "Appendix B.4 applies the same features to LogiQA logical reasoning and PIQA physical commonsense questions. Neither task participated in feature selection, and interventions still affect answers. However, Tables 4–5 again evaluate only each task’s base-wrong/RL-correct subset. “Unseen tasks” means unseen during feature selection, not proven absence of their knowledge from pretraining, and these tables do not report gains across the complete tasks. See [Appendix B.4](https://aclanthology.org/2026.acl-long.1808.pdf#page=15).",
+              "A defensible conclusion is therefore that, in these models, training recipes, and selected questions, a small group of jointly representable features participates in changed answers. The Crosscoder approximately reconstructs one intermediate layer rather than all computation. Changing a feature can change an answer without establishing that it corresponds to a particular human reasoning concept. Turning this into a training method would require independent questions, additional recipes, and complete performance evaluations."
+            ]
+          },
+          {
+            "heading": "7. A reading route and implications for experiments",
+            "paragraphs": [
+              "Start with Table 1 and Appendix A to understand the actual training differences, then follow the question- and feature-selection steps in §3.2, and finally study interventions in §7 and Appendix B.4. Return to the equations in §3.1 after understanding that evidence chain. For systems experiments, one useful takeaway is to keep two reports: complete evaluations answer whether overall performance improved, while diagnostics on selected questions investigate which changes might participate. This is an experimental recommendation prompted by the paper, not a deployment method it has validated.",
+              "Dan Shi, Zhuowen Han, and colleagues from Tianjin University’s TJUNLP lab, DFKI, and Saarland University published the paper in the [ACL 2026 long-paper proceedings in July 2026](https://aclanthology.org/2026.acl-long.1808/). The original is covered by [ACL’s CC BY 4.0 policy](https://aclanthology.org/faq/copyright/). This note provides an explanatory adaptation and commentary; its teaching scenario is not an experiment from the original."
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

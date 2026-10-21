@@ -3,12 +3,12 @@ title: "Daily reading recommendations"
 category: ml-sys
 tags: [reading-digest]
 description: "LLM and agent capabilities, learning, and systems: from foundations to frontier research."
-published: "2026-10-20T09:09:11+08:00"
-date: 2026-10-20
+published: "2026-10-21T09:05:48+08:00"
+date: 2026-10-21
 created: 2026-10-15
-updated: 2026-10-20
+updated: 2026-10-21
 status: growing
-paper_ids: ["vexact-zero-mismatch-2026","batch-invariance-2025","score-centering-2026","replayssm-2026","gated-delta-networks-2025","suffixreplay-2026","aide2-recursive-self-improvement-2026","self-distillation-continual-learning-2026","reuse-2026","cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
+paper_ids: ["base-model-token-cues-2026","thinking-leakage-2026","rl-feature-generalization-2026","vexact-zero-mismatch-2026","batch-invariance-2025","score-centering-2026","replayssm-2026","gated-delta-networks-2025","suffixreplay-2026","aide2-recursive-self-improvement-2026","self-distillation-continual-learning-2026","reuse-2026","cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
 ---
 
 # Daily reading recommendations
@@ -21,6 +21,7 @@ This index and the daily archive sync with repository publishing. Browse on your
 
 ## Archive (newest first)
 
+- [[EN/reading/daily/2026-10-21|2026-10-21 · What has a model learned when its answers improve?]] — Main reading: Base Models Can Reason By Taking a Cue From Training Data
 - [[EN/reading/daily/2026-10-20|2026-10-20 · Making training and rollout agree: from VeXact to gradient correction]] — Main reading: Diagnosing Training-Inference Mismatch in LLM Reinforcement Learning via a Zero-Mismatch Reference
 - [[EN/reading/daily/2026-10-19|2026-10-19 · Hybrid-model inference: why fixed-size states can still be slow]] — Main reading: ReplaySSM: Cache SSM Inputs, Not State
 - [[EN/reading/daily/2026-10-18|2026-10-18 · How agents improve: rewriting code, learning from demonstrations, and checking gains]] — Main reading: Recursive self-improvement of AI research agents
