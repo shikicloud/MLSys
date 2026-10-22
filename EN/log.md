@@ -144,3 +144,6 @@ updated: 2026-06-15
 
 ## 2026-10-21
 - [READING] Published the 2026-10-21 edition: token cues and causal training-data edits as the main reading, with Thinking Leakage and feature-level RL generalization as optional readings. Bilingual examples distinguish capability elicitation, mode changes, and representation interventions, with evaluation budgets and claim boundaries.
+
+## 2026-10-22
+- [READING] Published the 2026-10-22 edition: LifeMem on organizing experience across environments, AdaMEM on adapting strategies within a task, and MemoryArena on multi-session action evaluation. Bilingual notes distinguish memory, contextual adaptation, and offline training, with evidence and experimental limits.
