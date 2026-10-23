@@ -147,3 +147,6 @@ updated: 2026-06-15
 
 ## 2026-10-22
 - [READING] Published the 2026-10-22 edition: LifeMem on organizing experience across environments, AdaMEM on adapting strategies within a task, and MemoryArena on multi-session action evaluation. Bilingual notes distinguish memory, contextual adaptation, and offline training, with evidence and experimental limits.
+
+## 2026-10-23
+- [READING] Published the 2026-10-23 edition: RapidMoE on CPU/GPU residual computation, Stepped MoE on segment-level routing, and Sem-MoE on joint expert placement and data scheduling. Bilingual notes distinguish weight movement, routing granularity, and activation communication, including accuracy, training cost, and experimental conditions.

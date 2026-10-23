@@ -3,12 +3,12 @@ title: "每日论文推荐"
 category: ml-sys
 tags: [reading-digest]
 description: "LLM 与 Agent 的能力、学习与系统：从经典基础到前沿研究。"
-published: "2026-10-22T11:01:11+08:00"
-date: 2026-10-22
+published: "2026-10-23T09:06:59+08:00"
+date: 2026-10-23
 created: 2026-10-15
-updated: 2026-10-22
+updated: 2026-10-23
 status: growing
-paper_ids: ["lifemem-workflow-memory-2026","adamem-2026","memoryarena-2026","base-model-token-cues-2026","thinking-leakage-2026","rl-feature-generalization-2026","vexact-zero-mismatch-2026","batch-invariance-2025","score-centering-2026","replayssm-2026","gated-delta-networks-2025","suffixreplay-2026","aide2-recursive-self-improvement-2026","self-distillation-continual-learning-2026","reuse-2026","cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
+paper_ids: ["rapidmoe-residual-offloading-2026","stepped-moe-2026","semantic-parallelism-2026","lifemem-workflow-memory-2026","adamem-2026","memoryarena-2026","base-model-token-cues-2026","thinking-leakage-2026","rl-feature-generalization-2026","vexact-zero-mismatch-2026","batch-invariance-2025","score-centering-2026","replayssm-2026","gated-delta-networks-2025","suffixreplay-2026","aide2-recursive-self-improvement-2026","self-distillation-continual-learning-2026","reuse-2026","cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
 ---
 
 # 每日论文推荐
@@ -21,6 +21,7 @@ paper_ids: ["lifemem-workflow-memory-2026","adamem-2026","memoryarena-2026","bas
 
 ## 历史推荐（最新在前）
 
+- [[CN/reading/daily/2026-10-23|2026-10-23 · MoE 推理：少算一些，为什么还不够快？]] — 主读: RapidMoE: Exploiting Cross-Asymmetry via Adaptive Residual Offloading for Large-Scale MoE Inference
 - [[CN/reading/daily/2026-10-22|2026-10-22 · Agent 有了记忆，怎样才会越做越好？]] — 主读: LifeMem: Enabling Lifelong Experience Reuse for LLM Agents
 - [[CN/reading/daily/2026-10-21|2026-10-21 · 答得更好了，模型究竟学到了什么？]] — 主读: Base Models Can Reason By Taking a Cue From Training Data
 - [[CN/reading/daily/2026-10-20|2026-10-20 · 训练与 rollout 怎么才能真正一致：从 VeXact 到梯度校正]] — 主读: Diagnosing Training-Inference Mismatch in LLM Reinforcement Learning via a Zero-Mismatch Reference
