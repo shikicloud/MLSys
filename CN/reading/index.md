@@ -3,12 +3,12 @@ title: "每日论文推荐"
 category: ml-sys
 tags: [reading-digest]
 description: "LLM 与 Agent 的能力、学习与系统：从经典基础到前沿研究。"
-published: "2026-10-23T09:06:59+08:00"
-date: 2026-10-23
+published: "2026-10-24T09:06:59+08:00"
+date: 2026-10-24
 created: 2026-10-15
-updated: 2026-10-23
+updated: 2026-10-24
 status: growing
-paper_ids: ["rapidmoe-residual-offloading-2026","stepped-moe-2026","semantic-parallelism-2026","lifemem-workflow-memory-2026","adamem-2026","memoryarena-2026","base-model-token-cues-2026","thinking-leakage-2026","rl-feature-generalization-2026","vexact-zero-mismatch-2026","batch-invariance-2025","score-centering-2026","replayssm-2026","gated-delta-networks-2025","suffixreplay-2026","aide2-recursive-self-improvement-2026","self-distillation-continual-learning-2026","reuse-2026","cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
+paper_ids: ["calif-reward-hacking-2026","rubrics-as-rewards-2025","rubric-reward-hacking-2026","rapidmoe-residual-offloading-2026","stepped-moe-2026","semantic-parallelism-2026","lifemem-workflow-memory-2026","adamem-2026","memoryarena-2026","base-model-token-cues-2026","thinking-leakage-2026","rl-feature-generalization-2026","vexact-zero-mismatch-2026","batch-invariance-2025","score-centering-2026","replayssm-2026","gated-delta-networks-2025","suffixreplay-2026","aide2-recursive-self-improvement-2026","self-distillation-continual-learning-2026","reuse-2026","cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
 ---
 
 # 每日论文推荐
@@ -21,6 +21,7 @@ paper_ids: ["rapidmoe-residual-offloading-2026","stepped-moe-2026","semantic-par
 
 ## 历史推荐（最新在前）
 
+- [[CN/reading/daily/2026-10-24|2026-10-24 · 奖励变高，回答却变差：怎样让 RL 学到真正的要求？]] — 主读: Diagnosing and Correcting Reward Hacking in Verifiable Instruction Following
 - [[CN/reading/daily/2026-10-23|2026-10-23 · MoE 推理：少算一些，为什么还不够快？]] — 主读: RapidMoE: Exploiting Cross-Asymmetry via Adaptive Residual Offloading for Large-Scale MoE Inference
 - [[CN/reading/daily/2026-10-22|2026-10-22 · Agent 有了记忆，怎样才会越做越好？]] — 主读: LifeMem: Enabling Lifelong Experience Reuse for LLM Agents
 - [[CN/reading/daily/2026-10-21|2026-10-21 · 答得更好了，模型究竟学到了什么？]] — 主读: Base Models Can Reason By Taking a Cue From Training Data

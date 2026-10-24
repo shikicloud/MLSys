@@ -150,3 +150,6 @@ updated: 2026-06-15
 
 ## 2026-10-23
 - [READING] Published the 2026-10-23 edition: RapidMoE on CPU/GPU residual computation, Stepped MoE on segment-level routing, and Sem-MoE on joint expert placement and data scheduling. Bilingual notes distinguish weight movement, routing granularity, and activation communication, including accuracy, training cost, and experimental conditions.
+
+## 2026-10-24
+- [READING] Published the 2026-10-24 edition: CaLIF on reference-calibrated likelihood, RaR on rubric rewards, and a study of rubric reward hacking. Bilingual notes distinguish format compliance, answer quality, evaluator errors, and incomplete criteria, including the tradeoff between quality and constraint success.
