@@ -3,12 +3,12 @@ title: "Daily reading recommendations"
 category: ml-sys
 tags: [reading-digest]
 description: "LLM and agent capabilities, learning, and systems: from foundations to frontier research."
-published: "2026-10-24T09:06:59+08:00"
-date: 2026-10-24
+published: "2026-10-25T09:11:51+08:00"
+date: 2026-10-25
 created: 2026-10-15
-updated: 2026-10-24
+updated: 2026-10-25
 status: growing
-paper_ids: ["calif-reward-hacking-2026","rubrics-as-rewards-2025","rubric-reward-hacking-2026","rapidmoe-residual-offloading-2026","stepped-moe-2026","semantic-parallelism-2026","lifemem-workflow-memory-2026","adamem-2026","memoryarena-2026","base-model-token-cues-2026","thinking-leakage-2026","rl-feature-generalization-2026","vexact-zero-mismatch-2026","batch-invariance-2025","score-centering-2026","replayssm-2026","gated-delta-networks-2025","suffixreplay-2026","aide2-recursive-self-improvement-2026","self-distillation-continual-learning-2026","reuse-2026","cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
+paper_ids: ["juice-2610-28801","cvrr-latent-visual-reasoning-2026","vimod-visual-memory-2026","calif-reward-hacking-2026","rubrics-as-rewards-2025","rubric-reward-hacking-2026","rapidmoe-residual-offloading-2026","stepped-moe-2026","semantic-parallelism-2026","lifemem-workflow-memory-2026","adamem-2026","memoryarena-2026","base-model-token-cues-2026","thinking-leakage-2026","rl-feature-generalization-2026","vexact-zero-mismatch-2026","batch-invariance-2025","score-centering-2026","replayssm-2026","gated-delta-networks-2025","suffixreplay-2026","aide2-recursive-self-improvement-2026","self-distillation-continual-learning-2026","reuse-2026","cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
 ---
 
 # Daily reading recommendations
@@ -21,6 +21,7 @@ This index and the daily archive sync with repository publishing. Browse on your
 
 ## Archive (newest first)
 
+- [[EN/reading/daily/2026-10-25|2026-10-25 · How Models Use Images to Reason: Joint Generation, Re-reading, and Selective Access]] — Main reading: JUICE: Unified Multimodal Modeling in Pretrained Representation Spaces
 - [[EN/reading/daily/2026-10-24|2026-10-24 · Higher rewards, worse answers: how can RL learn the real request?]] — Main reading: Diagnosing and Correcting Reward Hacking in Verifiable Instruction Following
 - [[EN/reading/daily/2026-10-23|2026-10-23 · MoE inference: why does less computation not always mean more speed?]] — Main reading: RapidMoE: Exploiting Cross-Asymmetry via Adaptive Residual Offloading for Large-Scale MoE Inference
 - [[EN/reading/daily/2026-10-22|2026-10-22 · When does memory help an agent improve with experience?]] — Main reading: LifeMem: Enabling Lifelong Experience Reuse for LLM Agents

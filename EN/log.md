@@ -153,3 +153,6 @@ updated: 2026-06-15
 
 ## 2026-10-24
 - [READING] Published the 2026-10-24 edition: CaLIF on reference-calibrated likelihood, RaR on rubric rewards, and a study of rubric reward hacking. Bilingual notes distinguish format compliance, answer quality, evaluator errors, and incomplete criteria, including the tradeoff between quality and constraint success.
+
+## 2026-10-25
+- [READING] Published the 2026-10-25 bilingual reading notes: JUICE as the main reading, with CVRR and ViMoD; maze, spatial-relation, and geometry examples explain joint generation, latent-state dependence, and selective visual KV access, with experimental budgets and limitations checked.
