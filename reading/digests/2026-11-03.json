@@ -1,0 +1,415 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-03",
+  "publishedAt": "2026-11-03T10:33:10+08:00",
+  "zh": {
+    "title": "FP8 rollout 为什么会影响学习：从 Jet-RL 看精度、长尾与异步训练",
+    "summary": "同一份权重，为什么生成端和训练端还会给同一个 token 不同的概率？本期主读 Jet-RL，逐步解释量化尺度、统一前向流程和剩余误差。两篇选读分别看 TLT 如何利用长尾空闲资源训练草稿模型，以及 VCPO 如何控制旧策略样本带来的更新波动。先读主读的概率例子和图 5，选读按兴趣展开；三者处理不同问题，不能把各自加速比直接相乘。"
+  },
+  "en": {
+    "title": "Why FP8 Rollouts Can Change Learning: Jet-RL, Long Tails, and Asynchrony",
+    "summary": "Why can a rollout engine and trainer assign different probabilities to the same token with identical weights? The main reading, Jet-RL, explains quantization scales, aligned forward precision flows, and residual error. Optional readings cover TLT’s drafter training during long-tail idle periods and VCPO’s control of variance from stale-policy samples. Start with the probability example and Figure 5; explore the companions as needed. The methods address different problems, and their speedup ratios cannot simply be multiplied."
+  },
+  "papers": [
+    {
+      "id": "jet-rl-2026",
+      "title": "Jet-RL: Enabling On-Policy FP8 Reinforcement Learning with Unified Training and Rollout Precision Flow",
+      "year": 2026,
+      "venue": "arXiv 2026 · NVIDIA / MIT / UC Berkeley / independent researcher · v1 2026-01-20; v2 2026-01-24",
+      "url": "https://arxiv.org/abs/2601.14243v2",
+      "role": "main",
+      "revisitReason": {
+        "zh": "此前在研究方向导读中简要介绍过；这次展开量化流程、反向传播、实验条件与数值一致性的边界。",
+        "en": "Previously mentioned in a research-direction overview; this note develops the precision flow, backward computation, experimental conditions, and limits of numerical agreement."
+      },
+      "zh": {
+        "contribution": "让训练前向与 rollout 采用一致的 FP8 量化流程，并结合细粒度量化和混合精度反向传播，改善低精度 RL 的稳定性。",
+        "relevance": "理解相同权重为何仍可能对应不同的执行策略，并把权重同步、算子数值与学习效果分开诊断。",
+        "reading": "值得精读：先看图 5、§4.1，再读 §4.2、表 2–4；对照 §3 的失败案例，最后梳理仍未验证的一致性条件。",
+        "prerequisites": "自回归生成、概率比、线性层的前向和反向；量化尺度与粒度在正文从例子解释。",
+        "caveat": "统一量化设计不等于跨引擎逐比特一致；16K 设置仍有精度差距，32B 推理测速不代表完成了 32B 端到端 RL 评估。",
+        "sections": [
+          {
+            "heading": "同一份权重，为什么生成端和训练端还会意见不一致？",
+            "paragraphs": [
+              "假设模型正在解一道数学题。生成端用 FP8，也就是每个数只用 8 位浮点格式参与部分计算，来加速生成回答；训练端保留 BF16，用 16 位浮点格式重新计算这段回答的概率，再根据答对与否更新模型。两边即使刚同步过同一份权重，也不一定算出相同的概率，因为舍入和量化发生在不同位置。",
+              "下面只是教学例子：某个已生成 token 在 rollout 端的概率是 0.20，训练端重算为 0.16。用训练概率除以实际生成概率，会得到 0.8。此时权重尚未更新，这个偏离已经存在。它来自执行数值差异，不能全算作模型学习之后的正常策略变化。Jet-RL 研究的正是怎样减少这一类差异，同时保留 FP8 的速度收益。"
+            ]
+          },
+          {
+            "heading": "先分清三件事：量化误差、旧权重和随机采样",
+            "paragraphs": [
+              "策略是给定已有文字时，模型对下一个 token 的概率分布。On-policy 可以先理解为：训练数据由所针对的当前策略生成。实际 RL 经常也会重复使用数据或进行重要性修正，所以不能把所有策略差异都直接称为错误；关键是明确数据究竟来自哪个分布，训练目标如何处理它。",
+              "权重落后几个版本，是时间上的策略差异；同一版本在两套数值实现上算出不同概率，是执行上的差异；即使概率完全相同，两次随机采样也可能抽出不同 token。检查 mismatch 时应固定权重、输入 token 前缀和采样前的概率计算，再比较同一个位置。只比较两段自由生成的文字，很难分清这三种原因。后一段是本笔记的诊断建议。"
+            ]
+          },
+          {
+            "heading": "FP8 量化不是只换一种存储类型",
+            "paragraphs": [
+              "FP8 能表示的数值有限。量化通常先选一个尺度，把原来的数除以尺度、舍入到可表示的值；使用时再结合尺度恢复它的大致大小。Jet-RL 使用 E4M3 格式，其最大有限值是 448。尺度越粗糙，少数很大的数就越容易占用表示范围，让其他较小的数被表示得不够精细。",
+              "论文因此采用较小的分组：前向激活按 1×128 一组，权重按 128×128 一块，各自使用局部尺度。可以把一行激活理解成某个 token 的一串特征：每连续 128 个特征共享尺度，而不是所有 token 和所有特征共用一个尺度。分组方式也是模型执行的一部分；仅确认两边都写着 FP8，还不足以确认它们做了相同的计算。"
+            ]
+          },
+          {
+            "heading": "核心改动：训练时也经过同样的低精度前向路径",
+            "paragraphs": [
+              "普通的 BF16-train / FP8-rollout 配置，在生成端把线性层的输入和权重量化后做乘法，而训练前向仍沿 BF16 路径计算。Jet-RL 把训练前向也改成对应的 FP8 路径：算子之间传什么精度、哪里量化、按多大一组量化，都尽量与生成端对齐。图 5 用计算图表达这一点：推理使用的前向计算被包含在训练图里，边上的精度与量化粒度保持一致。",
+              "训练仍保留 BF16 的主权重，用于承接参数更新，再为前向计算得到量化权重。这样不会让每次很小的更新都直接受限于 FP8 可表示的离散值。生成端的权重量化放在参数更新阶段完成；训练端的激活量化可以与前一个算子融合，减少单独启动和搬运开销。这里解释的是论文 §4 的设计，未声称今天任意 verl 或 vLLM 配置已经自动做到这一点。"
+            ]
+          },
+          {
+            "heading": "反向传播也加速，但没有把整条链路都变成 FP8",
+            "paragraphs": [
+              "一个线性层除前向矩阵乘法，还要在反向计算两件事：权重应怎样调整，以及输入应接收怎样的梯度。论文把这两类矩阵乘法也交给 FP8 输入的算子，输出保留 BF16；算子之间传递的梯度也保留 BF16，以减少下溢和量化噪声。前向保存、供反向使用的部分激活则保持 FP8。",
+              "反向乘法会改变矩阵的使用方向。按一行分组量化的激活，在另一种乘法里可能需要按列分组，因而要重新量化；不能总把转置看成只改一个索引。权重的 128×128 对称分块更方便转置复用。阅读原文时还有一个值得留意的细节：v2 的图 6 图注与 §4.2 正文对 DGrad/WGrad 的两种布局对应关系写反了。本篇不据这一冲突给出可直接照抄的 kernel 配方；实现前应按 §2.2 的矩阵维度和具体源码核对。"
+            ]
+          },
+          {
+            "heading": "它减少了什么 mismatch，又没有证明什么？",
+            "paragraphs": [
+              "Jet-RL 主要对齐线性层量化带来的前向差异。相同量化设计仍不自动固定矩阵归约顺序、attention 实现、批次形状、KV cache 精度或分布式通信的数值行为。尤其在 MoE 模型里，专家路由是否一致还需要单独检查；本文评估的主要训练模型不是用来验证大规模 MoE 路由一致性的实验。",
+              "所以应把论文支持的结论表述为：在作者所测的配置中，统一精度流程改善了稳定性，并缩小与 BF16 的质量差距。它没有提供所有层、所有 batch 与所有推理引擎逐比特相同的证明。与此前介绍的零差异参考实现对照阅读时，先问“对齐了哪个误差来源”，再问是否满足更强的精确一致性要求。"
+            ]
+          },
+          {
+            "heading": "实验怎样做：先看模型、任务和真实的质量差距",
+            "paragraphs": [
+              "论文在 NVIDIA H100 上评估 Llama3.1-8B、Qwen2.5-7B 和 Qwen3-8B-Base 等模型。训练数据包括 GSM8K 与 MATH 的混合，以及更难的 DeepMATH；混合数学任务每个问题生成 4 个回答，DeepMATH 生成 16 个。论文给出学习率 10⁻⁶、batch size 256、KL 系数 10⁻³，并比较 BF16、BF16 训练配 FP8 rollout、Jet-RL。KL 项用于限制模型相对参考策略的偏离。",
+              "最直观的一组是表 2：Qwen3-8B-Base、8K rollout、GSM8K+MATH 训练时，所列四个评测的平均分分别是 BF16 63.8、混合方案 60.9、Jet-RL 62.7。Jet-RL 缩小了差距，但仍低 1.1 个百分点。表 3 的同模型 16K 设置里，混合方案未收敛，Jet-RL 得到 61.3，而 BF16 是 64.0，仍差 2.7 个百分点。稳定下来与完全没有质量损失，是两项不同要求。",
+              "这些是作者报告的具体任务结果，不是所有 FP8 RL 配置必然崩溃的定理。原文 §3 的部分模型名称、图注与正文也有不一致，本篇采用表 2–3 明确列出的配置作定量比较。它提供了值得复现的风险场景；复现实验还应报告多随机种子的波动，并区分生成长度限制和实际生成长度。"
+            ]
+          },
+          {
+            "heading": "速度收益要分清：推理吞吐、单步耗时与最终训练成本",
+            "paragraphs": [
+              "表 4 的 rollout 测速使用 vLLM、H100、512 个 prompt，每个输入 512 token，最大并发 128。32B 模型在 TP=2、8K 输出长度配置下，FP8 相对 BF16 的 token 吞吐是 1.33 倍；同样 32B、8K，TP=4 时只有 1.07 倍。TP 是张量并行，把一次模型计算分到多张 GPU。通信和其他未加速部分占比变大后，低精度矩阵乘法的收益会被稀释。",
+              "端到端部分另测 Qwen3-8B、8K rollout：作者报告 RL 单步耗时对应 1.16 倍加速。它不能写成“所有训练都快 33%”，也不能把 32B 的独立推理吞吐直接当成 32B RL 的总收益；论文明确把更大模型的完整训练扩展留作后续工作。若目的是降低科研训练成本，还应衡量达到同一评测目标要多少小时，因为每一步更快与需要多少步共同决定总成本。最后这一指标建议是本篇的系统分析。"
+            ]
+          },
+          {
+            "heading": "读完可以提出一个具体、可验证的问题",
+            "paragraphs": [
+              "可以设计如下小实验；这是本篇提出的研究问题，不是论文已经完成的结果。固定一份权重和一批 token 前缀，分别运行 BF16/BF16、BF16/FP8、统一 FP8 三种训推组合。记录每个位置的 log-prob 差值、分布距离及异常值比例，再逐项改变 batch、序列长度、并行度与 attention 实现。这样能查出“统一 FP8 后剩余误差来自哪里”。",
+              "之后再把权重版本落后这一因素独立加入。不要一开始同时改变精度、异步程度与采样参数，否则很难把训练崩溃归因到某一机制。最后才做短程 RL，检查数值诊断能否预测质量变化。这个顺序能把系统调试连接到科学问题：需要多强的一致性，才足以稳定学习？"
+            ]
+          },
+          {
+            "heading": "阅读路线与原始资料",
+            "paragraphs": [
+              "值得精读，先读图 5 和 §4.1，把“BF16 主权重”和“FP8 前向计算”区分开；再读 §4.2，理解分组尺度与反向布局；最后看表 2–4，分别回答稳定性、质量差距和吞吐收益。§2.2 的三个矩阵乘法公式可以在第二遍手推，不需要第一遍先背完整的 GRPO 推导。",
+              "本篇依据 Haocheng Xi 等人的 [Jet-RL v2 原文](https://arxiv.org/html/2601.14243v2) 撰写解释与评议；首稿 2026-01-20，核验版本 2026-01-24，原文采用 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) 许可。作者包括 Han Cai、Song Han、Ligeng Zhu，机构包括 NVIDIA、MIT、UC Berkeley 及独立研究者。本次未核到正式会议录用，按预印本标注；未检查当前开源实现，因此不把论文设计当作当前源码事实。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Aligns FP8 quantization flows in training forward passes and rollouts, combining fine-grained quantization with mixed-precision backward computation to improve low-precision RL stability.",
+        "relevance": "Explains why identical weights can still yield different executed policies and separates synchronization, operator numerics, and learning outcomes.",
+        "reading": "Worth close reading: Figure 5 and Section 4.1, then Section 4.2 and Tables 2–4; compare the failures in Section 3 and identify remaining consistency requirements.",
+        "prerequisites": "Autoregressive generation, probability ratios, and forward/backward linear layers. Quantization scales and granularity are introduced through examples.",
+        "caveat": "Matching quantization design is not a cross-engine bitwise-equality guarantee. Quality gaps remain at 16K, and 32B inference measurements are not full 32B RL evaluations.",
+        "sections": [
+          {
+            "heading": "Identical weights can still disagree about a generated token",
+            "paragraphs": [
+              "Consider an LLM solving a math problem. Its rollout engine uses FP8, an 8-bit floating-point format, for selected computation to generate answers faster. The trainer uses BF16, a 16-bit format, to recompute those answers’ probabilities before updating the model from their rewards. Even immediately synchronized weights need not produce identical probabilities when rounding and quantization occur at different places.",
+              "Here is an illustrative example, not a measurement: a sampled token has probability 0.20 in the rollout engine and 0.16 when the trainer recomputes it. Dividing the training probability by the actual behavior probability gives 0.8 before any weight update. That discrepancy is numerical, not entirely a consequence of learning. Jet-RL aims to reduce this source of disagreement while preserving the speed benefit of FP8."
+            ]
+          },
+          {
+            "heading": "Separate quantization, stale weights, and random sampling",
+            "paragraphs": [
+              "A policy is the distribution over the next token conditioned on the existing text. On-policy learning uses data generated by the current policy being targeted. Practical RL also reuses data and applies importance corrections, so a policy difference is not automatically an implementation error. The important questions are which distribution produced the data and how the objective handles it.",
+              "Weights that lag several updates cause temporal policy differences. Different numerical implementations of the same weight version cause execution differences. Even equal distributions can generate different tokens under random sampling. Our diagnostic recommendation is to fix weights and token prefixes, then compare probabilities at the same positions before sampling. Comparing only two freely generated answers confounds these causes."
+            ]
+          },
+          {
+            "heading": "FP8 is more than a storage dtype",
+            "paragraphs": [
+              "FP8 represents a limited set of values. Quantization typically chooses a scale, divides values by it, and rounds to representable numbers; computation then accounts for the scale. Jet-RL uses E4M3, whose maximum finite value is 448. With a coarse scale, a few large values can consume the available range and leave small values poorly represented.",
+              "The paper therefore uses local groups: 1×128 groups for forward activations and 128×128 blocks for weights. Think of one activation row as a token’s features: each consecutive group of 128 features shares a scale, rather than every token and feature sharing one. Grouping is part of executed model behavior, so matching the label FP8 alone does not establish equivalent computation."
+            ]
+          },
+          {
+            "heading": "The central change: train through the same low-precision forward path",
+            "paragraphs": [
+              "A BF16-training / FP8-rollout setup quantizes linear-layer inputs and weights in the generator while retaining a BF16 training forward path. Jet-RL instead aligns the forward precision flow: transferred dtypes, quantization locations, and group sizes. Figure 5 depicts the inference computation inside the training graph, with matching precision and granularity on its edges.",
+              "Training still keeps BF16 master weights for parameter updates and derives quantized weights for forward computation. This avoids forcing every small update directly into FP8’s coarse representable values. Inference weights are quantized during parameter updates, while activation quantization can be fused into the preceding operator. This describes the paper’s Section 4 design, not a claim that arbitrary current verl or vLLM configurations implement it automatically."
+            ]
+          },
+          {
+            "heading": "Accelerate backward GEMMs without making the whole path FP8",
+            "paragraphs": [
+              "A linear layer needs both a weight gradient and an input gradient in addition to its forward matrix multiplication. The paper accelerates those backward multiplications with FP8 operands and BF16 outputs. Gradients transferred between operators remain BF16 to reduce underflow and quantization noise. Some forward activations saved for backward use remain FP8.",
+              "Backward products use matrices in different orientations. An activation quantized by row may need column-oriented grouping in another product, requiring requantization rather than just an indexing transpose. Symmetric 128×128 weight blocks are easier to reuse after transposition. One source caveat matters: the v2 Figure 6 caption and Section 4.2 text reverse the assignment of the two layouts to DGrad and WGrad. We do not turn that inconsistency into a copyable kernel recipe; an implementation must check Section 2.2 dimensions against actual code."
+            ]
+          },
+          {
+            "heading": "What mismatch does this address, and what remains unproven?",
+            "paragraphs": [
+              "Jet-RL primarily aligns forward differences introduced by linear-layer quantization. Matching that design does not automatically fix reduction order, attention implementations, batch shapes, KV-cache precision, or distributed numerical behavior. Expert routing needs its own checks in MoE models; the main training evaluations here do not establish large-scale MoE routing agreement.",
+              "The supported conclusion is that the unified precision flow improves stability and narrows quality gaps to BF16 in the tested configurations. It is not a proof of bitwise equality across all layers, batches, and inference engines. When comparing this work with a zero-mismatch reference, first identify which source of error is aligned before asking whether stronger exact-equality requirements hold."
+            ]
+          },
+          {
+            "heading": "Evaluation: models, tasks, and the quality gap that remains",
+            "paragraphs": [
+              "The paper evaluates models including Llama3.1-8B, Qwen2.5-7B, and Qwen3-8B-Base on NVIDIA H100 GPUs. Training uses GSM8K plus MATH, or harder DeepMATH tasks, with four responses per prompt for the mixture and sixteen for DeepMATH. It reports a learning rate of 10⁻⁶, batch size 256, and KL coefficient 10⁻³. The KL term limits deviation from a reference policy. Baselines are BF16 and BF16 training with FP8 rollouts.",
+              "Table 2 gives a useful concrete comparison: for Qwen3-8B-Base trained on GSM8K+MATH with 8K rollouts, the four listed benchmark averages are 63.8 for BF16, 60.9 for the mixed setup, and 62.7 for Jet-RL. The remaining gap is 1.1 percentage points. In Table 3’s 16K setting for the same model, the mixed baseline does not converge; Jet-RL scores 61.3 versus BF16’s 64.0, a 2.7-point gap. Stable training and zero quality loss are separate requirements.",
+              "These are author-reported task results, not a theorem that every FP8-rollout setup must fail. Some model names and captions in Section 3 also conflict with its prose, so this note uses the explicit configurations in Tables 2–3 for numerical comparisons. Replication should add seed variability and distinguish a response-length cap from actual generated length."
+            ]
+          },
+          {
+            "heading": "Separate rollout throughput, step time, and total learning cost",
+            "paragraphs": [
+              "Table 4 benchmarks vLLM on H100s using 512 prompts, 512 input tokens each, and maximum concurrency 128. For the 32B configuration with TP=2 and 8K output length, FP8 delivers 1.33× BF16 token throughput; at TP=4 and the same length it delivers 1.07×. Tensor parallelism distributes model computation across GPUs. Communication and other unaccelerated work can dilute faster low-precision multiplication.",
+              "A separate end-to-end result for Qwen3-8B with 8K rollouts reports a 1.16× RL step-time speedup. It does not establish 33% faster training universally, and the 32B standalone inference gain is not a full 32B RL gain; the paper leaves larger-model training scaling to future work. Our systems recommendation is also to measure hours to a matched evaluation target, since both step time and the number of required steps determine total learning cost."
+            ]
+          },
+          {
+            "heading": "A concrete question to investigate after reading",
+            "paragraphs": [
+              "Here is a proposed experiment, not a result from the paper. Freeze weights and token prefixes, then compare BF16/BF16, BF16/FP8, and aligned FP8 training/rollout pairs. Record per-position log-probability differences, distribution distances, and outlier rates while changing batch size, sequence length, parallelism, and attention implementation one at a time. This asks where residual disagreement comes from after FP8 alignment.",
+              "Introduce policy-version lag as a separate factor afterward. Changing precision, asynchrony, and sampling settings together makes failures hard to attribute. Only then run short RL experiments to test whether numerical diagnostics predict learning outcomes. This connects systems debugging to a research question: how much agreement is actually needed for stable learning?"
+            ]
+          },
+          {
+            "heading": "Reading route and primary source",
+            "paragraphs": [
+              "Start with Figure 5 and Section 4.1 to distinguish BF16 master weights from FP8 forward computation. Then read Section 4.2 for scales and backward layouts, followed by Tables 2–4 for stability, quality gaps, and throughput. Derive Section 2.2’s three matrix products on a second pass; a full GRPO derivation is not a prerequisite for the first reading.",
+              "This explanatory commentary is based on Haocheng Xi and colleagues’ [Jet-RL v2](https://arxiv.org/html/2601.14243v2), first submitted January 20, 2026 and revised January 24, under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Authors include Han Cai, Song Han, and Ligeng Zhu, with NVIDIA, MIT, UC Berkeley, and independent-researcher affiliations. No conference acceptance was verified here, so the work is labeled a preprint. Current source code was not inspected; paper design is not presented as current implementation fact."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "tlt-adaptive-drafter-2026",
+      "title": "Taming the Long-Tail: Efficient Reasoning RL Training with Adaptive Drafter",
+      "year": 2026,
+      "venue": "ASPLOS 2026 · MIT / NVIDIA / ETH Zurich / MIT-IBM AI Lab / UMass Amherst · first preprint 2025-11-20; v3 2026-03-20",
+      "url": "https://arxiv.org/abs/2511.16665v3",
+      "role": "optional",
+      "revisitReason": {
+        "zh": "从研究方向概览转入机制精读：结合 Jet-RL，比较利用长尾空闲资源训练 drafter 与低精度加速的不同取舍。",
+        "en": "Moving from a research overview to mechanism-level reading: compare training a drafter during long-tail idle periods with Jet-RL’s low-precision acceleration."
+      },
+      "zh": {
+        "contribution": "把推理 RL 中等待少数长回答结束的时间用于更新小型 drafter，再根据剩余请求数调整投机解码，让辅助模型跟上不断变化的训练模型。",
+        "relevance": "与 Jet-RL 的精度流程互补：这里首先问哪些 GPU 正在等待，以及多提出几个候选是否真的更快。它也给 agent 工具等待与 KV cache 驻留提供了可研究的方向，但论文没有完成相应多轮工具实验。",
+        "reading": "值得精读 Figure 8 与 §4.2，理解 drafter 从哪里取数据、在哪些 GPU 上训练、何时让出资源；再读 Figure 14、§5 和 §6.1，分别看调度收益与测量条件。",
+        "prerequisites": "知道语言模型逐 token 生成、RL 要先生成回答再更新参数即可。正文解释 rollout、drafter、投机解码、CUDA Graph，以及为什么更高的候选接受率不一定带来更快的训练。",
+        "caveat": "主要端到端结果是使用已训练 drafter、预热后三个 RL step 的吞吐，不是从零训练到同等能力的总耗时。辅助训练有实际开销；保持目标采样分布的设计也不等于保证不同实现逐位一致。依据 v3 PDF 所载 CC BY 4.0 作解释性改写与评议。",
+        "sections": [
+          {
+            "heading": "大多数答案已经写完，整轮训练为什么还不能继续？",
+            "paragraphs": [
+              "先看一个自拟例子：四组 GPU 分别为一批数学题生成候选答案。三组已经完成，第四组还剩两道题，一直在尝试不同解法。这一轮需要等所有回答结束才能更新主模型，因此前三组开始等待；第四组虽然仍在工作，却只同时处理很少几个请求。这里的生成过程叫 rollout。少数很长的回答决定了整轮何时结束，这就是长尾问题：既有整组 GPU 闲置，也有仍在生成的 GPU 因并行请求太少而利用不足。[Figure 1 与 §2](https://arxiv.org/html/2511.16665v3#S2)",
+              "TLT 同时处理这两种浪费：让仍在生成的请求一次向前推进多个 token；让已完成工作的 GPU 训练一个帮助预测后续 token 的小模型。这个小模型叫 drafter。主模型仍按原来的 RL 流程等待、更新，提前训练的是辅助 drafter，而不是用未收齐的回答提前更新主模型。这个区别决定了它与允许旧策略样本参与更新的异步 RL 是不同方案。[§3 与 §7](https://arxiv.org/html/2511.16665v3#S3)"
+            ]
+          },
+          {
+            "heading": "先让小模型提议，再让大模型检查",
+            "paragraphs": [
+              "普通生成每次只向前走一个 token。投机解码则先让 drafter 快速提出多个候选，再让主模型在一次前向计算中并行检查。被接受的一段可以直接成为后续输出；不合适的候选不会因为小模型提出了就强行保留。因此，小模型猜得准主要影响速度，输出仍由主模型的验证规则决定。论文强调保留目标采样分布；这属于算法层面的目标，不能直接当成所有 GPU 内核和精度配置都逐位一致的证明。[§2.2](https://arxiv.org/html/2511.16665v3#S2.SS2)",
+              "RL 又带来一个部署推理中没有的麻烦：主模型每轮都会更新，昨天很好用的 drafter 可能越来越猜不中。TLT 默认使用 EAGLE 风格的单层 drafter：可训练核心是一个含 attention 和前馈网络的 Transformer 解码层，复用主模型的词嵌入与输出层，训练 drafter 时冻结这些复用部分。它读取主模型的内部向量来预测后续 token，并随着 RL 继续学习。这里的关键并不是找一个参数更少的完整语言模型，而是减少 drafter 必须串行执行的层数，让一次提议足够便宜。[§4.1 与 Figure 7](https://arxiv.org/html/2511.16665v3#S4.SS1)"
+            ]
+          },
+          {
+            "heading": "利用空闲时段训练，也要防止只学到短答案",
+            "paragraphs": [
+              "回到四组 GPU 的例子。协调器发现某组已完成 rollout 并释放推理显存后，才把它切换成辅助训练任务；一个 worker 可以是共同运行一个模型实例的整组 GPU，不一定是一张卡。辅助训练使用已经完成的回答以及主模型生成的内部向量。等待最后的长回答结束后，协调器会停止辅助训练，让主 RL 流程继续。论文把这种可被打断、只利用空闲资源的训练叫 Spot Trainer；它还只保存 drafter 的可训练部分，并异步写检查点，减少被打断时丢失的工作。[§4.2 与 Figure 8](https://arxiv.org/html/2511.16665v3#S4.SS2)",
+              "如果只拿最先完成的回答训练，drafter 恰好很少见到最需要加速的长回答。TLT 因此保留跨轮 DataBuffer，把本轮已完成的回答与上一轮的长回答混合起来，同时复用缓存的内部向量，减少重复运行大模型的成本。上一轮的数据略旧，但用途是训练辅助模型，不是直接把旧回答塞进当前主模型的 RL 更新。这里的“利用闲置资源”也不表示计算免费：论文仍报告额外显存、启用投机时重新处理前缀，以及偶发资源竞争等开销。[§4.2 与 §6.4](https://arxiv.org/html/2511.16665v3#S6.SS4)"
+            ]
+          },
+          {
+            "heading": "请求越少，值得多猜几步；请求多时可能反而要少猜",
+            "paragraphs": [
+              "一轮开始时，主模型已经能同时处理许多请求；再为每个请求扩展大量候选，可能多花计算、占满显存，甚至变慢。到长尾只剩几个请求时，增加候选才更容易用上闲置算力。TLT 默认在剩余请求数低于 32 时启用投机，并继续调整候选深度及交给主模型检查的 token 数。选择器按 batch 大小划分配置，偶尔试用其他方案，通常选择近期测得吞吐更好的方案。这种在尝试和利用已有经验之间取舍的方法叫多臂老虎机；它追求的是单位时间真正向前推进多少 token，不是单独追求接受率。[§5.1–5.2 与 Figure 14](https://arxiv.org/html/2511.16665v3#S5)",
+              "频繁换配置还会遇到 CUDA Graph 的显存成本。CUDA Graph 把一串 GPU 操作预先记录下来，以减少后续逐次启动的开销，但不同形状常需不同的记录。TLT 将相近 batch 大小分组，分别记录 drafter 和主模型，并合并可复用的记录，避免每种组合都额外占一整份空间。训练初期 drafter 尚未准备好时，还可以从同一问题已经生成的回答中检索常见短片段作为候选，再由主模型验证。这是检索式后备方案，不是直接复制答案。[§5 与 Figure 10](https://arxiv.org/html/2511.16665v3#S5)"
+            ]
+          },
+          {
+            "heading": "测到了怎样的提速，哪些时间没有被这个数字回答？",
+            "paragraphs": [
+              "实验主要使用最多八台 DGX H100、共 64 张 GPU，也在 A100 上测试。模型覆盖 Qwen2.5-7B、DeepSeek-R1-Distill-Qwen-7B、Qwen2.5-32B 和 Llama-3.3-70B-Instruct；主训练数据是 Eurus-2-RL 的数学与代码子集。采用 GRPO，即比较同一道题的一组回答来形成训练信号，生成温度为 0.9，回答长度上限为 32K token，训练使用 BF16。drafter 另外使用 OpenThoughts2-1M 的子集预热。对照包括论文当时的 VeRL、Open-R1，以及关闭自适应 drafter 的 TLT-Base。[§6.1](https://arxiv.org/html/2511.16665v3#S6.SS1)",
+              "Figure 11 报告相对 VeRL 约 1.7–2.1 倍的端到端吞吐，但指标是“一个全局 batch 的提示词与回答 token 总数 ÷ 一个 RL step 耗时”，预热后只平均三个 step，并使用已训练的 drafter。因此，它包含每步的生成和训练阶段，却不能回答冷启动、预热和完整收敛总共能省多少时间。规模也会改变收益：Table 3 的 Qwen2.5-7B 从单节点的 1.21 倍增至八节点的 1.76 倍。Figure 12 中两种 Qwen 模型的平均 reward 曲线接近，支持所测训练行为没有明显受损；它不是所有任务上最终能力完全相同的保证。[§6.1–6.3、Figures 11–12 与 Table 3](https://arxiv.org/html/2511.16665v3#S6)"
+            ]
+          },
+          {
+            "heading": "读完之后，怎样把它变成自己的系统问题？",
+            "paragraphs": [
+              "先看 Figure 8，画出主模型与 drafter 各自何时训练；再看 Figure 14，理解为什么投机策略应随剩余请求改变；最后读 §6.1 的测量方法和 §7 的适用范围。论文在 §7 提到：agent 等待工具执行时可能仍占用 KV cache，却不做 GPU 解码；这会减少活跃请求，为投机解码创造机会。但这只是提出的后续方向，没有在本文中完成多轮工具实验。一个可继续研究的问题是：等待期间保留多少缓存、是否真有可供训练的空闲 worker、候选验证还剩多少显存；这些是本文引出的系统问题，不能直接套用论文提速数字。",
+              "本文依据 Qinghao Hu、Shang Yang 等作者的 [v3 原文](https://arxiv.org/pdf/2511.16665v3)作解释性改写与评议。首稿发表于 2025 年 11 月 20 日，最新版本为 2026 年 3 月 20 日，[ASPLOS 2026 官方议程](https://asplos-conference.org/asplos2026/program/index.html)确认收录。arXiv 网页仍显示其存档许可，但 v3 PDF 第一页明确声明 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)，本文依该声明注明作者与来源。四组 GPU 的例子由本文自拟；未重新运行论文实验，也未据当前源码补充实现结论。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Uses resources left idle while a few long reasoning rollouts finish to update a lightweight drafter, then adapts speculative decoding to the remaining request count so the auxiliary model can track an evolving RL policy.",
+        "relevance": "Complements Jet-RL’s precision pipeline by asking which GPUs are waiting and whether proposing more candidate tokens actually improves speed. It suggests research questions about agent tool waits and resident KV caches, but does not evaluate the corresponding multi-turn tool workload.",
+        "reading": "Read Figure 8 and Section 4.2 closely to establish the drafter’s data sources, training resources, and preemption boundary. Then read Figure 14, Section 5, and Section 6.1 for scheduling behavior and measurement conditions.",
+        "prerequisites": "Assumes only token-by-token generation and the generate-then-update structure of RL. The notes explain rollouts, drafters, speculative decoding, CUDA Graphs, and why a higher candidate acceptance rate need not produce faster training.",
+        "caveat": "The main end-to-end result measures throughput over three RL steps after warm-up with a trained drafter, not total time from initialization to equal capability. Auxiliary training has real overhead, and preserving the target sampling distribution is not a guarantee of bitwise equality across implementations. These notes adapt and discuss the CC BY 4.0 work identified on the v3 PDF.",
+        "sections": [
+          {
+            "heading": "Why can an entire training step wait after most answers are finished?",
+            "paragraphs": [
+              "Consider our teaching example: four GPU groups generate candidate solutions to a batch of math problems. Three groups finish, while the fourth still has two problems whose solutions keep exploring alternatives. The main model cannot update until all responses finish. The first three groups wait; the fourth remains busy but processes very few simultaneous requests. This generation stage is called rollout. A few long responses determine when the whole step ends, creating two forms of waste: idle GPU groups and poor utilization on the groups still decoding. [Figure 1 and Section 2](https://arxiv.org/html/2511.16665v3#S2)",
+              "TLT addresses both: advance the remaining requests by multiple tokens at a time, and use finished workers to train a small auxiliary model that predicts upcoming tokens. This model is the drafter. The main model still waits and updates according to the original RL workflow. It is the auxiliary drafter that trains early, not the main policy using an incomplete response batch. This distinguishes the design from asynchronous RL that permits stale-policy samples in policy updates. [Sections 3 and 7](https://arxiv.org/html/2511.16665v3#S3)"
+            ]
+          },
+          {
+            "heading": "Let a small model propose, then let the large model verify",
+            "paragraphs": [
+              "Ordinary generation advances one token at a time. Speculative decoding first lets the drafter propose several candidates cheaply, then verifies them in parallel with one forward pass of the main model. Accepted candidates advance the output; unsuitable candidates are not retained merely because the drafter proposed them. Drafting accuracy therefore primarily affects speed, while the main model’s verification rules govern the output. The paper emphasizes preserving the target sampling distribution. This is an algorithmic objective, not evidence that every GPU kernel and precision configuration produces bitwise-identical results. [Section 2.2](https://arxiv.org/html/2511.16665v3#S2.SS2)",
+              "RL introduces a complication absent from serving a fixed model: the main model changes after each policy update, so a previously useful drafter can become less accurate. TLT defaults to an EAGLE-style single-layer drafter. Its trainable core is one Transformer decoder block containing attention and a feed-forward network. It reuses the main model’s embedding and output layers, freezing those reused parts during drafter training. It reads internal vectors from the main model to predict later tokens and continues learning as RL progresses. The point is not merely to select a complete language model with fewer parameters, but to reduce the number of layers the drafter must execute sequentially so that proposals are cheap. [Section 4.1 and Figure 7](https://arxiv.org/html/2511.16665v3#S4.SS1)"
+            ]
+          },
+          {
+            "heading": "Train during idle periods without learning only from short answers",
+            "paragraphs": [
+              "Return to the four GPU groups. A coordinator switches a group to auxiliary training only after it finishes rollout and releases inference memory. One worker may comprise a whole GPU group running one model instance, rather than a single GPU. Auxiliary training uses completed responses and internal vectors produced by the main model. Once the remaining long responses finish, the coordinator stops the auxiliary work so the primary RL workflow can continue. The paper calls this preemptible use of idle resources the Spot Trainer. It also saves only the drafter’s trainable parts and writes checkpoints asynchronously to reduce work lost at preemption. [Section 4.2 and Figure 8](https://arxiv.org/html/2511.16665v3#S4.SS2)",
+              "Training only on the earliest completions would rarely expose the drafter to the long responses it most needs to accelerate. TLT therefore retains a DataBuffer across RL steps, combining current completed responses with long responses from the preceding step. Cached internal vectors reduce repeated large-model computation. Previous-step data are slightly stale, but train the auxiliary model rather than being inserted directly into the current main-policy RL update. Using idle resources also does not make computation free: the paper reports additional memory use, reprocessing prefixes when speculative decoding is activated, and occasional resource contention. [Sections 4.2 and 6.4](https://arxiv.org/html/2511.16665v3#S6.SS4)"
+            ]
+          },
+          {
+            "heading": "Propose more when few requests remain, and sometimes less when many remain",
+            "paragraphs": [
+              "At the start of a step, the main model already processes many requests together. Expanding many candidates per request can add computation, exhaust memory, or slow execution. When only a few requests remain, extra candidates can make better use of otherwise idle compute. TLT enables speculative decoding below a default threshold of 32 remaining requests and continues adjusting draft depth and the number of tokens sent for verification. Its selector groups configurations by batch size, occasionally tries alternatives, and otherwise favors a recently measured high-throughput choice. This exploration–exploitation procedure is a multi-armed bandit. Its objective is useful token progress per unit time, rather than acceptance rate alone. [Sections 5.1–5.2 and Figure 14](https://arxiv.org/html/2511.16665v3#S5)",
+              "Switching configurations also creates CUDA Graph memory costs. CUDA Graphs record sequences of GPU operations to reduce repeated launch overhead, but different shapes often require separate recordings. TLT groups nearby batch sizes, captures the drafter and main model separately, and merges reusable captures instead of allocating a full additional recording for every combination. Before a trained drafter is available, it can retrieve common short token sequences from responses to the same prompt and offer them as candidates for main-model verification. This is a retrieval-based fallback, not unconditional answer copying. [Section 5 and Figure 10](https://arxiv.org/html/2511.16665v3#S5)"
+            ]
+          },
+          {
+            "heading": "What became faster, and which costs does that number not answer?",
+            "paragraphs": [
+              "Experiments primarily use up to eight DGX H100 servers, totaling 64 GPUs, with additional A100 evaluations. Models include Qwen2.5-7B, DeepSeek-R1-Distill-Qwen-7B, Qwen2.5-32B, and Llama-3.3-70B-Instruct. The main training data are a math-and-coding subset of Eurus-2-RL. Training uses GRPO, which forms a learning signal by comparing responses to the same question, with sampling temperature 0.9, a 32K-token response limit, and BF16 training. A subset of OpenThoughts2-1M separately warms up the drafter. Baselines include the paper’s versions of VeRL and Open-R1, plus TLT-Base with the adaptive drafter disabled. [Section 6.1](https://arxiv.org/html/2511.16665v3#S6.SS1)",
+              "Figure 11 reports roughly 1.7–2.1× end-to-end throughput relative to VeRL. The metric divides all prompt and response tokens in a global batch by one RL step’s duration, averages only three steps after warm-up, and uses a trained drafter. It includes generation and training within a step, but does not establish total savings across initialization, warm-up, and full convergence. Scale also matters: Table 3 reports Qwen2.5-7B increasing from 1.21× on one node to 1.76× on eight nodes. The two Qwen models’ similar average reward curves in Figure 12 support no obvious degradation of the measured training behavior; they do not guarantee identical final capability on every task. [Sections 6.1–6.3, Figures 11–12, and Table 3](https://arxiv.org/html/2511.16665v3#S6)"
+            ]
+          },
+          {
+            "heading": "Turn the mechanism into a concrete systems question",
+            "paragraphs": [
+              "Start with Figure 8 and draw separate timelines for main-model and drafter training. Next read Figure 14 to see why speculative strategies change as requests finish. Finish with Section 6.1’s measurement procedure and Section 7’s scope. Section 7 observes that an agent waiting for a tool may retain its KV cache without performing GPU decoding, reducing active request counts and potentially favoring speculation. This is a proposed extension, not a multi-turn tool experiment completed in the paper. Useful follow-up questions include how much cache to retain during the wait, whether a whole worker is actually available for training, and how much memory remains for candidate verification. These are research questions suggested by the design, not settings to which its speedup numbers can simply be transferred.",
+              "These notes explain, adapt, and discuss the [v3 paper](https://arxiv.org/pdf/2511.16665v3) by Qinghao Hu, Shang Yang, and colleagues. The first preprint appeared on November 20, 2025, and the latest version is dated March 20, 2026. The [official ASPLOS 2026 program](https://asplos-conference.org/asplos2026/program/index.html) confirms publication. Although the arXiv webpage retains its deposit-license label, the first page of the v3 PDF explicitly licenses the work under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/); this attribution follows that notice. The four-GPU-group scenario is our teaching example. We did not reproduce the experiments or add implementation claims from current source code."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "stable-asynchrony-vcpo-2602-17616",
+      "title": "Stable Asynchrony: Variance-Controlled Off-Policy RL for LLMs",
+      "year": 2026,
+      "venue": "ICML 2026 · MIT / NVIDIA · PMLR 306",
+      "url": "https://proceedings.mlr.press/v306/huang26ca.html",
+      "role": "optional",
+      "revisitReason": {
+        "zh": "从研究方向概览转入机制精读：结合 Jet-RL，区分数值实现差异与旧策略样本造成的更新波动。",
+        "en": "Moving from a research overview to mechanism-level reading: distinguish numerical implementation differences from update variance caused by stale-policy samples alongside Jet-RL."
+      },
+      "zh": {
+        "contribution": "用重要性权重估计一批样本是否被少数轨迹支配，据此调小学习率，并用梯度与权重加权的奖励基线降低更新方差。",
+        "relevance": "补上异步 rollout 的优化代价：GPU 更忙、样本更多，并不意味着每次更新拥有同样多的有效信息。",
+        "reading": "值得精读 §2.2、§3.2–3.5；先看图 1–2，再核表 1、附录 B 与 F.4。",
+        "prerequisites": "知道模型根据奖励调整参数即可；正文解释旧策略、重要性权重、ESS 和奖励基线。",
+        "caveat": "主要效果实验为 1.5B–7B 稠密模型；128 步是压力测试，工具任务仅用 2 步。MoE、FP8 和更长 agent 任务仍待验证。",
+        "sections": [
+          {
+            "heading": "为什么旧模型生成的好答案，也可能让训练不稳定？",
+            "paragraphs": [
+              "想象一台机器还在生成第 10 版模型的解答，另一台已经把参数更新到第 12 版。参数就是决定模型如何预测的数值；同一道题，两版模型选择各个 token 的概率可能不同。这叫使用旧策略样本：生成答案的策略与正在训练的策略不同。异步训练允许两边同时工作，减少等待，却也让这种差异持续存在。",
+              "训练通常乘上重要性权重 w＝当前策略生成这条完整解答的概率÷实际采样策略生成它的概率，修正“这些解答来自另一种分布”。教学例子：某条解答在当前模型下的概率是采样时的 20 倍，它就可能得到 20 倍权重。整段概率又由逐 token 概率相乘，长回答中的小差异可以累积成大差异。于是看似有很多解答，一次更新却主要由少数几条决定；换一批解答，更新方向和幅度就可能大幅波动。这种波动叫方差大，并不是说那些答案一定错误。[§2.1–2.2](https://arxiv.org/html/2602.17616v2#S2.SS2)"
+            ]
+          },
+          {
+            "heading": "第一道控制：实际只剩几条样本在起作用，就少走一步",
+            "paragraphs": [
+              "VCPO 用有效样本量 ESS＝(Σw)²/Σ(w²) 衡量权重是否集中。B 条样本权重一样时，ESS＝B；几乎全靠一条时，ESS 接近 1。它是权重退化的诊断量，不是在重新数正确答案，也不是对梯度方差的无条件精确测量。论文观察到，ESS 比例下降往往早于策略差异暴涨和训练成绩崩塌，因此用它决定这一步该有多谨慎。",
+              "先计算 ρ＝ESS/B，再把学习率改为 η_eff＝η×√(ρ_off/ρ_on)。学习率控制本次参数移动的幅度；ρ_on 来自开始时一次或几次同步更新，而非一律假定等于 1。教学例子：若同步参考为 1，本批 100 条样本的 ESS 只有 4，学习率变成原来的 0.2 倍。这是有实验支持的缩放规则，不是保证永不崩溃的定理。最终更新还会截断过大的权重，但计算 ESS 使用未截断的权重，避免把危险程度也一起遮住。[§3.2、§3.5](https://arxiv.org/html/2602.17616v2#S3.SS2)"
+            ]
+          },
+          {
+            "heading": "第二道控制：奖励减去什么数，才能让更新少抖一点？",
+            "paragraphs": [
+              "奖励基线 b 是从奖励 R 中减掉的参考值：模型根据 R−b 学习，而不只是看到一个绝对分数。常见办法是取一组奖励的均值。VCPO 注意到，异步时各条轨迹对更新的影响相差很大，因此用 w²×||g||² 给奖励加权，再求平均作为基线；g 表示让这条解答更可能出现时，参数应朝哪个方向变化，||g|| 是这个向量的大小。被重要性权重放大、同时梯度又大的轨迹，更应该影响这个降噪用的参考值。[§3.3](https://arxiv.org/html/2602.17616v2#S3.SS3)",
+              "“最小方差”有范围：附录 B 在完整重要性采样等假设下，对一个标量基线推导最优值；实际用当前小批量的数据代替总体期望，是估计值。完整 VCPO 还使用权重上限 8 的序列级截断，所以不能把最终算法整体说成严格无偏，也不能把基线说成预测每一步价值的额外模型。正式版也指出，这个最优基线形式已有先例；本文的实际贡献包括高效获取精确的逐轨迹梯度统计，并与 ESS 调步长结合。[正式版 §3.3–3.5、附录 B](https://raw.githubusercontent.com/mlresearch/v306/main/assets/huang26ca/huang26ca.pdf#page=6)"
+            ]
+          },
+          {
+            "heading": "怎样得到梯度统计，又不为基线多做一轮反向传播？",
+            "paragraphs": [
+              "直观做法要先算每条轨迹的梯度大小，求出基线，再重新反向传播一次。论文把更新展开成两份累计量：一份累计 wR·g，另一份累计 w·g。每条轨迹只反向传播一次，同时保存这两份和梯度大小；等基线求出后，组合成“第一份−b×第二份”。数据并行的梯度同步也延后，先保留本地轨迹统计，最后再汇总组合后的梯度。[§3.4、附录 C](https://arxiv.org/html/2602.17616v2#S3.SS4)",
+              "这仍有成本。图 3 的 Qwen2.5-7B、4 张 H100、张量并行 TP=4、序列长 8,192 的测量中，单步时间开销为 19%，内存开销为 14%；省掉的是朴素方案额外的一轮反向传播，不是把开销变成零。因此判断它值不值，要看训练达到目标质量的总时间，而不能只比较一次更新有多快。"
+            ]
+          },
+          {
+            "heading": "2.5 倍加速，和 128 步滞后，分别说明什么？",
+            "paragraphs": [
+              "最贴近 agent 的实验用 Qwen2.5-7B Base，在 DAPO-17K 上按 SimpleTIR 方式训练交替推理和调用工具的能力，在 AIME 2025 检查最终答案。每批 128 道题、每题 16 条回答，回答上限 12,288 token，最多 5 次工具调用；2 张 B200 生成、2 张训练。这里策略最多落后 2 步。图 1 中，VCPO 约 42 小时达到同步方案约 105 小时的最佳验证准确率，因此报告约 2.5 倍的到达目标质量加速。这不是生成 token 吞吐提高 2.5 倍，也不是同样更新次数的纯系统比较。[图 1、§4.5、附录 F.4](https://arxiv.org/html/2602.17616v2#S4.SS5)",
+              "另一个实验把 Qwen2.5-7B 的策略滞后提高到 128 步，观察是否还能稳定学习，这是图 6 的压力测试。作者说明相关实验的异步提速在约 10 步滞后时已经饱和，继续加大滞后主要是在检验稳定性。不能把这项结果改写成“工具 agent 可以放心落后 128 步”，更不能把 128 当成加速倍数。[§4.4、图 6](https://arxiv.org/html/2602.17616v2#S4.SS4)"
+            ]
+          },
+          {
+            "heading": "如何与今天主读连接，以及下一步读哪里",
+            "paragraphs": [
+              "与 Jet-RL 一起读，可以把问题分清：即使训练和生成的数值路径更一致，异步执行仍会让样本来自旧参数；VCPO 研究怎样控制这些样本造成的更新波动。这里的衔接是阅读分析，不是论文已经验证两者组合。主要效果实验使用标准精度的 1.5B–7B 稠密 Transformer；正式版另用 Llama3.1-8B Instruct 在 ORZ math 上补充崩塌诊断。作者把 MoE、FP8、更长且奖励稀疏的 agent 任务留作后续工作。先看图 1–2 理解现象，再读 §2.2 与 §3.2–3.5；想动实现就看算法 1 和附录 C，想检查数学适用范围则读附录 B。[§5](https://arxiv.org/html/2602.17616v2#S5)",
+              "本文依据 Luke J. Huang、Zhuoyang Zhang、Qinghao Hu、Shang Yang、Song Han 的论文作解释与评议，已交叉核验 [ICML 2026 正式版](https://proceedings.mlr.press/v306/huang26ca.html)与 [arXiv v2（2026-03-02）](https://arxiv.org/html/2602.17616v2)，正文提供 HTML 章节链接便于阅读。首稿为 2026-02-19；arXiv 版本采用 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) 许可。教学数字例子已注明，正式版新增诊断已单独说明；没有把论文中的实现描述当成当前仓库状态。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Detects concentration of importance weights, scales the learning rate with effective sample size, and uses a reward baseline weighted by importance ratios and gradient norms to reduce update variance.",
+        "relevance": "Explains the optimization cost of asynchronous rollouts: higher utilization and more trajectories do not guarantee the same amount of useful information per update.",
+        "reading": "Read Sections 2.2 and 3.2–3.5 closely. Start with Figures 1–2, then check Table 1 and Appendices B and F.4.",
+        "prerequisites": "Knowing that rewards guide parameter updates is enough; the note introduces stale policies, importance weights, ESS, and reward baselines.",
+        "caveat": "Main effectiveness experiments use 1.5B–7B dense models. The 128-step lag is a stress test; the tool task uses two steps. MoE, FP8, and longer agent tasks remain unverified.",
+        "sections": [
+          {
+            "heading": "Why can a good answer from an older model destabilize training?",
+            "paragraphs": [
+              "Imagine one machine still generating answers with model version 10 while another has updated the parameters to version 12. Parameters are the numerical values governing predictions; the two versions can assign different token probabilities to the same question. These are stale-policy samples: the policy generating the answers differs from the policy being trained. Asynchrony lets both machines work concurrently, reducing waiting but sustaining this mismatch.",
+              "Training commonly multiplies a sample by an importance weight w: the current policy’s probability of its complete answer divided by the actual sampling policy’s probability. This corrects for answers coming from a different distribution. As a teaching example, an answer twenty times more probable under the current policy can receive weight 20. Sequence probabilities multiply token probabilities, so small shifts can accumulate over long responses. An update may consequently depend mostly on a few trajectories despite having many samples; replacing the batch can substantially change its direction and magnitude. This is high variance, not proof that the dominant answers are incorrect. [Sections 2.1–2.2](https://arxiv.org/html/2602.17616v2#S2.SS2)"
+            ]
+          },
+          {
+            "heading": "First control: take a smaller step when few samples dominate",
+            "paragraphs": [
+              "VCPO measures weight concentration using effective sample size, ESS=(Σw)²/Σ(w²). Equal weights across B samples give ESS=B; near-total domination by one sample gives ESS close to one. ESS diagnoses weight degeneracy: it does not recount correct answers or provide an unconditional exact measurement of gradient variance. The authors observe falling ESS ratios before policy divergence and performance collapse, motivating more cautious updates.",
+              "Let ρ=ESS/B. The learning rate becomes η_eff=η×√(ρ_off/ρ_on), where the learning rate controls the size of the parameter move and ρ_on is estimated from one or a few initial synchronous updates rather than universally set to one. For example, if the reference is one and a batch of 100 has ESS=4, the rate becomes 0.2 times the original. This is an empirically supported scaling rule, not a theorem guaranteeing stability. The final update also truncates large weights, but ESS uses the untruncated weights so truncation does not hide their concentration. [Sections 3.2 and 3.5](https://arxiv.org/html/2602.17616v2#S3.SS2)"
+            ]
+          },
+          {
+            "heading": "Second control: which reference should be subtracted from reward?",
+            "paragraphs": [
+              "A reward baseline b is a reference subtracted from R: learning uses R−b instead of the absolute reward alone. A common choice is the group mean reward. VCPO accounts for unequal influence under asynchrony by weighting rewards with w²×||g||² before averaging. Here g is the parameter-gradient direction for increasing a trajectory’s likelihood, and ||g|| measures its magnitude. Trajectories with both large importance weights and large gradients have more influence on the variance-reduction baseline. [Section 3.3](https://arxiv.org/html/2602.17616v2#S3.SS3)",
+              "The “minimum variance” claim has a defined scope. Appendix B derives the optimum over scalar baselines under assumptions including exact importance sampling. The practical minibatch formula substitutes sample averages for population expectations. Full VCPO also caps sequence importance weights at eight, so the complete algorithm should not be described as strictly unbiased. Nor is the baseline an additional model predicting each step’s value: no separate critic is trained. The final version acknowledges earlier derivations of this optimal-baseline form; its practical contribution includes efficient exact per-trajectory gradient statistics combined with ESS-guided step scaling. [Final version, Sections 3.3–3.5 and Appendix B](https://raw.githubusercontent.com/mlresearch/v306/main/assets/huang26ca/huang26ca.pdf#page=6)"
+            ]
+          },
+          {
+            "heading": "Obtaining the statistics without a second backward pass",
+            "paragraphs": [
+              "A naive implementation first computes per-trajectory gradient norms, obtains the baseline, and then backpropagates again. The paper instead decomposes the update into two accumulators: one sums wR·g and the other sums w·g. Each trajectory is backpropagated once while recording these quantities and its gradient norm. Once b is known, the final gradient combines “first accumulator minus b times the second.” Data-parallel gradient synchronization is deferred until local trajectory statistics have been computed and the final gradient assembled. [Section 3.4 and Appendix C](https://arxiv.org/html/2602.17616v2#S3.SS4)",
+              "This still costs resources. Figure 3 reports 19% step-time overhead and 14% memory overhead for Qwen2.5-7B on four H100 GPUs with tensor parallelism TP=4 and sequence length 8,192. The method removes the naive extra backward pass, not all overhead. Its value therefore depends on total training time to a target quality, rather than the speed of one update alone."
+            ]
+          },
+          {
+            "heading": "What do the 2.5× speedup and 128-step lag actually establish?",
+            "paragraphs": [
+              "The most agent-like experiment trains Qwen2.5-7B Base on DAPO-17K with SimpleTIR-style interleaved reasoning and tool calls, evaluating final-answer accuracy on AIME 2025. Each batch has 128 prompts and 16 responses per prompt, with a 12,288-token response cap and at most five tool calls. Two B200 GPUs generate rollouts and two train. Policy lag is capped at two updates. In Figure 1, VCPO takes approximately 42 hours to match the best validation accuracy reached by synchronous training at approximately 105 hours: about 2.5× faster time to that quality. This is neither a 2.5× generation-throughput claim nor a pure systems comparison at equal update counts. [Figure 1, Section 4.5, and Appendix F.4](https://arxiv.org/html/2602.17616v2#S4.SS5)",
+              "A separate experiment raises Qwen2.5-7B’s policy lag to 128 updates to stress-test learning stability, as shown in Figure 6. The authors report that asynchronous speed gains in the relevant experiments already saturate around a lag of ten; increasing lag further mainly tests robustness. The result does not establish that tool agents can safely tolerate a 128-step lag, and 128 is not a speedup factor. [Section 4.4 and Figure 6](https://arxiv.org/html/2602.17616v2#S4.SS4)"
+            ]
+          },
+          {
+            "heading": "Connecting this to today’s main reading, and where to read next",
+            "paragraphs": [
+              "Reading VCPO alongside Jet-RL separates two issues: better numerical agreement between training and generation does not prevent asynchronous samples from coming from older parameters. VCPO studies how to control the resulting update variance. This connection is reading analysis, not a reported experiment combining the methods. Main effectiveness experiments use standard-precision dense Transformers from 1.5B to 7B; the final version adds collapse diagnostics with Llama3.1-8B Instruct on ORZ math. The authors leave MoE, FP8, and longer sparse-reward agent tasks to future work. Start with Figures 1–2, then Sections 2.2 and 3.2–3.5. For implementation, read Algorithm 1 and Appendix C; for the mathematical scope, read Appendix B. [Section 5](https://arxiv.org/html/2602.17616v2#S5)",
+              "This explanation and commentary draw on the paper by Luke J. Huang, Zhuoyang Zhang, Qinghao Hu, Shang Yang, and Song Han. We cross-checked the [ICML 2026 final version](https://proceedings.mlr.press/v306/huang26ca.html) against [arXiv v2, March 2, 2026](https://arxiv.org/html/2602.17616v2); HTML section links provide convenient reading access. The first submission was February 19, 2026. The arXiv version uses [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Teaching examples are labeled, and added final-version diagnostics are identified separately. Implementation descriptions refer to the paper, not the repository’s current state."
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

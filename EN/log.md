@@ -156,3 +156,6 @@ updated: 2026-06-15
 
 ## 2026-10-25
 - [READING] Published the 2026-10-25 bilingual reading notes: JUICE as the main reading, with CVRR and ViMoD; maze, spatial-relation, and geometry examples explain joint generation, latent-state dependence, and selective visual KV access, with experimental budgets and limitations checked.
+
+## 2026-11-03
+- [READING] Main reading: Jet-RL; optional readings: TLT and VCPO. Bilingual notes explain precision flows, rollout tails, and asynchronous update variance, with remaining quality gaps, measurement conditions, and unverified combinations made explicit.
