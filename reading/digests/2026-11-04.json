@@ -1,0 +1,409 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-04",
+  "publishedAt": "2026-11-04T15:06:26+08:00",
+  "zh": {
+    "title": "让 Agent 改训练框架，怎样做到省力又可信？",
+    "summary": "主读 PithTrain：从给模型接入 MoBA 注意力的任务出发，解释紧凑代码、直接调用和操作流程如何减少 Agent 的调试成本，以及改动怎样验收。选读 Event Tensor，看 GPU 上一小块计算何时可以开始；再读 KernelBench，分清代码能运行、结果正确和确实更快。今天先读主读的任务例子与验收规则，另外两篇按兴趣展开；框架修改成本、训练吞吐和推理延迟分别讨论。"
+  },
+  "en": {
+    "title": "Making Training Frameworks Easier for Agents to Modify—and Verify",
+    "summary": "The main reading, PithTrain, follows a MoBA attention integration task to explain how compact code, direct calls, and task procedures reduce agent debugging effort, and how the changes are checked. Event Tensor examines when a small GPU task can begin; KernelBench separates executable, correct, and genuinely faster code. Start with the main reading’s task example and acceptance rules, then explore the companions as needed. Framework modification cost, training throughput, and inference latency are treated separately."
+  },
+  "papers": [
+    {
+      "id": "pithtrain-2605-31463",
+      "title": "PithTrain: A Compact and Agent-Native MoE Training System",
+      "year": 2026,
+      "venue": "arXiv 2026 · CMU / NVIDIA / Xlue · v1 2026-05-29",
+      "url": "https://arxiv.org/abs/2605.31463v1",
+      "role": "main",
+      "revisitReason": {
+        "zh": "从研究概览进入 Agent 可维护性与评估机制：训练框架怎样影响 coding agent 修改、验证和调试代码的成本。",
+        "en": "Moving from a research overview to agent maintainability and evaluation: how training-framework design affects the cost of modifying, validating, and debugging code."
+      },
+      "zh": {
+        "contribution": "把 coding agent 理解、运行和扩展框架的成本纳入评测；用紧凑代码、直接调用、Python 主体和可验证操作流程降低改动成本。",
+        "relevance": "帮助评估训练系统是否便于 Agent 定位修改点、收集路由轨迹和验证优化，同时提醒吞吐只是系统效率的一部分。",
+        "reading": "值得精读。先沿 MoBA 改动例子读 §3、§5.4，再看附录 B 的验收规则；最后核表 4、7、8，把训练吞吐与 Agent 工作成本分开。",
+        "prerequisites": "知道训练需要前向、反向和参数更新；MoE 指每个 token 只交给部分专家子网络处理。正文解释评测和代码组织方式。",
+        "caveat": "只测试一种 coding agent 和 20 项任务，每项重复三次；验收是短训练加规则检查，未覆盖所有架构语义和长期维护。",
+        "sections": [
+          {
+            "heading": "先看具体任务：让 Agent 把一种新注意力接进训练框架",
+            "paragraphs": [
+              "假设你给编程助手（coding agent）一篇 MoBA 论文和参考实现，要它把训练模型原有的注意力换掉。MoBA 会把历史 token 分成块，为当前查询选择相关块，再在这些块里计算注意力。Agent 必须找到模型构造位置，接好前向与反向计算，写训练入口，运行并修复错误。PithTrain 问的是：能不能把框架设计得更容易完成这类改动，而不明显牺牲训练速度？这也是论文真正测试的一项任务。[§5.4、附录 B.3](https://arxiv.org/html/2605.31463v1#S5.SS4)",
+              "标题中的 agent-native 指框架为现有 coding agent 的读代码、改代码和验证过程而设计。实验没有训练这个 agent 的策略，也没有让它自主选择研究目标、反复提升自己的能力。人提供任务、论文、参考代码和验收规则，Agent 在这些条件下完成工程工作；因此不能把它直接称为自主递归自我改进。"
+            ]
+          },
+          {
+            "heading": "第一步：缩小范围，让关键调用能在附近看懂",
+            "paragraphs": [
+              "论文版本的框架约 1.1 万行，分成应用、训练引擎、算子三层，主动收窄模型、功能和硬件覆盖。每种模型集中在独立文件里，直接构造和调用模块。例如，Agent 找到 attention 的构造位置后，能继续读到具体类；如果构造依赖注册表或另一文件中的运行时配置，就要先追出“这个名字最后指向谁”。紧凑和直接调用减少的是这些理解路径，而不只是文件体积。[§3.1–3.2、图 2–3](https://arxiv.org/html/2605.31463v1#S3.SS1)",
+              "这种设计也有交换条件：多个模型不一定通过同一套抽象复用实现，某些修改可能需要分别做。主体和自定义算子采用 Python 或 Python DSL，目标是让 Agent 少跨语言边界、能从可读的错误栈定位问题；底层 GPU 计算仍依赖编译和运行库。论文没有证明“代码越短越好”或“所有插件系统都应该删除”，而是选择了更适合局部修改的一种框架组织方式。"
+            ]
+          },
+          {
+            "heading": "第二步：保留高效训练需要的计算与通信安排",
+            "paragraphs": [
+              "代码紧凑不等于把分布式训练简化成单卡玩具。PithTrain 支持流水线并行，把模型不同部分放到不同设备；专家并行，把不同专家分到不同设备；也支持数据并行、上下文并行、检查点和 FP8。论文中的 DualPipeV 调度把每层在专家通信边界拆成五个阶段，将专家间传 token 的 all-to-all 放到独立通信流，让一个小批量的前向与另一个的反向尽量重叠。这些都是已有优化思路，论文没有声称重新发明它们。[§3.2](https://arxiv.org/html/2605.31463v1#S3.SS2)",
+              "框架还对能稳定形成完整计算图的 Transformer 部分使用 torch.compile(fullgraph=True)；这个模式遇到图断裂会报错，避免悄悄退回较慢执行。专家收到多少 token 随路由变化，因此 MoE 的前后向不走这条编译路径。其他优化包括延后部分权重梯度计算、融合算子、减少重复专家通信，以及在小批量之间缓存 FP8 权重以避免反复量化。它们说明“便于 Agent 改”与“训练快”可以共同设计，实际是否划算仍要看对应硬件和配置。"
+            ]
+          },
+          {
+            "heading": "第三步：把操作经验写成有验收结果的流程",
+            "paragraphs": [
+              "读懂代码不等于知道怎样正确验证一次改动。论文为常见任务提供 skills，也就是按需读取的操作流程文件。例如验证训练正确性时，先检查数据、环境和配置，再运行修改前后两份训练，最后由脚本比较 loss 曲线并返回 PASS/FAIL。捕获 Nsight Systems 性能分析、添加新模型、打印显存也有对应流程。关键是范围明确、前提写清、结束条件可检查；不是给 Agent 一句“请仔细测试”。[§3.3、图 4](https://arxiv.org/html/2605.31463v1#S3.SS3)",
+              "§5.3 对两个流程做了更受控的对照：同一份框架、同一 agent 和测试环境，每项有无 skill 各做三次，禁用时连 git 历史中的流程也移除。验证正确性任务的 Agent Turns 中位数从 114 降到 34，但 GPU 活跃时间没有下降，因为两边都要执行规定的训练验证。流程主要减少了探索操作方法的往返，不会让必要的计算凭空消失；这个结果来自两项具体任务，不能直接推广成所有 skills 的统一收益。[表 8](https://arxiv.org/html/2605.31463v1#S5.SS3)"
+            ]
+          },
+          {
+            "heading": "ATE-Bench：固定同一个 Agent，换它要操作的框架",
+            "paragraphs": [
+              "ATE 是 Agent Task Efficiency，指完成框架任务所需的成本，不是一个单一分数。评测固定 Claude Code、Opus 4.7 和 xhigh effort，分别操作 PithTrain、Megatron-LM、TorchTitan。任务共 20 个：12 个代码问答、4 个运行与分析任务、4 个新功能任务，每项独立尝试三次并报告中位数。任务包括追踪配置怎样传入模型、记录每个 token 被分到哪些专家，以及集成 MoBA 等新结构。所有尝试最终都通过要求，因此这里比较的重点是完成同样工作花多少力气，而不是哪种框架成功率更高。[§4–5.2](https://arxiv.org/html/2605.31463v1#S4)",
+              "运行和新功能任务统一使用 DeepSeek-V2-Lite、单节点 8 张 H100、PP=4 与 EP=2，分别是四段流水线和两路专家并行；DP=1，序列长 2,048、全局 batch 1,024、BF16。作者分别记录会话耗时、GPU 活跃时间、Agent 轮次、每轮上下文和输出 token。这些量回答不同问题：长会话可能在读代码，更多 GPU 时间可能来自反复跑失败的训练，输出 token 也不能直接等于金钱成本。把指标拆开，才能看出变化发生在哪一段。[附录 B](https://arxiv.org/html/2605.31463v1#A2)"
+            ]
+          },
+          {
+            "heading": "不是 Agent 说完成就算完成：三类任务怎样验收？",
+            "paragraphs": [
+              "问答任务要求给出文件、函数和行号，两名人工分别打开这些位置确认；有分歧再由第三人看证据。运行任务检验实际产物：启动任务要让只读训练脚本跑到第 5 步且 loss 有限；路由日志要覆盖指定层和 token，专家编号在合法范围，权重非负且归一化；性能分析还要把导出的热点名称与 Nsight 报告对上。这些检查是在看可复核的结果，不是根据答案语气评分。[附录 B.1–B.2](https://arxiv.org/html/2605.31463v1#A2.SS1)",
+              "新功能任务要求在 DCLM 上完成 64 步训练，交叉熵 loss 有限且下降，同时满足三个任务专属的架构规则。MoBA 的规则是按块组织 K/V、按查询得分选择块、在选中块上计算注意力并保留因果遮罩。独立的 Opus 4.7 会话先检查代码差异和规则，人再逐条核对它引用的依据。这个组合能排除一些“代码没有真正改但 loss 也下降”的假成功；它仍不是与参考实现逐元素等价的证明，也没有覆盖所有形状、边界情况和长训练行为。[附录 B.3](https://arxiv.org/html/2605.31463v1#A2.SS3)"
+            ]
+          },
+          {
+            "heading": "回到 MoBA：节省来自哪些实际工作？",
+            "paragraphs": [
+              "表 7 的 MoBA 集成任务中，PithTrain 的 Active GPU Time 中位数为 27.7 分钟，Megatron-LM 为 49.5，TorchTitan 为 77.9；完整会话耗时分别是 38.7、61.6、105.1 分钟。这些是前述同一 agent、同一模型配置、各三次尝试的结果。前一项是论文报告的 GPU 活跃时间，后一项还包括探索、编辑等过程，不能混用，也不能直接解释成每张卡耗时之和或 API 账单。[表 7](https://arxiv.org/html/2605.31463v1#S5.SS2)",
+              "§5.4 继续查看调试过程：PithTrain 三次中两次无运行失败，另一次的张量 stride 错误在同一文件修复；Megatron-LM 遇到重复参数注册或 BF16 溢出，修复跨多个文件；TorchTitan 的初始实现曾显存不足，引出反复修改。这里既有代码结构的影响，也有运行时显存余量的影响。MoBA 行为分解还排除了 API 未暴露的 thinking tokens，所以可见输出减少不能证明总推理量同比例下降。案例用于解释观测，不足以把全部收益归因于“代码更短”。[§5.4、图 6](https://arxiv.org/html/2605.31463v1#S5.SS4)"
+            ]
+          },
+          {
+            "heading": "代码更短以后，MoE 训练性能有没有退步？",
+            "paragraphs": [
+              "表 4 用公开模型检查点启动训练，让专家路由处于已训练的状态；各框架匹配并行方式、序列长度和精度，运行 25 步，取最后 10 步的中位步时计算整体 tokens/s。一个具体配置是 Qwen3-30B-A3B、16 张 H100、PP2/DP1/CP1/EP8、序列长 2,048、BF16：PithTrain 为 124.9K tokens/s，Megatron-LM 为 126.7K。这里性能接近，但 PithTrain 略低；不是每个配置都胜出。论文总共列了五种 H100/B200 配置，不能外推到任意模型和集群。[§5.1、表 4](https://arxiv.org/html/2605.31463v1#S5.SS1)",
+              "作者还单独检查训练正确性：Qwen3-30B-A3B 在 32 张 H100 上按相同配置训练 4,096 步，使用 DCLM、BF16、序列长 2,048、全局 batch 1,024，比较 loss 轨迹和六个下游任务。这比只跑几十步更有说服力，但仍是有限模型与配置的证据。ATE 中的“训练并评估”任务又不同：它只从随机初始化训练 25 步，HellaSwag 得分接近随机也允许通过，因为那里检验的是导出和评估流程能否跑通，不是模型能力。[附录 A、B.2](https://arxiv.org/html/2605.31463v1#A1)"
+            ]
+          },
+          {
+            "heading": "哪些结论已经有证据，哪些还不能推广？",
+            "paragraphs": [
+              "证据支持的是：在作者选择的这些任务、框架版本和硬件条件下，同一个强 coding agent 往往能用更少工作完成 PithTrain 的任务，同时框架保有接近生产方案的训练吞吐。它没有隔离四项设计原则各自贡献多少；只有 skills 做了专门的有无对照。也没有测试多种 agent 或覆盖全部维护场景。尤其是一次共享修改要传播到许多模型时，共用抽象可能反而减少工作，而这类任务未纳入 ATE-Bench。[§4、§5.3](https://arxiv.org/html/2605.31463v1#S4)",
+              "对系统研究更有用的借鉴是：先写清一次改动要交付哪些证据，再衡量修改成本。例如要给 MoE 加路由日志，先规定每层每个 token 的覆盖、编号范围和权重检查，然后记录定位代码、修改、验证和 GPU 重跑各用了多少。这样才能区分“Agent 很快写完”与“系统很快获得一个可信改动”。这是从论文得到的研究建议；论文尚未验证长期多人维护、开放式研究任务或无需人工验收的连续自我改进。"
+            ]
+          },
+          {
+            "heading": "精读路线与原始资料",
+            "paragraphs": [
+              "先读图 1–3 和 §3，弄清这四个设计原则改变了什么；再沿 §5.4 的 MoBA 例子看 Agent 为何来回修改。接着读附录 B.3，自己判断三条规则与 64 步训练能覆盖哪些错误。最后对照表 7 的 Agent 成本、表 8 的 skills 对照、表 4 的吞吐和附录 A 的训练正确性。读完应能分别回答：框架是否易改、改动是否被充分检查、训练是否跑得快，而不是把三件事压成一个“Agent 更强”的结论。",
+              "核验版本为 [PithTrain，arXiv:2605.31463v1，2026-05-29](https://arxiv.org/html/2605.31463v1)，截至 2026-11-04 页面只列这一版本，未核到会议发表信息。作者为 Ruihang Lai、Hao Kang 等，主要来自 CMU，并有 NVIDIA、Xlue 合作者。本文依据采用 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/) 许可的原论文作解释与评议；数据均针对论文固定的框架版本，不代表当前源码。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Measures the cost of having a coding agent understand, operate, and extend a framework, then reduces that cost with compact code, direct calls, Python-native components, and verifiable task procedures.",
+        "relevance": "Helps evaluate whether training systems make it easy for agents to locate edits, collect routing traces, and validate optimizations, while treating throughput as only one efficiency dimension.",
+        "reading": "Worth close reading. Follow the MoBA integration through Sections 3 and 5.4, inspect Appendix B’s acceptance rules, then compare Tables 4, 7, and 8 to separate training throughput from agent effort.",
+        "prerequisites": "A basic understanding of forward passes, backward passes, and parameter updates. MoE sends each token to a subset of expert networks; the note explains the evaluation and code organization.",
+        "caveat": "Uses one coding agent on 20 tasks, with three attempts each. Acceptance combines short training runs and rules, without covering every architectural property or long-term maintenance task.",
+        "sections": [
+          {
+            "heading": "A concrete task: ask an agent to integrate a new attention mechanism",
+            "paragraphs": [
+              "Imagine giving a coding agent the MoBA paper and reference implementation, and asking it to replace a training model’s attention. MoBA partitions historical tokens into blocks, selects relevant blocks for each query, and computes attention over those blocks. The agent must locate model construction, connect forward and backward computation, write a training entry point, run it, and fix failures. PithTrain asks whether a framework can make such changes easier without substantially sacrificing training speed. This integration is an actual task in the paper. [Section 5.4 and Appendix B.3](https://arxiv.org/html/2605.31463v1#S5.SS4)",
+              "Here, agent-native means designing the framework around an existing coding agent’s reading, editing, and verification workflow. The experiments do not train that agent’s policy or let it autonomously choose research goals and recursively improve its own capabilities. Humans provide tasks, papers, reference implementations, and acceptance rules; the agent performs engineering within those conditions. This should not be labeled autonomous recursive self-improvement."
+            ]
+          },
+          {
+            "heading": "Step 1: narrow the scope and make important calls locally traceable",
+            "paragraphs": [
+              "The paper’s framework is approximately 11K lines across application, training-engine, and operator layers, with deliberately narrower model, feature, and hardware coverage. Each model lives in a self-contained file with direct module construction and calls. After locating attention construction, an agent can continue to the concrete class; a registry or distant runtime specification first requires resolving what a name actually refers to. Compactness and direct calls shorten those understanding paths rather than merely reducing file size. [Sections 3.1–3.2 and Figures 2–3](https://arxiv.org/html/2605.31463v1#S3.SS1)",
+              "There is a tradeoff: models need not share one abstraction, so some changes may have to be repeated. Python and Python-DSL components reduce language boundaries and expose readable tracebacks, while underlying GPU computation still depends on compilation and runtime libraries. The paper does not establish that shorter code is always better or that all plugin systems should disappear; it chooses a structure favorable to local modification."
+            ]
+          },
+          {
+            "heading": "Step 2: retain the computation and communication schedule needed for performance",
+            "paragraphs": [
+              "Compact code does not reduce distributed training to a single-GPU toy. PithTrain supports pipeline parallelism across model stages, expert parallelism across expert networks, data and context parallelism, checkpointing, and FP8. Its DualPipeV schedule decomposes each layer into five stages around expert-communication boundaries. Expert-token all-to-all runs on a separate communication stream, overlapping one microbatch’s forward computation with another’s backward computation. These are established optimization ideas rather than claimed inventions of the paper. [Section 3.2](https://arxiv.org/html/2605.31463v1#S3.SS2)",
+              "Transformer regions with stable full graphs use torch.compile(fullgraph=True), which rejects graph breaks instead of silently falling back to slower execution. MoE forward and backward paths are excluded because expert input sizes depend on routing. Other optimizations include delayed weight-gradient computation, fused operators, deduplicated expert communication, and an FP8 weight cache across microbatches to avoid repeated quantization. These show how agent maintainability and training efficiency can be designed together, with actual value still depending on hardware and configuration."
+            ]
+          },
+          {
+            "heading": "Step 3: turn operational knowledge into a procedure with a verifiable result",
+            "paragraphs": [
+              "Understanding code is not the same as knowing how to validate a change. The paper ships skills: on-demand procedure files for recurring tasks. A correctness procedure checks data, environment, and configuration, runs training before and after a change, and calls a script comparing loss curves to return PASS/FAIL. Other procedures cover Nsight Systems capture, adding models, and memory instrumentation. The important properties are a specific scope, explicit prerequisites, and checkable completion—not simply telling an agent to test carefully. [Section 3.3 and Figure 4](https://arxiv.org/html/2605.31463v1#S3.SS3)",
+              "Section 5.3 conducts a more controlled comparison on two procedures. The framework, agent, and harness stay fixed; each task runs three times with and without its skill, and disabled procedures are removed from both the working tree and git history. For correctness validation, median Agent Turns drop from 114 to 34, while GPU-active time does not decrease because both versions execute prescribed training checks. Procedures save rediscovery effort without removing necessary computation. The result concerns two specific tasks, not a universal benefit for every skill. [Table 8](https://arxiv.org/html/2605.31463v1#S5.SS3)"
+            ]
+          },
+          {
+            "heading": "ATE-Bench: keep the agent fixed and change the framework it operates",
+            "paragraphs": [
+              "Agent-task efficiency, ATE, describes task-completion cost rather than one scalar score. The evaluation fixes Claude Code with Opus 4.7 at xhigh effort across PithTrain, Megatron-LM, and TorchTitan. Its 20 tasks comprise 12 code Q&A questions, four operate-and-profile tasks, and four new-feature tasks, each attempted independently three times and summarized by medians. Examples include tracing configuration propagation, recording per-token expert routes, and integrating architectures such as MoBA. All attempts eventually satisfy the requirements, so the central comparison is effort to complete the same work rather than higher success rates. [Sections 4–5.2](https://arxiv.org/html/2605.31463v1#S4)",
+              "Runtime and new-feature tasks share DeepSeek-V2-Lite on one eight-H100 node, PP=4 and EP=2—four pipeline stages and two-way expert parallelism—with DP=1, sequence length 2,048, global batch size 1,024, and BF16. Session duration, active GPU time, agent turns, per-turn context, and output tokens are reported separately. A long session may be spent reading code; additional GPU time may come from failed training reruns; output tokens do not directly equal monetary cost. Separating the metrics helps locate where effort changes. [Appendix B](https://arxiv.org/html/2605.31463v1#A2)"
+            ]
+          },
+          {
+            "heading": "Completion requires evidence, not the agent’s assertion",
+            "paragraphs": [
+              "Q&A answers must cite files, functions, and lines. Two human graders independently open the locations; a third resolves disagreements using the evidence. Runtime tasks check real artifacts: a read-only smoke-training script must reach step five with finite loss; routing logs must cover specified layers and tokens with valid expert IDs and nonnegative, normalized weights; profiler summaries must match the Nsight report. Acceptance is based on inspectable results rather than confidence in the agent’s prose. [Appendices B.1–B.2](https://arxiv.org/html/2605.31463v1#A2.SS1)",
+              "New-feature tasks require 64 DCLM training steps with finite, decreasing cross-entropy loss, plus three task-specific architectural rules. For MoBA these cover partitioning K/V into blocks, query-dependent block selection, and attention over selected blocks with causal masking. An independent Opus 4.7 session first judges the diff against the rules, and a human checks each cited justification. This can reject some false successes where an unchanged model still lowers loss. It does not prove elementwise equivalence to the reference or cover every shape, edge case, and long-run training behavior. [Appendix B.3](https://arxiv.org/html/2605.31463v1#A2.SS3)"
+            ]
+          },
+          {
+            "heading": "Back to MoBA: which work actually becomes cheaper?",
+            "paragraphs": [
+              "For MoBA integration in Table 7, median Active GPU Time is 27.7 minutes on PithTrain, 49.5 on Megatron-LM, and 77.9 on TorchTitan. Session durations are 38.7, 61.6, and 105.1 minutes. These results use the fixed agent and model configuration above, with three attempts each. GPU-active time is the paper’s reported metric; session duration additionally includes exploration and editing. They should not be conflated or directly interpreted as summed per-GPU time or an API bill. [Table 7](https://arxiv.org/html/2605.31463v1#S5.SS2)",
+              "Section 5.4 inspects debugging. Two PithTrain attempts finish without runtime failures; the third fixes a tensor-stride error within the same file. Megatron-LM encounters duplicate argument registration or BF16 overflow, with fixes spanning files. TorchTitan’s initial implementation encounters memory exhaustion and repeated edits. Both code structure and runtime memory headroom therefore matter. The MoBA behavior breakdown also excludes thinking tokens unavailable through the API, so reduced visible output does not establish a proportional reduction in all reasoning. The case study helps explain observations without isolating smaller code as the sole cause. [Section 5.4 and Figure 6](https://arxiv.org/html/2605.31463v1#S5.SS4)"
+            ]
+          },
+          {
+            "heading": "Does the smaller framework sacrifice MoE training performance?",
+            "paragraphs": [
+              "Table 4 starts training from public checkpoints so routing is already trained. Parallelism, sequence length, and precision are matched across frameworks; each experiment runs 25 steps and uses the median time of the last ten to calculate aggregate tokens/s. For Qwen3-30B-A3B on 16 H100 GPUs with PP2/DP1/CP1/EP8, sequence length 2,048, and BF16, PithTrain reaches 124.9K tokens/s versus Megatron-LM’s 126.7K. Performance is close, with PithTrain slightly lower in this configuration. The five reported H100/B200 configurations do not establish superiority on arbitrary models and clusters. [Section 5.1 and Table 4](https://arxiv.org/html/2605.31463v1#S5.SS1)",
+              "Training correctness receives a separate check: Qwen3-30B-A3B is trained for 4,096 matched steps on 32 H100 GPUs using DCLM, BF16, sequence length 2,048, and global batch size 1,024, comparing loss trajectories and six downstream tasks. This is stronger evidence than a short smoke test, but remains limited to the tested model and configuration. ATE’s Train and Evaluate task has a different purpose: it trains from random initialization for only 25 steps, and a near-random HellaSwag score can pass because the task checks whether export and evaluation work, not model capability. [Appendices A and B.2](https://arxiv.org/html/2605.31463v1#A1)"
+            ]
+          },
+          {
+            "heading": "What is supported, and what should not yet be generalized?",
+            "paragraphs": [
+              "The evidence supports a bounded claim: on the selected tasks, framework versions, and hardware, the same strong coding agent often completes PithTrain tasks with less effort while training throughput remains close to production baselines. It does not isolate the contribution of every design principle; only skills receive a dedicated on/off ablation. Multiple agents and all maintenance workloads are not tested. In particular, a shared change propagated across many models could benefit from common abstractions, and ATE-Bench excludes such tasks. [Sections 4 and 5.3](https://arxiv.org/html/2605.31463v1#S4)",
+              "A useful systems-research lesson is to specify required evidence before measuring edit cost. For MoE routing instrumentation, first define coverage over layers and tokens, valid expert IDs, and weight checks, then record time spent locating code, editing, verifying, and rerunning GPU jobs. This separates quickly producing a patch from quickly obtaining a trustworthy change. That is a research suggestion derived from the paper; long-term collaborative maintenance, open-ended research, and continuous improvement without human acceptance remain untested."
+            ]
+          },
+          {
+            "heading": "Reading route and primary source",
+            "paragraphs": [
+              "Start with Figures 1–3 and Section 3 to understand the four design choices, then follow MoBA debugging in Section 5.4. Read Appendix B.3 and decide which failures its three rules and 64-step run can catch. Finally compare Table 7’s agent costs, Table 8’s skill ablation, Table 4’s throughput, and Appendix A’s training correctness. The questions should remain separate: is the framework easy to modify, is the change adequately checked, and does training run efficiently? They do not collapse into a claim that the agent has become more capable.",
+              "The verified source is [PithTrain, arXiv:2605.31463v1, May 29, 2026](https://arxiv.org/html/2605.31463v1). As of November 4, 2026, the metadata page lists only this version; no conference publication was verified. Authors include Ruihang Lai and Hao Kang, primarily from CMU, with NVIDIA and Xlue collaborators. This explanation and commentary are based on the original paper under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). Results refer to the framework versions fixed in the paper, not current source code."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "event-tensor-dynamic-megakernel-2026",
+      "title": "Event Tensor: A Unified Abstraction for Compiling Dynamic Megakernel",
+      "year": 2026,
+      "venue": "MLSys 2026 · CMU / NVIDIA and collaborators · first preprint 2026-04-14; v2 2026-04-21",
+      "url": "https://arxiv.org/abs/2604.13327v2",
+      "role": "optional",
+      "revisitReason": {
+        "zh": "从研究方向概览进入执行机制：理解任务如何声明依赖，以及编译器怎样把这些依赖变成 GPU 内部的静态或动态调度。",
+        "en": "Moving from a research overview to execution mechanisms: how tasks declare dependencies, and how a compiler turns those dependencies into static or dynamic scheduling inside the GPU."
+      },
+      "zh": {
+        "contribution": "把小块计算之间的完成条件表示成带形状的 Event Tensor，让编译器统一处理可变 batch、MoE 路由和跨算子依赖，再生成持续执行多个任务的 GPU megakernel。",
+        "relevance": "帮助区分请求调度与 GPU 内部任务调度：请求已经送上 GPU 后，哪些小块可以立即开始，哪些只是在等待无关工作完成？它提供了理解低 batch 延迟、MoE 不均衡和计算通信重叠的共同接口。",
+        "reading": "值得精读 Figure 3 和 §2，再并排看 Figures 7、9 的静态等待与动态取任务；最后用 Tables 2–3 检查动态调度何时值得付出额外开销。",
+        "prerequisites": "知道 kernel 是 GPU 执行的一段程序、矩阵可以分块计算即可。正文解释 SM、tile、事件计数、持久 kernel 和提前编译，无需先掌握编译器中间表示。",
+        "caveat": "实验来自 B200 与特定 Qwen 模型、合成推理负载。完整模型推理实验使用静态调度；动态调度并不总快。35 秒启动时间另有 107 秒离线编译成本。原文为 CC BY-SA 4.0，本篇解释性改写部分同样按该许可提供。",
+        "sections": [
+          {
+            "heading": "后一步需要的结果已经齐了，为什么还在等？",
+            "paragraphs": [
+              "先看一个自拟的分块求和例子：P0、P1 产生输出块 C0 所需的两个部分和；P2、P3 则服务于另一个输出块 C1。若程序先启动一个 kernel 计算所有 P，再启动另一个 kernel 计算所有 C，那么即使 P0、P1 已完成，C0 仍要等 P2、P3。等待不是数学要求，而是程序把同步边界设得太粗。这里的 tile 就是一小块数据对应的计算任务；SM 是 GPU 上执行这些任务的计算单元。[§2.2 与 Figure 3](https://arxiv.org/html/2604.13327v2#S2.SS2)",
+              "Event Tensor 希望让 C0 在自己的两个前提满足后即可开始，与仍在计算的 P2、P3 重叠。为此，编译器把多个算子的分块任务放进一个长期运行、持续领取工作的 kernel，这类程序称为 persistent megakernel。它减少 CPU 反复启动小 kernel 的开销，也能移除不必要的跨算子等待。把多个操作放进同一个 kernel 只是第一步；如果内部仍强制所有 P 结束后才能执行任何 C，就没有得到这种细粒度并行。[§1 与 Figure 1](https://arxiv.org/html/2604.13327v2#S1)"
+            ]
+          },
+          {
+            "heading": "事件张量记录的是完成条件，不是模型激活",
+            "paragraphs": [
+              "给 C0 设置一个事件 E0，初始计数为 2。P0 完成就通知一次，使计数变为 1；P1 再通知一次，计数归零，表示 C0 的输入已经准备好。许多这样的事件排成多维数组，就是 Event Tensor。它的创新重点不是发明计数器，而是把依赖关系变成编译器能理解、变换的对象：一个任务会通知哪些事件，另一个任务又要等哪些事件。数组维度还可以用 batch 大小等符号表示，同一份编译结果据运行时形状确定实际任务范围，而不用为每个 batch 重新编译。[§2.1–2.3](https://arxiv.org/html/2604.13327v2#S2)",
+              "MoE，即混合专家模型，进一步要求依赖随数据改变。例如路由器把不同 token 分给不同专家，编译时无法提前知道某专家会收到哪些输入。Event Tensor 允许分组任务按照本次路由结果通知相应专家的事件；事件的初始计数取决于该专家本次收到的 token 数，随后要启动多少矩阵计算块也在运行时确定。这没有跳过路由计算：仍是先得到路由结果，再决定后续事件与任务。它表达的是变化的依赖关系，并不替模型选择专家。[§2.4 与 Figure 5](https://arxiv.org/html/2604.13327v2#S2.SS4)"
+            ]
+          },
+          {
+            "heading": "等待固定任务，还是先取一个已经能做的任务？",
+            "paragraphs": [
+              "同样的事件关系可以编译出两种执行方式。静态调度事先给每个 SM 排好任务队列：一个 SM 完成 P0 后，如果排在下一位的 C0 还在等 P1，它就检查事件计数并等待。动态调度则允许这个 SM 先从 GPU 上的共享队列取另一个可执行任务；等 E0 满足后，再把 C0 放进可领取的任务集合。这样可以减少某些 SM 等待、另一些 SM 忙碌的情况，代价是领取任务、入队和更新共享计数所需的原子操作。[§3.1–3.3 与 Figures 7、9](https://arxiv.org/html/2604.13327v2#S3)",
+              "论文正文用“生产者完成后再入队”解释基本语义，Appendix E 还给出提前入队优化：一旦所有生产者都已分派，就可先把消费者入队，把队列操作与生产者计算重叠；消费者真正执行计算前仍必须检查并等待依赖完成。因此，任务已进入队列不总等于输入已经可读。调度逻辑最终被编进 megakernel，运行时主要保存整数事件数组与任务队列，而不必完整展开并遍历通用任务图。当前论文设计使用集中式全局内存队列，也承认规模增大时可能产生竞争。[§3.3 与 Appendix E](https://arxiv.org/html/2604.13327v2#A5)"
+            ]
+          },
+          {
+            "heading": "支持动态任务，不代表所有场景都该动态调度",
+            "paragraphs": [
+              "如果任务时长与顺序容易预测，静态队列可以省掉大量调度操作；若各专家收到的 token 数很不均匀，动态队列才更可能抵消这些开销。论文用相同算子代码做了一个重要对照：保持一个 megakernel，但在算子之间加入全局等待，再与细粒度依赖比较。单层 MoE 的较大输入能从动态调度获益；四卡 Qwen3-32B 的低 batch 场景中，动态调度却慢于这个粗粒度对照，静态调度更好。因此，完整模型推理实验最终对稠密与 MoE 模型都选择了静态调度，不能把这些结果全归功于动态队列。[§4.3、§4.5 与 Tables 2–3](https://arxiv.org/html/2604.13327v2#S4.SS5)",
+              "这里也有编程边界。论文的编译输入已经包含分块算子及显式 Event Tensor 依赖，可以由开发者或编译器内建实现提供；它还不是把任意 PyTorch 程序直接变成最佳 megakernel 的完整自动化方案。静态方式处理数据相关依赖时可以采取保守同步，牺牲部分并行机会；动态方式更灵活，却增加队列成本。Event Tensor 的价值是让这两种取舍共享同一种依赖表示，而不是宣称一种调度器适合所有负载。[§3.1、§3.4 与 §6](https://arxiv.org/html/2604.13327v2#S3.SS4)"
+            ]
+          },
+          {
+            "heading": "实际快了多少，要把解码、CPU 与启动时间分开",
+            "paragraphs": [
+              "测试平台是一台有八张 NVLink 互联 B200 的服务器，各实验使用不同卡数。完整推理测试采用合成输入：提示词 512 token，生成 100 token，batch 从 1 到 128；对照是 vLLM 0.11.0rc2 与 SGLang 0.5.3rc0，已启用 CUDA Graph 和 torch.compile。单张 B200、Qwen3-30B-A3B、batch=1 时，ETC 的每输出 token 耗时相对两者分别对应 1.48 倍与 1.20 倍加速。这里的 TPOT 包含框架调度等 CPU 开销，不只是 GPU kernel 时间。四卡 Qwen3-32B 中，ETC 的端到端延迟仍高于 SGLang；不能用附录中更好的纯 kernel 结果替代这一结论。[§4.3、Figure 14 与 Appendix D](https://arxiv.org/html/2604.13327v2#S4.SS3)",
+              "另一项收益是提前编译，即 AOT：先生成可处理多种形状的二进制，启动服务时不再为许多 batch 逐一捕获执行图。Qwen3-32B 从启动引擎到服务首个请求，ETC 为 35 秒，vLLM 为 123 秒，SGLang 为 583 秒；该时间包括加载模型和初始化。但 ETC 还有单独的 107 秒离线编译，不在 35 秒内。因此，结果说明可把编译工作移出每次启动，并非首次使用完全没有编译成本；它也不是单个用户请求的首 token 延迟。[§4.4 与 Table 1](https://arxiv.org/html/2604.13327v2#S4.SS4)"
+            ]
+          },
+          {
+            "heading": "精读路线：先画依赖，再判断调度是否值得",
+            "paragraphs": [
+              "建议先照 Figure 3 画出一个输出块真正需要哪些输入，再并排看 Figures 7、9：在依赖尚未齐备时，SM 是等待还是能做别的工作？之后读 Table 3，检验队列开销是否吃掉了并行收益，最后读 Table 1 与 Appendix D，分别检查启动时间和纯 GPU 时间。对 agent serving 的启发是：即使请求层已经排好队，GPU 内部还可能有可重叠的小任务；但论文没有直接评估工具等待、KV cache 驱逐或长期在线请求到达。结果主要覆盖 B200、两个 Qwen 模型及上述合成负载，不能直接当成其他硬件或完整 agent 工作流的收益。",
+              "本篇依据 Hongyi Jin、Bohan Hou、Guanjie Wang、Ruihang Lai 等作者的 [Event Tensor v2](https://arxiv.org/abs/2604.13327v2)作解释性改写与评议：2026 年 4 月 14 日首发，4 月 21 日修订；[MLSys 2026 官方论文集](https://proceedings.mlsys.org/paper_files/paper/2026/hash/53d3f45797970d323bd8a0d379c525aa-Abstract-Conference.html)确认收录。原文采用 [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/)，本篇中英文解释性改写部分同样按该许可提供。P0–P3 的求和例子为自拟说明；本文未复现实验，也不对当前源码实现作声明。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Represents completion conditions between tiled computations as shaped Event Tensors, enabling a compiler to handle changing batches, MoE routing, and cross-operator dependencies before generating persistent GPU megakernels.",
+        "relevance": "Separates request scheduling from task scheduling within a GPU: after requests reach the device, which tiles can already run and which merely wait for unrelated work? It offers a shared interface for understanding low-batch latency, MoE imbalance, and computation–communication overlap.",
+        "reading": "Read Figure 3 and Section 2, then compare Figures 7 and 9 for static waiting versus dynamic task fetching. Finish with Tables 2–3 to determine when dynamic scheduling justifies its additional cost.",
+        "prerequisites": "Assumes only that a kernel is GPU code and that matrix computations can be tiled. The notes explain SMs, tiles, event counters, persistent kernels, and ahead-of-time compilation without assuming compiler-IR knowledge.",
+        "caveat": "Experiments use B200 GPUs, specific Qwen models, and synthetic inference workloads. Full-model serving uses static scheduling; dynamic scheduling is not always faster. The 35-second startup time excludes 107 seconds of offline compilation. The source is CC BY-SA 4.0, and the explanatory adaptations in these notes use the same license.",
+        "sections": [
+          {
+            "heading": "Why wait when the next task’s inputs are already available?",
+            "paragraphs": [
+              "Consider our tiled-sum teaching example. P0 and P1 produce the two partial sums needed for output tile C0; P2 and P3 serve a different output tile C1. If one kernel computes every P and a second kernel computes every C, C0 waits for P2 and P3 even after P0 and P1 finish. This wait comes from a coarse synchronization boundary rather than the mathematics. A tile is a small portion of a computation, while an SM is a GPU compute unit that executes such work. [Section 2.2 and Figure 3](https://arxiv.org/html/2604.13327v2#S2.SS2)",
+              "Event Tensor aims to start C0 as soon as its own two prerequisites are satisfied, overlapping it with unfinished P2 and P3. The compiler places tiled tasks from multiple operators into a long-running kernel that keeps obtaining work: a persistent megakernel. This reduces repeated CPU launches of small kernels and removes unnecessary waits across operators. Placing operations in one kernel is only a first step. If that kernel still requires every P to finish before any C starts, it has not exposed this fine-grained parallelism. [Section 1 and Figure 1](https://arxiv.org/html/2604.13327v2#S1)"
+            ]
+          },
+          {
+            "heading": "An event tensor records completion conditions, not model activations",
+            "paragraphs": [
+              "Assign C0 an event E0 with an initial count of two. P0 notifies it on completion, reducing the count to one. P1 notifies it again, reducing the count to zero and indicating that C0’s inputs are ready. A multidimensional array of such events is an Event Tensor. The main novelty is not the counter itself, but making dependencies objects that the compiler can understand and transform: which events a task notifies and which events another task awaits. Dimensions can remain symbolic, such as batch size, allowing a compiled program to determine task ranges from runtime shapes without recompiling for every batch. [Sections 2.1–2.3](https://arxiv.org/html/2604.13327v2#S2)",
+              "Mixture-of-experts models, or MoE, also require dependencies to change with data. A router assigns different tokens to different experts, so compilation cannot know which inputs a particular expert will receive. Event Tensors let grouping tasks notify expert events according to the current routing results. Each event’s initial count depends on that expert’s token count, and the number of matrix-computation tiles it activates is determined at runtime. Routing is not bypassed: its results are computed first and then determine downstream events and tasks. The abstraction represents changing dependencies; it does not choose experts for the model. [Section 2.4 and Figure 5](https://arxiv.org/html/2604.13327v2#S2.SS4)"
+            ]
+          },
+          {
+            "heading": "Wait for the assigned task, or fetch another task that can run?",
+            "paragraphs": [
+              "The same event relationships can compile into two execution strategies. Static scheduling assigns each SM a task queue in advance. If an SM finishes P0 but its next task C0 still awaits P1, it checks the event counter and waits. Dynamic scheduling lets that SM fetch another executable task from a GPU queue instead. Once E0 is satisfied, C0 joins the set of tasks that workers can obtain. This can reduce imbalance between waiting and busy SMs, but costs atomic operations for task acquisition, queue insertion, and shared-counter updates. [Sections 3.1–3.3 and Figures 7 and 9](https://arxiv.org/html/2604.13327v2#S3)",
+              "The main text explains the basic semantics using enqueue-after-completion. Appendix E adds an early-enqueue optimization: after all producers have been dispatched, the consumer may enter the queue while those producers still run, overlapping queue operations with computation. Before performing its actual computation, the consumer must still check and wait for completion. A queued task therefore need not already have readable inputs. Scheduling logic is compiled into the megakernel; runtime state mainly consists of integer event arrays and task queues rather than a fully materialized, traversed generic task graph. The paper’s centralized global-memory queue also has potential contention at larger scales. [Section 3.3 and Appendix E](https://arxiv.org/html/2604.13327v2#A5)"
+            ]
+          },
+          {
+            "heading": "Supporting dynamic work does not make dynamic scheduling universally preferable",
+            "paragraphs": [
+              "Predictable task durations and ordering favor static queues with little scheduling overhead. Uneven token distribution across experts can make dynamic balancing worth the extra operations. The paper includes a useful control using identical operator code: retain one megakernel, but insert global waits between operator stages, then compare it with fine-grained dependencies. Larger inputs to an individual MoE layer benefit from dynamic scheduling. For low-batch Qwen3-32B on four GPUs, however, dynamic scheduling is slower than this coarse-grained control, while static scheduling performs better. Full-model serving consequently uses static scheduling for both dense and MoE models. Those results cannot all be attributed to a dynamic task queue. [Sections 4.3 and 4.5, Tables 2–3](https://arxiv.org/html/2604.13327v2#S4.SS5)",
+              "There is also a programming boundary. Compilation starts from tiled operators with explicit Event Tensor dependencies, supplied by developers or compiler builtins. It is not yet a complete solution that turns arbitrary PyTorch programs directly into optimal megakernels. Static scheduling may handle data-dependent dependencies conservatively, sacrificing some parallelism; dynamic scheduling is more flexible but adds queue costs. Event Tensor’s value is that both choices share a dependency representation, rather than that one scheduler is best for every workload. [Sections 3.1, 3.4, and 6](https://arxiv.org/html/2604.13327v2#S3.SS4)"
+            ]
+          },
+          {
+            "heading": "Separate decoding speed, CPU overhead, and engine startup",
+            "paragraphs": [
+              "The test server has eight NVLink-connected B200 GPUs; individual experiments use different GPU counts. Full-model serving uses synthetic prompts of 512 tokens and generates 100 tokens, with batches from 1 to 128. Baselines are vLLM 0.11.0rc2 and SGLang 0.5.3rc0 with CUDA Graph and torch.compile enabled. On one B200 with Qwen3-30B-A3B at batch one, ETC’s time per output token corresponds to speedups of 1.48× and 1.20× over those systems respectively. This TPOT includes CPU overhead such as framework scheduling, not just GPU kernel time. On four-GPU Qwen3-32B, ETC still has higher end-to-end latency than SGLang. Better isolated kernel results in the appendix do not replace that conclusion. [Section 4.3, Figure 14, and Appendix D](https://arxiv.org/html/2604.13327v2#S4.SS3)",
+              "Another benefit comes from ahead-of-time compilation, or AOT: produce a binary supporting multiple shapes before deployment instead of capturing execution graphs for many batch sizes during startup. For Qwen3-32B, elapsed time from engine launch to serving the first request is 35 seconds for ETC, 123 for vLLM, and 583 for SGLang, including model loading and initialization. ETC separately requires 107 seconds of offline compilation, excluded from the 35 seconds. The result shows that compilation work can move outside repeated startups, not that first use has no compilation cost. It is also not the time to the first generated token of an individual user request. [Section 4.4 and Table 1](https://arxiv.org/html/2604.13327v2#S4.SS4)"
+            ]
+          },
+          {
+            "heading": "Reading route: draw the dependencies, then price the scheduling",
+            "paragraphs": [
+              "Start with Figure 3 and draw the inputs one output tile truly requires. Compare Figures 7 and 9: while a dependency is unresolved, does an SM wait or perform other work? Then inspect Table 3 to determine whether queue costs erase the parallelism benefit. Finish with Table 1 and Appendix D to separate startup time from GPU-only execution. For agent serving, the implication is that even after requests are scheduled, their GPU work may contain further overlap opportunities. The paper does not directly evaluate tool waits, KV-cache eviction, or long-running online arrival processes. Its evidence primarily covers B200 GPUs, two Qwen models, and the described synthetic workloads, rather than other hardware or complete agent workflows.",
+              "These notes explain, adapt, and discuss [Event Tensor v2](https://arxiv.org/abs/2604.13327v2) by Hongyi Jin, Bohan Hou, Guanjie Wang, Ruihang Lai, and colleagues. The first preprint appeared on April 14, 2026, with revision on April 21; the [official MLSys 2026 proceedings](https://proceedings.mlsys.org/paper_files/paper/2026/hash/53d3f45797970d323bd8a0d379c525aa-Abstract-Conference.html) confirm publication. The source uses [CC BY-SA 4.0](https://creativecommons.org/licenses/by-sa/4.0/), and the Chinese and English explanatory adaptations here are provided under the same license. The P0–P3 sum is our teaching example. We did not reproduce the experiments or make claims about the current source implementation."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "kernelbench-efficient-gpu-kernels-2025",
+      "title": "KernelBench: Can LLMs Write Efficient GPU Kernels?",
+      "year": 2025,
+      "venue": "ICML 2025 · Stanford / Princeton · first preprint 2025-02-14; notes use arXiv v1",
+      "url": "https://arxiv.org/abs/2502.10517v1",
+      "role": "optional",
+      "zh": {
+        "contribution": "提供250个由PyTorch参考程序定义的任务，把Agent生成的GPU代码放到真实执行环境中，分别检查能否运行、输出是否正确，以及是否快过指定基线。fast_p把正确性和性能门槛合成一个明确的成功率。",
+        "relevance": "补齐本期的验收环节：PithTrain关注框架是否方便修改，KernelBench关注改出的计算程序是否真的有用。适合用来设计代码优化Agent的测试环境；两者任务粒度和指标不同，不能直接比较成绩。",
+        "reading": "选读§3.1–3.3、Figure 6、Table 1与Appendix B即可。推荐它是为了学评测方法，不是用2025年的模型成绩判断今天的代码Agent能力。",
+        "prerequisites": "kernel是GPU执行的程序；算子融合是把几步运算放到一次执行中；profiling是测量各部分耗时。无需先会写CUDA，也能理解任务、反馈与验收的设计。",
+        "caveat": "本文讲解2025年2月的论文v1，不代表当前仓库或榜单。五组随机输入只检查有限样本；forward计时不覆盖训练反向传播、完整服务或生成代码的成本。",
+        "sections": [
+          {
+            "heading": "写出一段CUDA，还不算完成优化",
+            "paragraphs": [
+              "用一个自拟例子开始：原程序先算 x+b，再把负数变成零，即 ReLU(x+b)。Agent可以尝试把两步放进一个kernel，减少中间结果的读写和启动开销。但看起来做了融合，不等于真的有收益：它可能处理错广播维度，也可能在小输入上更快、换个形状就更慢。我们需要同时回答“结果对不对”和“在什么条件下更快”。",
+              "KernelBench把这两个问题变成可执行任务。输入是一份PyTorch Model及生成测试输入的函数，输出是实现同一功能的ModelNew；Agent可以调用自定义CUDA等实现。参考程序提供计算语义，实际执行提供反馈，评测不要求生成代码长得像某份标准答案。这让不同优化方法可以在同一个任务上比较。[§3.1–3.3](https://arxiv.org/html/2502.10517v1#S3)"
+            ]
+          },
+          {
+            "heading": "任务难度与正确性检查，要分开看",
+            "paragraphs": [
+              "论文v1包含250个任务：Level 1是100个单独算子，Level 2是100个算子序列，Level 3是50个完整模型结构。层级更高不意味着每个任务都更难：单算子可能已经调用高度优化的库，反而很难超过；算子序列则可能留下融合机会。不同层级的得分最好分别报告。[§3.2](https://arxiv.org/html/2502.10517v1#S3.SS2)",
+              "每题用五组随机输入比较参考与生成实现的输出，并区分两类失败：编译或运行失败，以及能运行但结果形状或数值不对。通过这些检查只说明通过了这组测试，不是对所有输入的数学证明。将它用于真实项目时，我建议另设未暴露给Agent的形状、边界数值与随机种子作为最终验收；这是本文的测试建议，不是原论文已完成的泛化保证。[§3.3、§4.2与Appendix B](https://arxiv.org/html/2502.10517v1#S3.SS3)"
+            ]
+          },
+          {
+            "heading": "fast_1是成功任务占比，不是平均加速比",
+            "paragraphs": [
+              "先定义 speedup=参考程序耗时/生成程序耗时。fast_p统计全部任务中“输出正确且speedup大于p”的比例：fast_0相当于正确率，fast_1统计正确且快过基线的任务。这里的分母包含失败题，不能先删掉错误程序再计算，从而把不可靠的方法包装成高成功率。[§3.3](https://arxiv.org/html/2502.10517v1#S3.SS3)",
+              "举一个自拟的十题例子：八题结果正确，只有三题更快，那么fast_0=80%，fast_1=30%。后者既不是平均加速30%，也不是成功程序占八题中的37.5%。如果每题尝试k次，fast_p@k只要求其中至少一个候选达到门槛；k越大用掉的生成、编译和测量预算通常也越多，所以不能把一次生成与一百次挑最好者当成相同成本。"
+            ]
+          },
+          {
+            "heading": "把报错和耗时交还Agent，究竟改进了什么",
+            "paragraphs": [
+              "论文比较独立生成多个候选，以及看过反馈后顺序修改候选。后一种循环给出上一版代码G、执行反馈E，以及可选的profiler耗时P。比如编译器指出未定义变量，Agent先修到能运行；输出不一致时修算法；结果正确但耗时高时，再检查慢的算子。Figure 6展示了这个反馈路径，Table 1比较固定十次模型调用的预算。[§5.1](https://arxiv.org/html/2502.10517v1#S5.SS1)",
+              "一个有明确条件的历史结果是：在100个Level 2任务、NVIDIA L40S、PyTorch Eager基线上，DeepSeek-R1一次生成的fast_1为36%；含初次生成在内共尝试十次，利用G+E+P反馈并保留过程中最好候选时为72%。这是完成更多任务，不是kernel整体提速两倍，也不是2026年的能力上限。改进对象是单题代码，反馈来自人为设计的参考程序、编译器与计时器；模型权重未在这个循环中训练。这种有限次数的任务内修正，不能据此宣称持续递归自我改进。[Table 1与Figure 7](https://arxiv.org/html/2502.10517v1#S5.SS1.SSS2)"
+            ]
+          },
+          {
+            "heading": "计时条件决定“更快”到底指什么",
+            "paragraphs": [
+              "论文v1的主要测试使用L40S、PyTorch 2.5.0+cu124和CUDA 12.4。对forward做三次预热，再用CUDA events重复计时100次并取平均，同时避免其他CUDA进程争用GPU。它衡量的是这段计算的执行时间；生成代码、编译、排队和完整服务请求的耗时不在同一个数字里。[Appendix B](https://arxiv.org/html/2502.10517v1#A2)",
+              "基线也会改变结论。超过PyTorch Eager，不一定超过融合后的torch.compile，更不一定超过目标硬件的专用库。反过来，默认torch.compile在某些很小算子上可能被运行时开销拖慢，不能仅凭一个较高fast_1断言生成代码更先进。论文还发现同一批代码换GPU后得分会变化。因此复用这套方法时，应一起固定硬件、软件版本、输入、基线配置和搜索预算；训练用途还要单独检查梯度，不能用forward正确代替反向传播正确。后两点是本文对验收范围的推导。[§4.1与§4.4](https://arxiv.org/html/2502.10517v1#S4)"
+            ]
+          },
+          {
+            "heading": "为什么今天选读这篇2025年的论文",
+            "paragraphs": [
+              "PithTrain关注“框架怎样方便Agent修改”，Event Tensor关注“GPU怎样执行这些计算”，KernelBench补的是“修改结果怎样验收”。读§3理解任务与指标，再看Figure 6和Table 1理解反馈，最后读Appendix B理解测量。没有必要背旧模型排名；真正值得带走的是把成功条件写成可执行检查，并把搜索成本与最终代码速度分开报告。",
+              "来源为Anne Ouyang、Simon Guo、Simran Arora等作者的[论文v1，2025-02-14](https://arxiv.org/abs/2502.10517v1)，采用[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)；本文为双语解释性改写，ReLU与十题例子为自拟。[ICML 2025官方论文集](https://proceedings.mlr.press/v267/ouyang25a.html)确认正式收录。本文没有运行实验、核验当前仓库实现或提供当前榜单结论。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Defines 250 tasks through PyTorch reference programs and executes generated GPU code to check executability, output correctness, and speed against a specified baseline. The fast_p metric combines correctness with a performance threshold into an explicit success rate.",
+        "relevance": "Supplies the acceptance-testing part of this issue: PithTrain asks whether a framework is easy to modify; KernelBench asks whether generated computation code is useful. Their task granularity and metrics differ, so their scores are not directly comparable.",
+        "reading": "Select Sections 3.1–3.3, Figure 6, Table 1, and Appendix B. Read it for evaluation methodology, not as evidence of present-day coding-agent capability from 2025 model scores.",
+        "prerequisites": "A kernel is a GPU program, fusion combines operations into one execution, and profiling measures where time is spent. Understanding the task and feedback design does not require CUDA programming experience.",
+        "caveat": "These notes describe the February 2025 v1 paper, not the current repository or leaderboard. Five random inputs test only a finite sample; forward-pass timing excludes backward computation, full serving, and code-generation costs.",
+        "sections": [
+          {
+            "heading": "Writing CUDA does not by itself complete an optimization",
+            "paragraphs": [
+              "Start with our teaching example: compute x+b and then replace negative values with zero, or ReLU(x+b). An agent could combine both operations into one kernel to reduce intermediate memory traffic and launch overhead. Apparent fusion does not guarantee a useful result: broadcasting may be wrong, or a kernel that wins for a small input may lose on another shape. We need both a correctness test and a precisely scoped speed comparison.",
+              "KernelBench makes these questions executable. The input is a PyTorch Model plus functions producing its test inputs; the output is a ModelNew implementing the same computation, potentially through custom CUDA. The reference program supplies semantics and execution supplies feedback. There is no required reference implementation of the optimized code, so different optimization strategies can compete on the same task. [Sections 3.1–3.3](https://arxiv.org/html/2502.10517v1#S3)"
+            ]
+          },
+          {
+            "heading": "Separate task complexity from correctness coverage",
+            "paragraphs": [
+              "The v1 suite contains 250 tasks: 100 individual operators at Level 1, 100 operator sequences at Level 2, and 50 full model architectures at Level 3. Higher levels are not uniformly harder. A single operator may already call a highly optimized library, while a sequence may expose straightforward fusion opportunities. Scores for the levels are best reported separately. [Section 3.2](https://arxiv.org/html/2502.10517v1#S3.SS2)",
+              "Each task uses five random inputs to compare reference and generated outputs. Compilation or execution failures are distinguished from programs that run but return incorrect shapes or values. Passing establishes success on those tests, not mathematical equivalence for every input. For deployment, our recommendation is to reserve unseen shapes, boundary values, and random seeds for final acceptance. That recommendation is not a generalization guarantee demonstrated by the original paper. [Sections 3.3 and 4.2, Appendix B](https://arxiv.org/html/2502.10517v1#S3.SS3)"
+            ]
+          },
+          {
+            "heading": "fast_1 is a fraction of successful tasks, not an average speedup",
+            "paragraphs": [
+              "Define speedup as reference runtime divided by generated-program runtime. fast_p is the fraction of all tasks whose outputs are correct and whose speedup exceeds p. fast_0 is effectively correctness rate; fast_1 counts correct solutions faster than the baseline. Failed tasks remain in the denominator. Removing them first would conceal reliability problems. [Section 3.3](https://arxiv.org/html/2502.10517v1#S3.SS3)",
+              "In our ten-task example, eight outputs are correct but only three solutions are faster. Then fast_0 is 80% and fast_1 is 30%. The latter is neither a 30% average speedup nor the 37.5% obtained by dividing three by eight. With k attempts per task, fast_p@k requires at least one candidate to meet the threshold. Larger k generally consumes more generation, compilation, and measurement resources; one attempt and selecting the best of one hundred are different budgets."
+            ]
+          },
+          {
+            "heading": "What improves when errors and timings are returned to the agent?",
+            "paragraphs": [
+              "The paper compares independently generating candidates with sequentially revising candidates after feedback. Refinement receives the previous generation G, execution feedback E, and optionally profiler timings P. A compiler error can first guide a repair that makes the program run; mismatched outputs motivate algorithm repairs; correct but slow execution motivates performance changes. Figure 6 depicts the feedback path. Table 1 compares a fixed budget of ten model calls. [Section 5.1](https://arxiv.org/html/2502.10517v1#S5.SS1)",
+              "One historical result has a clear scope: across the 100 Level 2 tasks on NVIDIA L40S against PyTorch Eager, DeepSeek-R1 achieves fast_1 of 36% with one generation and 72% when taking the best candidate across ten generations, including the initial attempt, with G+E+P feedback. This means more tasks succeeded, not a twofold overall kernel speedup or a 2026 capability ceiling. The changed object is task-specific code; feedback comes from human-designed reference programs, the compiler, and timers. Model weights are not trained in this loop. These bounded within-task revisions do not demonstrate sustained recursive self-improvement. [Table 1 and Figure 7](https://arxiv.org/html/2502.10517v1#S5.SS1.SSS2)"
+            ]
+          },
+          {
+            "heading": "Timing conditions determine what faster actually means",
+            "paragraphs": [
+              "The v1 primary setup uses L40S, PyTorch 2.5.0+cu124, and CUDA 12.4. It measures forward execution with CUDA events over 100 trials after three warmups, averaging the timings and avoiding competing CUDA processes. This measures the computation itself. Code generation, compilation, queueing, and an entire service request are different costs. [Appendix B](https://arxiv.org/html/2502.10517v1#A2)",
+              "Baseline choice also matters. Beating PyTorch Eager does not imply beating fused torch.compile or a hardware-specific library. Conversely, default torch.compile can incur runtime overhead on very small operators, so a higher fast_1 against it need not imply a more advanced kernel. Scores can also change when the same code moves to another GPU. Our evaluation recommendation is to fix hardware, software, inputs, baseline configuration, and search budget together. Training use also requires separate gradient tests: forward correctness alone does not establish backward correctness. [Sections 4.1 and 4.4](https://arxiv.org/html/2502.10517v1#S4)"
+            ]
+          },
+          {
+            "heading": "Why include a 2025 paper in this issue?",
+            "paragraphs": [
+              "PithTrain asks how a framework can support agent modifications, and Event Tensor asks how the GPU executes computations. KernelBench supplies acceptance criteria for the resulting code. Read Section 3 for tasks and metrics, Figure 6 and Table 1 for feedback, and Appendix B for measurement. The lasting lesson is to make success executable and report search cost separately from final program speed; memorizing old model rankings is unnecessary.",
+              "These bilingual explanations adapt the [February 14, 2025 v1 paper](https://arxiv.org/abs/2502.10517v1) by Anne Ouyang, Simon Guo, Simran Arora, and collaborators, licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). The ReLU and ten-task examples are our illustrations. Publication is verified through the [official ICML 2025 proceedings](https://proceedings.mlr.press/v267/ouyang25a.html). We have not reproduced experiments, audited the current repository, or established a current leaderboard result."
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

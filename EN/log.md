@@ -159,3 +159,6 @@ updated: 2026-06-15
 
 ## 2026-11-03
 - [READING] Main reading: Jet-RL; optional readings: TLT and VCPO. Bilingual notes explain precision flows, rollout tails, and asynchronous update variance, with remaining quality gaps, measurement conditions, and unverified combinations made explicit.
+
+## 2026-11-04
+- [READING] Main reading: PithTrain; optional readings: Event Tensor and KernelBench. Bilingual notes develop MoBA integration, tiled dependencies, and code acceptance tests, separating modification cost, training throughput, and inference latency with explicit evaluation conditions and coverage limits.

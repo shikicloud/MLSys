@@ -3,12 +3,12 @@ title: "Daily reading recommendations"
 category: ml-sys
 tags: [reading-digest]
 description: "LLM and agent capabilities, learning, and systems: from foundations to frontier research."
-published: "2026-11-03T10:33:10+08:00"
-date: 2026-11-03
+published: "2026-11-04T15:06:26+08:00"
+date: 2026-11-04
 created: 2026-10-15
-updated: 2026-11-03
+updated: 2026-11-04
 status: growing
-paper_ids: ["jet-rl-2026","tlt-adaptive-drafter-2026","stable-asynchrony-vcpo-2602-17616","juice-2610-28801","cvrr-latent-visual-reasoning-2026","vimod-visual-memory-2026","calif-reward-hacking-2026","rubrics-as-rewards-2025","rubric-reward-hacking-2026","rapidmoe-residual-offloading-2026","stepped-moe-2026","semantic-parallelism-2026","lifemem-workflow-memory-2026","adamem-2026","memoryarena-2026","base-model-token-cues-2026","thinking-leakage-2026","rl-feature-generalization-2026","vexact-zero-mismatch-2026","batch-invariance-2025","score-centering-2026","replayssm-2026","gated-delta-networks-2025","suffixreplay-2026","aide2-recursive-self-improvement-2026","self-distillation-continual-learning-2026","reuse-2026","cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
+paper_ids: ["pithtrain-2605-31463","event-tensor-dynamic-megakernel-2026","kernelbench-efficient-gpu-kernels-2025","jet-rl-2026","tlt-adaptive-drafter-2026","stable-asynchrony-vcpo-2602-17616","juice-2610-28801","cvrr-latent-visual-reasoning-2026","vimod-visual-memory-2026","calif-reward-hacking-2026","rubrics-as-rewards-2025","rubric-reward-hacking-2026","rapidmoe-residual-offloading-2026","stepped-moe-2026","semantic-parallelism-2026","lifemem-workflow-memory-2026","adamem-2026","memoryarena-2026","base-model-token-cues-2026","thinking-leakage-2026","rl-feature-generalization-2026","vexact-zero-mismatch-2026","batch-invariance-2025","score-centering-2026","replayssm-2026","gated-delta-networks-2025","suffixreplay-2026","aide2-recursive-self-improvement-2026","self-distillation-continual-learning-2026","reuse-2026","cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
 ---
 
 # Daily reading recommendations
@@ -21,6 +21,7 @@ This index and the daily archive sync with repository publishing. Browse on your
 
 ## Archive (newest first)
 
+- [[EN/reading/daily/2026-11-04|2026-11-04 · Making Training Frameworks Easier for Agents to Modify—and Verify]] — Main reading: PithTrain: A Compact and Agent-Native MoE Training System
 - [[EN/reading/daily/2026-11-03|2026-11-03 · Why FP8 Rollouts Can Change Learning: Jet-RL, Long Tails, and Asynchrony]] — Main reading: Jet-RL: Enabling On-Policy FP8 Reinforcement Learning with Unified Training and Rollout Precision Flow
 - [[EN/reading/daily/2026-10-25|2026-10-25 · How Models Use Images to Reason: Joint Generation, Re-reading, and Selective Access]] — Main reading: JUICE: Unified Multimodal Modeling in Pretrained Representation Spaces
 - [[EN/reading/daily/2026-10-24|2026-10-24 · Higher rewards, worse answers: how can RL learn the real request?]] — Main reading: Diagnosing and Correcting Reward Hacking in Verifiable Instruction Following

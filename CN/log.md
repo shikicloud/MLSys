@@ -159,3 +159,6 @@ updated: 2026-06-15
 
 ## 2026-11-03
 - [READING] 主读 Jet-RL，选读 TLT 与 VCPO；双语笔记解释量化流程、rollout 长尾和异步更新方差，注明质量差距、性能测量条件及组合尚未验证。
+
+## 2026-11-04
+- [READING] 主读 PithTrain，选读 Event Tensor 与 KernelBench；双语笔记从 MoBA 集成、分块依赖与代码验收展开，区分框架修改成本、训练吞吐和推理延迟，说明测试覆盖与实验条件。
