@@ -1,0 +1,401 @@
+{
+  "schemaVersion": 1,
+  "date": "2026-11-05",
+  "publishedAt": "2026-11-05T10:09:40+08:00",
+  "zh": {
+    "title": "Agent 怎样处理长材料：分开读、记重点、正确训练",
+    "summary": "主读 RLM 的2026年修订版：把长材料留在外部环境，让模型写程序选择片段、调用子模型并汇总结果。选读 MEM1，理解怎样用强化学习学会更新简短记忆；再读2026年的 MemoryWalker，追问压缩过的任务历史应该怎样拿去训练。三篇分别讨论读取、保留和重放信息。先读 RLM 的具体例子，其余按兴趣展开；不把递归调用等同于递归自我改进，也不把压缩后的短输入当成无损记忆。"
+  },
+  "en": {
+    "title": "How Agents Handle Long Inputs: Selective Reading, Working Memory, and Correct Replay",
+    "summary": "The main reading covers the 2026 revision of RLM: keep long materials in an external environment and let the model write programs to select passages, invoke submodels, and combine results. MEM1 explains reinforcement learning for compact working-memory updates; the 2026 MemoryWalker paper examines how edited histories should be replayed for training. The three readings address accessing, retaining, and replaying information. Start with the RLM example and explore the companions as needed. Recursive calls do not establish recursive self-improvement, and short compressed inputs do not guarantee lossless memory."
+  },
+  "papers": [
+    {
+      "id": "recursive-language-models-2512-24601",
+      "title": "Recursive Language Models",
+      "year": 2025,
+      "venue": "NeurIPS 2026 (author publication page); arXiv v3, 2026-05-11 · MIT CSAIL",
+      "url": "https://arxiv.org/abs/2512.24601v3",
+      "role": "main",
+      "zh": {
+        "contribution": "把长材料保存为可编程访问的环境变量，让模型自行查看、分块、调用子模型并用代码合并结果；v3还研究了如何训练小模型使用这套流程。",
+        "relevance": "一次长请求可变成许多有依赖关系的模型调用，直接关联 Agent 调度、调用预算、状态保存和端到端长尾；原文主要验证任务效果与API费用。",
+        "reading": "值得精读。先用图2和算法1理解信息放在哪里，再看表1、失败轨迹和v3训练实验，判断哪些收益来自信息访问方式，哪些来自额外计算或训练。",
+        "prerequisites": "知道模型上下文窗口有限，能读懂 Python 的变量、列表与循环即可；子调用就是程序发起的另一次模型请求。",
+        "caveat": "递归调用不等于自主自我改进；不是所有任务都获益，费用和时间有长尾。实验中的顺序调用不构成低延迟生产服务证据。",
+        "sections": [
+          {
+            "heading": "先看一个问题：读完很多记录，怎样保证没有漏算？",
+            "paragraphs": [
+              "假设一份长文件里有很多用户的问题，你要回答：问“某个数量是多少”的问题，是否比问“某件事为什么发生”的问题更多？“桥有多少米长”和“水为什么结冰”没有现成类别标签，得先理解每句话，再数数。如果只找几段相关文字，可能漏算；如果先压成摘要，也可能丢掉决定总数的记录。这是便于理解的教学例子，对应论文 OOLONG 的“逐条判断类别，再汇总”任务。[§3.1](https://arxiv.org/html/2512.24601v3#S3.SS1)",
+              "RLM 的办法是让模型自己写一小段程序，决定先看哪里、如何分块、哪些内容交给另一次模型调用，最后用程序合并结果。它改变的是模型做题时访问材料的方式。即使原始文件很长，每次神经网络实际读到的文字仍受它原有的上下文窗口限制。[§2](https://arxiv.org/html/2512.24601v3#S2)"
+            ]
+          },
+          {
+            "heading": "第一步：把完整材料留在变量里，让模型按需查看",
+            "paragraphs": [
+              "论文把长输入存进一个持续保留状态的 Python 交互环境：前一轮创建的变量，下一轮还能使用。这种环境叫 REPL。负责统筹的“根模型”一开始得到的是材料长度、简短开头、访问方式等信息，而非整篇文件。它可以写代码查看几行、按换行符切分、查找某个词，随后根据执行结果决定下一步。[图2、算法1](https://arxiv.org/html/2512.24601v3#S2)",
+              "完整文本和中间结果继续留在环境变量中，程序打印给根模型的内容会被截短，避免又把窗口塞满。这里所说的 context offloading 是把文字材料放到模型窗口之外，并不是论文实现了新的 KV cache 搬运算法。根模型自身的对话历史仍会增长，论文也承认每层循环需要限制；“能处理超长输入”不等于一次模型调用拥有无限内存。"
+            ]
+          },
+          {
+            "heading": "第二步：让模型理解句子，让程序负责计数",
+            "paragraphs": [
+              "回到刚才的例子，根模型可以先检查文件格式，再把问题分成若干批。代码在循环中调用子模型：“请判断这一批问题的答案分别属于哪一类。”返回的类别和记录编号保存在列表里，最后由 Python 计算两类记录各有多少条。理解句意交给模型，精确计数交给程序；批次大小、是否重新检查，则由根模型在任务中决定。这是机制示意，不是论文要求所有任务遵循的固定流程。[§2、附录E.3](https://arxiv.org/html/2512.24601v3)",
+              "关键不只是“多叫几个 Agent”，而是模型调用可以写在程序循环里面：一小段代码能处理很多批材料，不必由根模型逐字生成每一次完整委派。检索和摘要仍可以成为它的工具，但遇到每条记录都影响答案的任务，程序能够遍历全部记录，而不是只能依靠预先选出的少数片段。子模型也会判断错，因此程序算得精确，不代表输入给程序的类别一定正确。"
+            ]
+          },
+          {
+            "heading": "第三步：结果留在环境中，递归深度决定谁还能继续拆题",
+            "paragraphs": [
+              "若任务要求列出很多符合条件的用户对，程序可以把配对结果直接存进变量，然后返回该变量，不必让根模型重新逐字抄出全部答案。论文实现同时支持直接给答案和返回环境变量。保留这条输出路径很重要：长输入的问题解决后，最终答案也可能长到不适合由根模型一次生成。[§2、附录C.1](https://arxiv.org/html/2512.24601v3#S2)",
+              "论文把最大递归深度设为0到3：深度0只有根模型与代码环境，不能调用子模型；深度1可以调用普通模型；更深时，子调用也能进入 RLM 流程，继续分解问题。这里的“递归”描述调用关系，不是模型在运行中重写自己的训练方法。它可以保持模型参数不变，也可以另行训练更会使用这种环境的模型，这两件事需要分开看。[§3.2](https://arxiv.org/html/2512.24601v3#S3.SS2)"
+            ]
+          },
+          {
+            "heading": "证据一：超长文档问答有效，但不是所有方法都被超过",
+            "paragraphs": [
+              "主实验使用 GPT-5（medium reasoning）和 Qwen3-Coder-480B-A35B。GPT-5 方案由 GPT-5 负责根调用、GPT-5-mini 负责子调用。BrowseComp+ 测试随机抽取150道题，每题给1,000篇文档，保证答案证据在其中，输入约600万到1,100万 tokens；这是离线文档问答，不是让 Agent 在整个互联网自由搜索。[§3.1–3.2、表1](https://arxiv.org/html/2512.24601v3#S3)",
+              "表1中，深度1的 GPT-5 RLM 得分91.3%，每题平均 API 费用为0.99美元，标准差1.22美元；压缩方案为70.5%、0.57美元、标准差0.10美元。后者用 GPT-5-nano 压缩、GPT-5 回答，因此比较的是完整系统配置，不是严格同模型同预算的单一变量实验。同表把材料放进文件的 OpenCode 得分94.0%，还高于这个 RLM 配置。数据支持 RLM 是有效方法，但不支持它在文档检索上全面领先。[表1](https://arxiv.org/html/2512.24601v3#S4)"
+            ]
+          },
+          {
+            "heading": "证据二：材料放得下，也不代表能可靠地逐项处理",
+            "paragraphs": [
+              "OOLONG-Pairs 的主表设置只有约32K tokens，共20个查询，却要求根据记录含义列出符合条件的配对。它用同时惩罚错列和漏列的 F1 衡量结果。GPT-5 直接回答的 F1 为0.1，使用代码环境但不调用子模型时为43.9，深度1为58.0，深度3为76.0，均按0–100标尺报告。这说明收益不仅来自绕过输入长度限制，也来自把理解、保存中间结果和组合答案拆成可执行步骤。[§3.1、表1](https://arxiv.org/html/2512.24601v3#S4)",
+              "但不要把它读成“递归越深越聪明”。同一张表里，Qwen3-Coder 在代码仓库问答上关闭子调用，反而比几个递归配置更好；模型和题型都会影响最佳做法。OOLONG-Pairs 也只是特定构造的配对任务，样本量有限。这里证明了某些密集信息处理任务可以明显受益，没有证明任意复杂 Agent 工作流都会按同样幅度进步。"
+            ]
+          },
+          {
+            "heading": "v3 新增的训练：学会使用环境，不等于自主自我改进",
+            "paragraphs": [
+              "8B 实验训练的是“如何查看变量、写代码、决定什么时候调用子模型”。作者让 Qwen3-Coder 在750道英文 LongBenchPro 题上生成2,250条运行轨迹，去掉零分或只有一轮的尝试，再把保留轨迹拆成逐轮样本，修正部分接口格式错误后教给 Qwen3-8B。这叫监督微调（SFT）：给定此前历史，学习示范的下一步输出。附录记录批量64、300个训练步、48 H100 GPU小时；图3(a)显示训练后的 RLM 在主表四类任务上改善。它不是单靠换提示词，也不是没有外部筛选的自学。[§3.2、图3(a)、附录A](https://arxiv.org/html/2512.24601v3)",
+              "另一条独立实验用 Qwen3-4B-Instruct-0527 做可验证奖励的强化学习：模型反复尝试，由可检查的答案得分指导参数更新。MRCRv2 的任务是在长材料中找出并复现指定内容；训练用32K–64K tokens、2个目标片段，共训练150步，并定期在512K–1M tokens、8个目标片段上评估。图3(b)展示这种设置下的长度泛化，不能外推成所有长程任务的泛化。两条训练线都是作者设计数据、奖励和训练流程，不是系统自主迭代提升自身研究能力。[图3(b)、附录A](https://arxiv.org/html/2512.24601v3)"
+            ]
+          },
+          {
+            "heading": "真正的代价：会反复确认、会答错，也会拖很久",
+            "paragraphs": [
+              "附录E.2记录了一个容易理解的失败：环境里已经构造出配对结果，模型却多次重做、检查，最后没有返回这个变量，而是自己重新生成了错误答案。附录B还指出，代码能力不足、输出预算耗尽、结束标记用错，都会使 RLM 失效。把材料保留下来只是提供了重新查看的机会，不能保证模型会看对、算对，或在正确时停止。[附录B、E.2](https://arxiv.org/html/2512.24601v3)",
+              "费用也不能只看均值。论文报告运行费用和时间都有长尾：少数请求会不断发起子调用，把总开销拉高；实验中的模型调用是阻塞、顺序执行的，因此它没有证明这些收益同时满足低延迟服务要求。表里的美元是按论文所用 API 价格估算的调用费，不是 GPU 吞吐量或今天的价格。异步执行与超时控制是作者讨论的改进方向，不能当作本文已经验证的服务优化。[§4、§7、附录F.2](https://arxiv.org/html/2512.24601v3)"
+            ]
+          },
+          {
+            "heading": "与你做的系统工作有什么关系？",
+            "paragraphs": [
+              "从系统角度推导，一个用户请求现在可能变成“根模型写程序→若干子调用→结果合并→再次决定”的链条。服务端不能只数原始输入有多长，还要看子调用多少、各自读多少文字、哪些调用必须等前一步结束，以及程序环境要保存多久。并行的价值取决于子任务是否独立；这些是由论文机制引出的研究问题，不是原文已经测出的吞吐量结论。",
+              "如果做实验，可以把回答质量、总 token 和调用费用、端到端耗时、失败率一起记录，再分别限制递归深度、每次切片大小和调用总数。这样才能区分：方法是用更好的信息访问方式解决了问题，还是只是花了更多预算。这是本文带来的实验设计建议；RLM 本身既不是 KV cache 压缩算法，也没有建立跨任务长期记忆或持续自我改进的完整训练闭环。"
+            ]
+          },
+          {
+            "heading": "精读路线、版本与来源",
+            "paragraphs": [
+              "先读图2与§2的两个算法，检查长输入、中间结果和输出分别存在哪里；再读§3.2及表1，分清根模型、子模型、递归深度与基线配置。接着读附录E.2/E.3：一个展示反复检查仍然失败，一个展示逐条理解后由程序统计。最后读图3、附录A和附录F.2，把训练带来的改变与费用、时间长尾分开理解。理解 Python 列表、循环和一次模型 API 调用，就足以开始这条路线。",
+              "本文依据 Alex L. Zhang、Tim Kraska、Omar Khattab（MIT CSAIL）的《Recursive Language Models》改写。预印本首发2025-12-31；截至2026-11-05核验的最新版本为2026-05-11的v3。[arXiv版本记录](https://arxiv.org/abs/2512.24601)；[作者主页](https://alexzhang13.github.io/publications/)标为 NeurIPS 2026，本文的会议信息以该作者来源为据。原文采用[CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)；本笔记为中文解释与对应英文改写，教学例子和系统推导已明确标出。[固定版全文](https://arxiv.org/html/2512.24601v3)"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Stores long material as programmatically accessible environment variables, letting the model inspect, divide, delegate, and combine it through code; v3 also studies training small models to use this process.",
+        "relevance": "One long request can become many dependent model calls, connecting directly to agent scheduling, call budgets, persistent state, and end-to-end tails; the paper primarily validates task outcomes and API costs.",
+        "reading": "Worth close reading. Use Figure 2 and Algorithm 1 to locate the information, then examine Table 1, failure trajectories, and the v3 training studies to separate better access from added computation or training.",
+        "prerequisites": "A finite model context window and basic Python variables, lists, and loops are sufficient; a subcall is another model request launched by the program.",
+        "caveat": "Recursive calls do not establish autonomous self-improvement. Gains vary by task, and cost and runtime have long tails. Sequential experimental calls are not evidence of low-latency production serving.",
+        "sections": [
+          {
+            "heading": "Start with a concrete problem: reading many records without missing a count",
+            "paragraphs": [
+              "Imagine a long file of user questions. You need to decide whether questions asking for a quantity outnumber questions asking why something happens. “How many meters long is the bridge?” and “Why does water freeze?” have no category labels attached: someone must interpret each sentence before counting. Retrieving a few relevant passages may omit records, while summarizing first may discard details that change the total. This teaching example illustrates OOLONG’s requirement to classify individual records and then aggregate them. [§3.1](https://arxiv.org/html/2512.24601v3#S3.SS1)",
+              "RLM lets the model write a small program that decides where to look, how to divide the material, what to send to another model call, and how to combine the results. It changes how the model accesses information while solving a task. Even when the original file is extremely long, every neural model call still has its existing context-window limit. [§2](https://arxiv.org/html/2512.24601v3#S2)"
+            ]
+          },
+          {
+            "heading": "Step one: keep the full material in a variable and inspect it on demand",
+            "paragraphs": [
+              "The paper stores the long input in a persistent Python interactive environment: variables created in one turn remain available in the next. This environment is a REPL. The coordinating “root model” initially receives metadata such as the material’s length, a short prefix, and instructions for accessing it, rather than the entire file. It can write code to inspect a few lines, split on newlines, or search for a word, then choose its next step from the execution result. [Figure 2 and Algorithm 1](https://arxiv.org/html/2512.24601v3#S2)",
+              "The complete text and intermediate results remain in environment variables; printed output shown to the root model is truncated so that it does not simply fill the window again. Context offloading here means placing text outside the model window, not implementing a new KV-cache migration algorithm. The root model’s own conversation history still grows, and the paper acknowledges the need to limit iterations at each level. Handling a very long input does not give an individual model call infinite memory."
+            ]
+          },
+          {
+            "heading": "Step two: let the model interpret sentences and let code do the counting",
+            "paragraphs": [
+              "In our example, the root model could inspect the file format and divide the questions into batches. A code loop asks a submodel to classify the questions in each batch. The returned labels and record IDs are stored in a list, after which Python counts the two categories. The model handles meaning; code handles exact counting. The root decides batch sizes and whether to inspect results again during the task. This illustrates the mechanism, rather than a mandatory workflow for every RLM task. [§2 and Appendix E.3](https://arxiv.org/html/2512.24601v3)",
+              "The important feature is not merely calling several agents: model calls can occur inside programmatic loops. A short program can process many batches without making the root spell out every full delegation separately. Retrieval and summarization can still be tools, but when every record affects the answer, code can iterate over all records instead of relying only on a few preselected passages. Submodels can misclassify records, so exact counting does not guarantee that the labels being counted are correct."
+            ]
+          },
+          {
+            "heading": "Step three: preserve outputs in the environment and control recursive depth",
+            "paragraphs": [
+              "If a task asks for a long list of qualifying user pairs, code can store that list in a variable and return the variable directly, without having the root model copy out the entire answer token by token. The implementation supports both direct answers and returning an environment variable. This output path matters: after solving the long-input problem, the resulting answer may itself be too long for a single root generation. [§2 and Appendix C.1](https://arxiv.org/html/2512.24601v3#S2)",
+              "The paper evaluates maximum recursion depths from 0 to 3. Depth 0 has a root model and a code environment but no model subcalls. Depth 1 allows ordinary model subcalls. At greater depths, a subcall can itself run an RLM process and further divide the problem. “Recursive” describes the call structure, not a model rewriting its own training procedure during execution. The framework can use unchanged model parameters, while a separate training procedure can teach models to use it better. These are distinct claims. [§3.2](https://arxiv.org/html/2512.24601v3#S3.SS2)"
+            ]
+          },
+          {
+            "heading": "Evidence one: effective on very long documents, without beating every alternative",
+            "paragraphs": [
+              "The main experiments use GPT-5 with medium reasoning and Qwen3-Coder-480B-A35B. The GPT-5 RLM uses GPT-5 at the root and GPT-5-mini for subcalls. BrowseComp+ contains 150 randomly sampled evaluation questions, each supplied with 1,000 documents guaranteed to include the answer evidence, totaling roughly 6–11 million tokens. This is question answering over an offline document corpus, not unrestricted web browsing. [§3.1–3.2 and Table 1](https://arxiv.org/html/2512.24601v3#S3)",
+              "In Table 1, the depth-1 GPT-5 RLM scores 91.3%, with mean API cost $0.99 per question and standard deviation $1.22. The compaction system scores 70.5%, with mean cost $0.57 and standard deviation $0.10. That baseline uses GPT-5-nano for compaction and GPT-5 for the answer: this compares complete system configurations, not a strictly matched model-and-budget intervention. OpenCode with the material offloaded to a file scores 94.0% in the same table, above this RLM configuration. The evidence supports RLM as an effective approach, not universal superiority on document retrieval. [Table 1](https://arxiv.org/html/2512.24601v3#S4)"
+            ]
+          },
+          {
+            "heading": "Evidence two: fitting the material does not ensure reliable processing of every record",
+            "paragraphs": [
+              "The main OOLONG-Pairs setting has only about 32K input tokens and 20 queries, but requires listing qualifying pairs based on the meaning of the records. Its F1 metric penalizes both incorrect pairs and missing pairs. On the reported 0–100 scale, direct GPT-5 scores 0.1, the code-environment version without subcalls scores 43.9, depth 1 scores 58.0, and depth 3 scores 76.0. Benefits therefore extend beyond bypassing input limits: interpretation, intermediate storage, and answer construction can be separated into executable steps. [§3.1 and Table 1](https://arxiv.org/html/2512.24601v3#S4)",
+              "This does not mean that deeper recursion always improves performance. In the same table, Qwen3-Coder performs better on repository question answering with subcalls disabled than with the recursive configurations. Both the model and the task affect the best choice. OOLONG-Pairs is also a particular constructed pairing task with a limited number of queries. The results demonstrate substantial gains on some tasks requiring dense processing of information, not equivalent improvements across arbitrary complex agent workflows."
+            ]
+          },
+          {
+            "heading": "Training added in v3: learning to use the environment is not autonomous self-improvement",
+            "paragraphs": [
+              "The 8B experiment teaches how to inspect variables, write code, and decide when a submodel is useful. The authors generate 2,250 trajectories with Qwen3-Coder on 750 English LongBenchPro tasks, remove zero-score or single-turn attempts, split the retained trajectories into individual turns, and correct some interface-format errors before training Qwen3-8B. This is supervised fine-tuning, or SFT: learning the demonstrated next output given the preceding history. Appendix A reports batch size 64, 300 training steps, and 48 H100 GPU-hours; Figure 3(a) shows improvements across the four task families in the main table. This is neither prompting alone nor learning without external filtering. [§3.2, Figure 3(a), and Appendix A](https://arxiv.org/html/2512.24601v3)",
+              "A separate experiment trains Qwen3-4B-Instruct-0527 with reinforcement learning using verifiable rewards: the model makes attempts, and scores from checkable answers guide parameter updates. MRCRv2 requires finding and reproducing specified content within long material. Training uses 32K–64K tokens with two target snippets for 150 steps, with periodic evaluation on 512K–1M tokens with eight target snippets. Figure 3(b) demonstrates length generalization in this setting, not across all long-horizon tasks. Both training studies use author-designed data, rewards, and training procedures rather than a system autonomously improving its own research capabilities. [Figure 3(b) and Appendix A](https://arxiv.org/html/2512.24601v3)"
+            ]
+          },
+          {
+            "heading": "The practical cost: repeated checking, incorrect answers, and slow runs",
+            "paragraphs": [
+              "Appendix E.2 gives an instructive failure. A pair list has already been constructed in the environment, but the model repeatedly rebuilds and checks its work. It eventually generates an incorrect answer itself instead of returning the stored variable. Appendix B also identifies insufficient coding ability, exhausted output budgets, and incorrect termination markers as failure modes. Preserving the material makes revisiting it possible; it does not ensure correct inspection, computation, or stopping. [Appendices B and E.2](https://arxiv.org/html/2512.24601v3)",
+              "Mean cost is also insufficient. The paper reports long tails in both cost and runtime: some requests keep launching subcalls and accumulate much larger expenses. Its model calls are blocking and sequential, so the results do not establish that these quality gains meet low-latency serving requirements. Dollar values in the tables are API charges calculated with the paper’s provider prices, not GPU throughput or current prices. Asynchrony and timeout controls are improvements discussed by the authors, not serving optimizations validated in this study. [§4, §7, and Appendix F.2](https://arxiv.org/html/2512.24601v3)"
+            ]
+          },
+          {
+            "heading": "What does this suggest for systems work?",
+            "paragraphs": [
+              "A systems implication is that one user request can become a chain: the root writes code, launches subcalls, combines results, and makes another decision. A serving system must consider more than original input length: the number and size of subcalls, dependencies between calls, and how long the program environment must remain alive also matter. Parallel execution is useful only where dependencies allow it. These are research questions inferred from the mechanism, not throughput findings reported by the paper.",
+              "A useful experiment would record answer quality, total tokens and API cost, end-to-end time, and failure rate together, then separately constrain recursive depth, input-slice size, and total calls. This would help distinguish better information access from simply spending more resources. That is an experimental suggestion derived from the paper. RLM itself is not a KV-cache compression algorithm, nor does it establish a complete training loop for persistent memory across tasks or continual self-improvement."
+            ]
+          },
+          {
+            "heading": "Reading route, version, and attribution",
+            "paragraphs": [
+              "Start with Figure 2 and the two algorithms in §2, tracking where the long input, intermediate results, and final output reside. Next read §3.2 and Table 1 to distinguish root models, submodels, recursive depths, and baseline configurations. Appendices E.2 and E.3 then show, respectively, repeated checking that still fails and semantic interpretation followed by programmatic counting. Finish with Figure 3, Appendix A, and Appendix F.2 to separate training improvements from cost and runtime tails. Understanding Python lists, loops, and a model API call is enough to begin.",
+              "This note adapts Recursive Language Models by Alex L. Zhang, Tim Kraska, and Omar Khattab of MIT CSAIL. The preprint first appeared on 2025-12-31; the latest version verified on 2026-11-05 is v3, dated 2026-05-11. [arXiv version history](https://arxiv.org/abs/2512.24601) The [author’s publication page](https://alexzhang13.github.io/publications/) lists NeurIPS 2026; that author source is the basis for the venue information here. The paper is licensed under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). This note provides a Chinese explanation and corresponding English adaptation, explicitly identifying added teaching examples and systems inferences. [Fixed-version full text](https://arxiv.org/html/2512.24601v3)"
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "mem1-memory-reasoning-2025",
+      "title": "MEM1: Learning to Synergize Memory and Reasoning for Efficient Long-Horizon Agents",
+      "year": 2025,
+      "venue": "arXiv 2025 · SMART / MIT / NUS / Yonsei University · first preprint 2025-06-18; v2 2025-07-17",
+      "url": "https://arxiv.org/abs/2506.15841v2",
+      "role": "optional",
+      "zh": {
+        "contribution": "让同一个模型在决定下一步行动时，顺便重写一份能继续完成任务的短记忆；用最终答题奖励训练这种行为，并处理删除历史后怎样重新计算训练损失的问题。",
+        "relevance": "这篇 2025 年论文提供一个训练型对照：除了在推理时安排模型读取信息，还可以通过 RL 训练它判断下一轮必须保留什么。它也把记忆管理与训练时的上下文重建联系起来。",
+        "reading": "值得选读。先看 Figure 3 的推理与训练两条路径，再读 §3.1–3.2 和 Appendix A.7；Table 1 要连同 EM 与 peak token 的定义一起看。",
+        "prerequisites": "理解模型根据提示生成 token，以及工具调用会把检索结果放回提示。文中会解释 PPO、attention mask 和 EM，不需要先掌握完整强化学习推导。",
+        "caveat": "近乎恒定的是实验中的活动上下文规模；不等于无限任务都能无损压缩。长任务上的相对提升伴随较低的绝对答对数，训练的位置编号也未完全复现推理。",
+        "sections": [
+          {
+            "heading": "记住什么，取决于下一步还要做什么",
+            "paragraphs": [
+              "先看一个自拟例子。用户同时问：A 项目负责人的毕业学校是什么？B 产品使用哪种协议？第一轮检索只查到负责人叫林某，页面还附带大量项目历史。下一轮真正需要的是“负责人是林某，接下来查他的学校；B 产品尚未处理”。只写“已经查到负责人”会丢掉继续查询的线索；把整页留下又会让后续输入不断增长。MEM1 研究的就是怎样在每轮行动前生成这样的短状态，让它同时包含已知事实、尚缺信息和下一步判断。[§1 与 §3.1](https://arxiv.org/html/2506.15841v2)",
+              "论文把这段状态称为 internal state，使用 `IS` 标签表示。这里的“内部”容易让人误会：它是模型生成、随后放回提示中的文本，不是新增的神经网络隐藏层，也不是把 KV cache 换成另一种存储格式。本文选它作为 2025 年的训练型基础对照，重点看模型怎样学会保存有用信息；不把它当作刚发布的长上下文成果。[Figure 1 与 §3](https://arxiv.org/html/2506.15841v2)"
+            ]
+          },
+          {
+            "heading": "每轮重写状态，再丢掉已经用过的材料",
+            "paragraphs": [
+              "一次循环可以顺着例子看：模型读到旧状态和新检索结果，生成更新后的 `IS`，随后输出搜索请求或最终答案。如果新材料说明林某毕业于海城学院，状态便可保留这个答案，把待办改成查询 B 产品。程序在本轮输出完成后删除上一轮的状态、动作和工具结果，只留下本轮内容；新的工具结果随后接入。固定的任务提示仍保留，生成下一轮时也会短暂同时出现旧、新状态。因此它保留的是最近一轮所需的上下文，并非每一步只输入一条摘要。[§3.1 与 Algorithm 1](https://arxiv.org/html/2506.15841v2)",
+              "这个机制明确分开了两种变化：执行任务时，模型权重保持不变，变化的是文本状态；训练阶段才通过奖励更新权重，让模型更会写状态和选择行动。较早的原文一旦从活动上下文移除，就不能再直接被注意力读到，除非模型重新检索。这里得到的不是无损压缩保证，而是一种取舍：用较小的当前输入继续完成任务，承担遗漏必要证据后可能答错或重复搜索的风险。[§3.1–3.2](https://arxiv.org/html/2506.15841v2)"
+            ]
+          },
+          {
+            "heading": "训练奖励来自答对问题，不来自摘要写得漂亮",
+            "paragraphs": [
+              "作者把已有问答数据组合起来，例如一次要求回答两个问题，迫使模型在搜索其中一个问题时仍记得另一个。问答模型从 Qwen2.5-7B Base 开始，用 PPO 训练。PPO 是一种根据试做任务所得奖励调整生成概率、同时限制单次策略变化的强化学习方法。这里的关键不是手工标注每轮“应保留哪句话”，而是最终每答对一个子问题得一分：若模型删掉负责人姓名，之后找不到学校，就很难拿到那一分。[§3.3、§4.1 与 Appendix A.4.1](https://arxiv.org/html/2506.15841v2)",
+              "上下文删除由程序执行，模型学习怎样在这个约束下继续答对。问答训练没有额外的摘要质量奖励、短文本奖励或逐步奖励；但最终答案的标签不配对、答案数量不对时会记零分，所以格式仍会影响回报。EM 即 exact match，是按规定处理答案后与参考答案匹配；多目标任务的 EM 是答对子题的个数。论文另外训练了 WebShop 购物模型，使用购物环境奖励，不能把两套任务成绩写成同一模型处处通用。[§4.1、Appendix A.4.1 与 A.6](https://arxiv.org/html/2506.15841v2)"
+            ]
+          },
+          {
+            "heading": "更新权重时，也要记得模型当时看不见什么",
+            "paragraphs": [
+              "训练还面临一个容易忽略的问题。为了算损失，系统会把几轮生成记录拼起来；如果直接让后面的 token 看到拼接后的全部历史，它就能重新读到推理时已经删掉的页面。这样计算出的生成概率对应另一种输入条件，不能忠实表示模型当时为什么做出那个动作。MEM1 使用二维 attention mask，也就是为每个 token 指定可以读取哪些前文位置，屏蔽当轮本来不可见的旧材料。另外用损失掩码排除工具返回的文本，避免把外部检索结果当作模型自己选择的动作来训练。[§3.2 与 Figure 3](https://arxiv.org/html/2506.15841v2)",
+              "但这不是严格消除训练与推理差异的实现。Appendix A.7 说明：同一段状态在生成它的那轮和使用它的下一轮，会处于不同位置；仅修改可见范围还不够，位置编号也需要对应。作者为降低训练开销，没有复制状态并分别配置两套位置编号，而是保留前一轮的编号。因此这里可学到的是“训练要尽量重现实际可见上下文”，不能据此宣称已实现数值完全一致的概率重算。[Appendix A.7](https://arxiv.org/html/2506.15841v2)"
+            ]
+          },
+          {
+            "heading": "长任务优势要同时看答对数、输入规模和计时条件",
+            "paragraphs": [
+              "问答训练使用两个目标的组合，测试扩展到最多 16 个目标。Table 1 中，16 目标时 MEM1 平均答对 1.97 个子题，Qwen2.5-14B-Instruct 为 0.567 个，构成摘要约 3.5 倍的提升；但 1.97 不是 197% 成功率，也离完成全部 16 个目标很远。同为 7B 的指令模型直接套用截断流程，平均答对 0.396 个，说明在这组比较中仅删除历史不足以取得 MEM1 的结果。不过模型的训练经历并不完全相同，不能把全部差距单独归因于某一个记忆操作。[Table 1 与 Appendix A.4.1](https://arxiv.org/html/2506.15841v2)",
+              "同一 16 目标比较中，MEM1 的峰值上下文规模为约 1,040 tokens，对照 14B 模型约 3,840；整条任务轨迹耗时为 8.70 秒与 29.7 秒。峰值 token 使用 GPT-4o-mini tokenizer 统计并排除 system prompt，只是推理显存需求的代理指标，不是实测显存字节。计时条件是单张 H200、10 个并发线程、vLLM 开启自动 prefix caching；训练使用 4 张 H100 或 H200。结果也非处处占优：Table 3 单目标 Wiki-QA 上，MEM1 的 EM 为 0.405，低于 Search-R1 的 0.445。[Table 1、Table 3 与 Appendix A.1、A.4](https://arxiv.org/html/2506.15841v2)"
+            ]
+          },
+          {
+            "heading": "精读时追问：短状态保住了什么，又丢掉了什么？",
+            "paragraphs": [
+              "建议先沿 Figure 3 和 Algorithm 1 手动走两轮，再读 §3.2 与 Appendix A.7，把“推理时删历史”和“训练时遮住历史”对应起来。最后结合 Table 1、Table 3 看准确率与成本的取舍。实验给较小任务最多 6 轮、较大任务最多 20 轮，并显式提示剩余轮数；在线搜索测试返回标题、摘要和 URL，不要求读取完整网页。因此它验证的是有限预算下的交互与记忆能力，不是跨月持续学习，也不是无限长度上的可靠性证明。论文自己还指出，训练依赖可验证奖励，开放研究任务中怎样判断保留的信息是否足够仍未解决。[§4.1、§5 与 Appendix A.2](https://arxiv.org/html/2506.15841v2)",
+              "对系统设计的启发属于进一步推论：当新状态重写了旧前缀，服务端应重新评估哪些缓存仍可复用；不能把语义上延续同一个任务等同于 token 前缀未变。这可以成为后续实验问题，论文没有给出通用调度结论。本笔记依据 Zijian Zhou、Ao Qu 及合作者的 [MEM1 v2（2025-07-17）](https://arxiv.org/abs/2506.15841v2)，原文采用 [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/)。以上为解释性改写与评议，项目、人物和学校示例为自拟，并非原文实验。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Trains one model to rewrite a compact state while deciding its next action, using final answer rewards, and addresses how to recompute training losses after earlier context has been discarded.",
+        "relevance": "This 2025 paper supplies a training-based comparison: beyond organizing information access at inference time, RL can teach a model what it must retain for the next turn. It also connects memory management to reconstructing the context used during training.",
+        "reading": "Worth an optional deep read. Start with the rollout and training paths in Figure 3, then §3.1–3.2 and Appendix A.7. Read Table 1 together with the definitions of EM and peak token usage.",
+        "prerequisites": "Know that a model generates tokens from a prompt and that tool calls append retrieved information to that prompt. PPO, attention masks, and EM are explained here; a full derivation of reinforcement learning is unnecessary.",
+        "caveat": "The approximately constant quantity is the active context size in the experiments, not lossless memory for arbitrarily long tasks. Large relative gains on long tasks coexist with low absolute answer counts, and training position IDs do not fully reproduce rollout.",
+        "sections": [
+          {
+            "heading": "What to remember depends on what remains to be done",
+            "paragraphs": [
+              "Consider an illustrative example invented for this note. A user asks two questions: which school did Project A's lead attend, and which protocol does Product B use? The first search only identifies the lead as Lin, alongside a long project history. What the next turn needs is: “The lead is Lin; search for Lin's school next; Product B remains unresolved.” Merely recording “found the lead” loses the next search clue, whereas keeping the entire page makes subsequent inputs grow. MEM1 studies how to generate a compact state before each action, combining established facts, missing information, and the next decision. [§1 and §3.1](https://arxiv.org/html/2506.15841v2)",
+              "The paper calls this an internal state and encloses it in `IS` tags. “Internal” can be misleading: this is generated text placed back into the prompt, not an additional neural hidden layer or a different storage format for the KV cache. We include this 2025 work as a training-based foundation for understanding how a model learns to preserve useful information, rather than presenting it as a newly released long-context result. [Figure 1 and §3](https://arxiv.org/html/2506.15841v2)"
+            ]
+          },
+          {
+            "heading": "Rewrite the state, then discard material already consumed",
+            "paragraphs": [
+              "Follow one cycle through the example. The model reads its previous state and new search results, writes an updated `IS`, and then emits a search request or final answer. If the new material identifies Lin's school as Harbor College, the state can retain that answer and switch the remaining task to Product B. After the turn finishes generating, the program removes the preceding turn's state, action, and tool response, retaining the current turn's output; the next tool result is then appended. The fixed task prompt remains, and old and new states temporarily coexist while the next turn is generated. Thus, the retained context contains the recent interaction needed for the next step, not simply one standalone summary at every instant. [§3.1 and Algorithm 1](https://arxiv.org/html/2506.15841v2)",
+              "This separates two kinds of change. During task execution, model weights stay fixed and the text state changes. During training, rewards update the weights so the model becomes better at writing states and choosing actions. Once earlier source material leaves the active context, attention cannot read it directly unless the model retrieves it again. This is a trade-off rather than a lossless compression guarantee: continue with a smaller current input while risking a wrong answer or repeated search if necessary evidence was omitted. [§3.1–3.2](https://arxiv.org/html/2506.15841v2)"
+            ]
+          },
+          {
+            "heading": "The training reward comes from correct answers, not attractive summaries",
+            "paragraphs": [
+              "The authors combine existing QA examples, for instance requiring two answers in one task, so the model must remember one objective while searching for the other. The QA model starts from Qwen2.5-7B Base and is trained with PPO. PPO is a reinforcement learning method that uses rewards from attempted tasks to adjust generation probabilities while limiting individual policy changes. The important supervision here is not a manually labeled sentence to retain at every turn, but one point for each correctly answered subquestion at the end. If the model drops the lead's name and cannot subsequently find the school, earning that point becomes harder. [§3.3, §4.1, and Appendix A.4.1](https://arxiv.org/html/2506.15841v2)",
+              "The program enforces context deletion; the model learns to answer under that constraint. QA training does not add summary-quality rewards, brevity rewards, or intermediate rewards. However, mismatched final-answer tags or an incorrect answer count receive zero, so formatting still affects the return. EM means exact match: an answer is matched against a reference under the specified processing rules. In multi-objective tasks, EM counts correctly answered subquestions. The paper separately trains a WebShop shopping model using the environment's reward; results from the two settings should not be presented as one universally capable checkpoint. [§4.1 and Appendix A.4.1 and A.6](https://arxiv.org/html/2506.15841v2)"
+            ]
+          },
+          {
+            "heading": "A weight update must respect what the model could not see",
+            "paragraphs": [
+              "Training introduces an easily missed problem. To compute losses, the system stitches records from several turns together. If later tokens can attend to that entire concatenated history, they can reread pages that had already been deleted during rollout. Their recomputed probabilities then correspond to different input conditions and do not faithfully represent the conditions under which the actions were chosen. MEM1 uses a two-dimensional attention mask: for each token, it specifies which earlier positions remain visible and blocks material unavailable in that turn. It also masks tool-returned text out of the loss, so retrieved content is not treated as an action selected by the model. [§3.2 and Figure 3](https://arxiv.org/html/2506.15841v2)",
+              "This implementation does not strictly eliminate training–inference differences. Appendix A.7 explains that the same state occupies different positions in the turn that generates it and in the next turn that consumes it. Matching visibility alone is insufficient; position IDs must also match. To reduce training cost, the authors do not duplicate each state with two sets of position IDs and instead retain the preceding turn's IDs. The lesson is that training should reproduce the context actually visible during rollout as closely as possible; this method should not be described as numerically identical probability recomputation. [Appendix A.7](https://arxiv.org/html/2506.15841v2)"
+            ]
+          },
+          {
+            "heading": "Assess long-task gains through answer counts, context size, and timing conditions",
+            "paragraphs": [
+              "QA training uses two-objective compositions, while evaluation extends to 16 objectives. In Table 1, MEM1 correctly answers an average of 1.97 subquestions on the 16-objective tasks, versus 0.567 for Qwen2.5-14B-Instruct. This supplies the abstract's approximately 3.5× improvement, but 1.97 is neither a 197% success rate nor close to completing all 16 objectives. Applying the truncation workflow directly to a 7B instruction model yields 0.396 correct answers, showing that deleting history alone does not reproduce MEM1's result in this comparison. Training histories also differ, so the entire gap cannot be attributed to one isolated memory operation. [Table 1 and Appendix A.4.1](https://arxiv.org/html/2506.15841v2)",
+              "For that same 16-objective comparison, MEM1 uses approximately 1,040 peak tokens versus 3,840 for the 14B model, with complete trajectory times of 8.70 versus 29.7 seconds. Peak token usage is counted with the GPT-4o-mini tokenizer and excludes the system prompt; it is a proxy for inference memory, not measured GPU bytes. Timing uses one H200, 10 concurrent threads, and vLLM with automatic prefix caching; training uses four H100 or H200 GPUs. The method also does not win everywhere: on single-objective Wiki-QA in Table 3, MEM1's EM is 0.405, below Search-R1's 0.445. [Tables 1 and 3 and Appendix A.1 and A.4](https://arxiv.org/html/2506.15841v2)"
+            ]
+          },
+          {
+            "heading": "Read closely: what does the short state preserve, and what does it lose?",
+            "paragraphs": [
+              "Start by manually tracing two turns through Figure 3 and Algorithm 1, then connect context deletion during rollout to history masking during training in §3.2 and Appendix A.7. Finally, inspect Tables 1 and 3 for the accuracy–cost trade-off. The experiments allow at most six turns for smaller tasks and 20 for larger tasks, explicitly informing the agent of its remaining budget. Online search evaluation returns titles, snippets, and URLs without requiring full-page retrieval. These tests establish interaction and memory behavior under finite budgets, not learning across months or reliability over unlimited lengths. The paper also acknowledges that training depends on verifiable rewards; deciding whether retained information suffices for open-ended research remains unresolved. [§4.1, §5, and Appendix A.2](https://arxiv.org/html/2506.15841v2)",
+              "A further systems implication is our inference: when an updated state rewrites an earlier prefix, a serving system should reassess which cached computations remain reusable. Continuing the same semantic task does not mean the token prefix is unchanged. That is a possible experimental question, not a general scheduling conclusion established by this paper. This note draws on Zijian Zhou, Ao Qu, and collaborators' [MEM1 v2, dated July 17, 2025](https://arxiv.org/abs/2506.15841v2), released under [CC BY 4.0](https://creativecommons.org/licenses/by/4.0/). It is an explanatory adaptation and commentary; the project, person, and school example is invented and is not an experiment from the paper."
+            ]
+          }
+        ]
+      }
+    },
+    {
+      "id": "memorywalker-conditioning-consistency-2026",
+      "title": "MemoryWalker: Stop Training Agents on Contexts They Never Saw",
+      "year": 2026,
+      "venue": "arXiv 2026 · Token Foundry / Alibaba Group · v1 2026-09-01",
+      "url": "https://arxiv.org/abs/2609.00865v1",
+      "role": "optional",
+      "zh": {
+        "contribution": "指出上下文删除或压缩会改变每个token生成时可见的信息，给出按分支重放、分支打包和一致性蒸馏三种处理方式。",
+        "relevance": "理解Agent记忆管理为何影响RL训练目标：同一权重、同一目标token，如果输入前缀不同，重算概率仍会错位。",
+        "reading": "值得选读§3、Figure 2和Appendix G，先掌握上下文重放，再看§5与Table 1；证明可留到第二轮。",
+        "prerequisites": "知道自回归模型根据此前可见内容预测下一个token；训练会重算已有回答的概率。正文解释分支、loss mask和KL。",
+        "caveat": "这里的精确指恢复生成时的条件上下文，不是跨引擎逐比特一致。SDCC仍是近似；论文的4D实际实现复制分支，不能把一次forward当成只算一次历史。",
+        "sections": [
+          {
+            "heading": "摘要写出来以后，不能假装过去一直看着它",
+            "paragraphs": [
+              "先看一个自拟例子。Agent查到一段很长的资料D，读完后生成判断A；随后把D替换成短摘要S，再根据S和A生成下一步B。A实际是在D仍可见时产生的，B是在D已被替换后产生的。把整次任务拿去训练时，A应该在前一种上下文下算概率，B应该在后一种上下文下算概率。最终留下的一条聊天记录，未必能同时还原这两个条件。",
+              "MemoryWalker研究的正是这种错位。这里的上下文压缩是删除消息或用摘要替换文本；它不是把KV cache从显存搬到主存。后者可以保留相同计算内容，前者直接改变模型读到的输入。即使权重完全同步、计算精度相同，输入变了也可能产生不同概率。论文把应当满足的要求称为conditioning consistency：训练每个目标token时，恢复它生成当时真正可见的前缀。[§3](https://arxiv.org/html/2609.00865v1#S3)"
+            ]
+          },
+          {
+            "heading": "只留最终记录不对，把所有内容塞回来也不对",
+            "paragraphs": [
+              "第一种朴素方案直接训练最终压缩记录。例子中，这等于用S重算A，但A生成时还没有S。后来的编辑被提前应用到过去，论文称之为time-travel leakage。这个名字不一定意味着摘要泄露了标准答案；更一般的问题是，评分时使用了错误时刻的上下文。对于纯删除，甚至可能只是把当时可见的一段信息提前去掉了。",
+              "第二种方案把D等被删文本都加回原始历史，再用一条普通因果序列训练。这样算A可能合适，却会让后来的B看到部署时已经不再可见的D。恢复每个目标的真实条件，需要记录编辑何时发生、删掉或替换了什么，以及当时实际发送给模型的内容。论文用“树”表达这些不同前缀：共享起点，但编辑前后沿不同分支继续。[§3.2–3.3、Figure 1](https://arxiv.org/html/2609.00865v1#S3.SS2)"
+            ]
+          },
+          {
+            "heading": "精确重放：分别算分支，或把分支隔离后打包",
+            "paragraphs": [
+              "LogitTree将K次编辑形成的K+1条路径分别送进模型，只在目标原本生成的分支上计入损失；loss mask指定哪些位置计入，避免公共前缀重复计数。代价是多次前向和反向。4D mask则打包隔离各分支，位置编号与各自前缀一致。论文的梯度等价结论限于同一batch、稠密softmax attention和Proposition 4的五项条件，包括正确可见性、位置及无跨分支归一化。[§4、Appendix C.2](https://arxiv.org/html/2609.00865v1#S4)",
+              "实现时尤其要读Appendix G。正文用“每个token只放一次，再改变可见性”描述4D方法，但作者说明实际训练会为各分支复制公共token，再用块对角attention mask隔离，位置编号按分支重启。这样每份隐藏状态都来自自己的前缀。实际打包长度是各分支长度之和，可能明显大于去重后的原始历史；因此一次forward不等于少算了所有重复前缀。这里解释的是论文披露的实现，未检查当前源码。[Appendix G](https://arxiv.org/html/2609.00865v1#A7)"
+            ]
+          },
+          {
+            "heading": "SDCC省掉多次反向，但仍要付教师前向成本",
+            "paragraphs": [
+              "SDCC保留最终压缩记录作为学生输入；在上下文不一致的位置，再用生成时实际可见的前缀运行同一个模型，得到不参与反向传播的教师分布。教师不是额外训练的更大模型，而是同一组权重在另一份输入上的预测。训练除了原任务损失，再加 KL(教师分布 || 学生分布)，让压缩输入下的预测尽量接近原输入下的预测。KL在这里衡量两种概率分布的差异；公式方向依据正文Equation 10。[§5.1](https://arxiv.org/html/2609.00865v1#S5.SS1)",
+              "学生只反向一次，教师仍可能按编辑节点做多次无梯度前向，也仍需要恢复相关旧前缀。它节省的是反向成本，不是让历史记录和教师计算消失。“黑盒harness”在论文里仍允许观察模型请求来恢复上下文，不是只拿最终回答就能训练。SDCC是近似：论文的KL界约束对应位置的分布差异，不保证全任务答案相同，也不保证有损摘要总能保留所有必需信息。[§5.2、Appendix E–F](https://arxiv.org/html/2609.00865v1#S5.SS2)"
+            ]
+          },
+          {
+            "heading": "看证据时，把概率一致与答题正确分开",
+            "paragraphs": [
+              "作者用Slime的Megatron训练端与SGLang生成端，在80GB A100或H800级GPU上评估，未在本文引用处给每个结果明确卡数。Qwen3-4B主表使用81,638条组合问答训练数据、GRPO每题16个样本，并在七个问答基准上测试。以AgentFold编辑器为例，Table 1的平均精确匹配率为：直接训练压缩记录33.2%，LogitTree 37.5%，4D mask 34.2%，SDCC 42.4%。这是作者报告的不同训练运行成绩，不是把相同batch换一种打包方式就必然提高这些百分点。[§6.1–6.2、Appendix F.1](https://arxiv.org/html/2609.00865v1#S6)",
+              "同一组中，记录token的平均log-prob差异分别为0.366、0.012、0.022、0.071；无压缩对照约0.014。因此“精确恢复上下文”仍不代表数值误差为零，差异较低也不自动对应更高答题分数。读表还要注意：logdiff取各运行最大奖励迭代，EM则取开发集初筛后、全测试套件评估的最高结果，两列未必来自同一时刻；网页检索也会变化。论文未给这些对比多随机种子置信区间，不能把小差距当成稳定排序。这里引用主表口径，未把附录中另一种聚合方式的drift混进来。[§6.1、Table 1、Appendix F.4–F.6](https://arxiv.org/html/2609.00865v1#A6)"
+            ]
+          },
+          {
+            "heading": "阅读价值：先确定模型当时看到了什么",
+            "paragraphs": [
+              "建议从Figure 1和§3开始，自己给例子中的A、B分别写出可见前缀；再看Figure 2、Appendix G理解重放成本，最后读Equation 10与Table 1。对系统工作的直接启发是：除了权重版本和生成token，rollout数据还需要保留足够的信息来恢复每次请求的输入。RLM的子调用、记忆摘要或工具历史裁剪都值得做这种核对；但本文没有证明本期几种方法组合起来的效果，也没有证明所有现成框架都有这一问题。",
+              "本篇依据Zinco J、Xunjie Zhu、Shen Huang等作者的[MemoryWalker v1（2026-09-01）](https://arxiv.org/abs/2609.00865v1)作双语解释性改写与评议，团队标注为Token Foundry、Alibaba Group；未核到正式会议发表。原文采用[CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/)，本篇中英文解释性改写部分同样按该许可提供。D、S、A、B例子为自拟；未复现实验。"
+            ]
+          }
+        ]
+      },
+      "en": {
+        "contribution": "Identifies how context deletion or compression changes the information visible when each token is generated, and studies branch replay, branch packing, and consistency distillation.",
+        "relevance": "Explains why agent memory management changes RL training semantics: identical weights and target tokens do not suffice when the probability recomputation uses a different prefix.",
+        "reading": "Select Section 3, Figure 2, and Appendix G for context replay, then Section 5 and Table 1. Leave proofs for a second pass.",
+        "prerequisites": "Autoregressive prediction conditions on visible preceding content, and training recomputes probabilities for recorded responses. Branches, loss masks, and KL are explained in the notes.",
+        "caveat": "Exactness concerns generation-time conditioning, not bitwise agreement across engines. SDCC is approximate; the implemented 4D approach replicates branches, so one forward does not mean each historical token is computed once.",
+        "sections": [
+          {
+            "heading": "A later summary cannot be treated as if it had always existed",
+            "paragraphs": [
+              "Consider our teaching example. An agent reads a long document D and produces judgment A. It then replaces D with a shorter summary S and generates its next step B using S and A. A was produced while D remained visible; B was produced after the replacement. Training should score A under the first context and B under the second. One final chat transcript may not reconstruct both conditions.",
+              "MemoryWalker studies this mismatch. Context compression here means deleting messages or replacing text with a summary, not moving KV cache from GPU to host memory. The latter can preserve the computational content; the former changes the model input. Even synchronized weights and identical precision need not produce matching probabilities for different inputs. The paper calls the desired invariant conditioning consistency: score each target token with the prefix actually visible when it was generated. [Section 3](https://arxiv.org/html/2609.00865v1#S3)"
+            ]
+          },
+          {
+            "heading": "Neither the final transcript nor the full history is sufficient",
+            "paragraphs": [
+              "The first naive approach trains the final compressed transcript. In our example, this scores A using S even though S did not yet exist when A was generated. A later edit is applied backward in time, which the paper calls time-travel leakage. The term need not imply leaking a ground-truth answer. More generally, the token is scored under the wrong historical context; for pure deletion, information originally visible may simply be removed too early.",
+              "The second approach restores deleted text such as D and trains an ordinary causal sequence containing the full history. This may score A appropriately, but lets B see D even though D was unavailable at deployment. Recovering the correct condition requires the edit timing, removed or replaced content, and actual model inputs at that time. A tree represents these different prefixes: they share an origin but continue on different branches before and after edits. [Sections 3.2–3.3 and Figure 1](https://arxiv.org/html/2609.00865v1#S3.SS2)"
+            ]
+          },
+          {
+            "heading": "Exact replay: evaluate branches separately or pack isolated branches",
+            "paragraphs": [
+              "LogitTree evaluates the K+1 paths from K edits separately. A loss mask counts each target only on its generation-time branch, avoiding duplicate shared-prefix losses. This costs multiple forward and backward passes. The 4D alternative packs isolated branches with branch-local position IDs. Gradient equivalence concerns the same batch under dense softmax attention and Proposition 4’s five conditions, including exact visibility, matching positions, and no cross-boundary normalization. [Section 4 and Appendix C.2](https://arxiv.org/html/2609.00865v1#S4)",
+              "Appendix G is essential for implementation. The main text describes a physical union with each token appearing once and changing visibility, but the authors state that the training implementation replicates shared tokens per branch, packs the copies behind a block-diagonal attention mask, and restarts positions for each branch. Each hidden state is consequently computed from its own prefix. Actual packed length is the sum of branch lengths and can exceed the deduplicated history considerably. One forward therefore does not eliminate all repeated-prefix work. This describes the paper’s implementation disclosure, not an audit of current code. [Appendix G](https://arxiv.org/html/2609.00865v1#A7)"
+            ]
+          },
+          {
+            "heading": "SDCC reduces backward work but still pays for teacher forwards",
+            "paragraphs": [
+              "SDCC keeps the final compressed transcript as student input. At mismatched positions, it evaluates the same model on the generation-time live prefix to obtain a teacher distribution without backpropagating through it. The teacher is not a separately trained larger model; it uses the same weights with another input. Training adds KL(teacher || student) to the task loss, encouraging predictions from compressed input to resemble those from original input. KL measures a discrepancy between probability distributions; the direction here follows Equation 10 in the main text. [Section 5.1](https://arxiv.org/html/2609.00865v1#S5.SS1)",
+              "The student needs one backward pass, but teacher evaluation may still require multiple gradient-free forwards at edit junctions and reconstruction of old prefixes. The saving concerns backward work, not elimination of history or teacher computation. A black-box harness in these experiments still exposes model requests from which contexts can be recovered; final answers alone are insufficient. SDCC is approximate: its KL bound controls a distributional difference at a corresponding position, not equality of whole-task answers or preservation of all necessary information by a lossy summary. [Section 5.2 and Appendices E–F](https://arxiv.org/html/2609.00865v1#S5.SS2)"
+            ]
+          },
+          {
+            "heading": "Separate probability agreement from task correctness",
+            "paragraphs": [
+              "The authors use Slime with Megatron training and SGLang generation on 80 GB A100- or H800-class GPUs; the cited setup does not assign an explicit GPU count to each result. The Qwen3-4B main matrix trains on 81,638 composite-QA examples with 16 GRPO samples per prompt and evaluates seven QA benchmarks. With the AgentFold editor, Table 1 reports average exact-match accuracy of 33.2% for naive compressed replay, 37.5% for LogitTree, 34.2% for the 4D mask, and 42.4% for SDCC. These are author-reported results from different training runs, not guaranteed gains from repacking an identical batch. [Sections 6.1–6.2 and Appendix F.1](https://arxiv.org/html/2609.00865v1#S6)",
+              "Corresponding mean recorded-token log-probability discrepancies are 0.366, 0.012, 0.022, and 0.071, with a no-compression control around 0.014. Exact conditioning recovery is therefore not zero numerical error, and lower drift does not automatically mean higher answer accuracy. The drift is measured at each run’s maximum-reward iteration; EM is the best full-suite result among development-shortlisted checkpoints, so the columns need not describe one checkpoint. Live web search can change as well. These comparisons lack multi-seed confidence intervals, making small ranking differences uncertain. We use the main-table aggregation without mixing in the appendix’s differently aggregated drift values. [Section 6.1, Table 1, and Appendices F.4–F.6](https://arxiv.org/html/2609.00865v1#A6)"
+            ]
+          },
+          {
+            "heading": "Reading value: establish what the model actually saw",
+            "paragraphs": [
+              "Start with Figure 1 and Section 3 and write the visible prefixes for A and B in the example. Then read Figure 2 and Appendix G for replay costs, followed by Equation 10 and Table 1. The practical lesson is to preserve enough rollout information to reconstruct each request’s input alongside weight versions and generated tokens. Recursive subcalls, memory summaries, and tool-history trimming all merit such a check. This note does not establish the performance of combining this issue’s methods or claim that every existing framework has the problem.",
+              "These bilingual explanations and commentary adapt [MemoryWalker v1, September 1, 2026](https://arxiv.org/abs/2609.00865v1), by Zinco J, Xunjie Zhu, Shen Huang, and collaborators, affiliated with Token Foundry and Alibaba Group. No formal conference publication was verified. The original uses [CC BY-NC-SA 4.0](https://creativecommons.org/licenses/by-nc-sa/4.0/); the Chinese and English explanatory adaptations in this note use the same license. The D/S/A/B example is our illustration; experiments were not reproduced."
+            ]
+          }
+        ]
+      }
+    }
+  ]
+}

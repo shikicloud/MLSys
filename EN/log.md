@@ -162,3 +162,6 @@ updated: 2026-06-15
 
 ## 2026-11-04
 - [READING] Main reading: PithTrain; optional readings: Event Tensor and KernelBench. Bilingual notes develop MoBA integration, tiled dependencies, and code acceptance tests, separating modification cost, training throughput, and inference latency with explicit evaluation conditions and coverage limits.
+
+## 2026-11-05
+- [READING] Main reading: the revised RLM paper; optional readings: MEM1 and MemoryWalker. Bilingual notes explain external-input access, RL-trained memory updates, and training replay after context edits, distinguishing original dates, revisions, metrics, and consistency limits.
