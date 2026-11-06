@@ -165,3 +165,6 @@ updated: 2026-06-15
 
 ## 2026-11-05
 - [READING] 主读 RLM 修订版，选读 MEM1 与 MemoryWalker；双语笔记解释外部材料读取、强化学习记忆更新及上下文编辑后的训练重放，区分原始年份、修订内容、实验指标与一致性边界。
+
+## 2026-11-06
+- [READING] 主读 FlashAttention-4，选读 SageAttention3 与 FlashInfer；双语笔记解释 Blackwell attention 流水线、低精度计算的误差边界及变长服务调度，区分论文版本、硬件条件和算子/端到端指标。

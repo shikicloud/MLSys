@@ -3,12 +3,12 @@ title: "每日论文推荐"
 category: ml-sys
 tags: [reading-digest]
 description: "LLM 与 Agent 的能力、学习与系统：从经典基础到前沿研究。"
-published: "2026-11-05T10:09:40+08:00"
-date: 2026-11-05
+published: "2026-11-06T09:07:22+08:00"
+date: 2026-11-06
 created: 2026-10-15
-updated: 2026-11-05
+updated: 2026-11-06
 status: growing
-paper_ids: ["recursive-language-models-2512-24601","mem1-memory-reasoning-2025","memorywalker-conditioning-consistency-2026","pithtrain-2605-31463","event-tensor-dynamic-megakernel-2026","kernelbench-efficient-gpu-kernels-2025","jet-rl-2026","tlt-adaptive-drafter-2026","stable-asynchrony-vcpo-2602-17616","juice-2610-28801","cvrr-latent-visual-reasoning-2026","vimod-visual-memory-2026","calif-reward-hacking-2026","rubrics-as-rewards-2025","rubric-reward-hacking-2026","rapidmoe-residual-offloading-2026","stepped-moe-2026","semantic-parallelism-2026","lifemem-workflow-memory-2026","adamem-2026","memoryarena-2026","base-model-token-cues-2026","thinking-leakage-2026","rl-feature-generalization-2026","vexact-zero-mismatch-2026","batch-invariance-2025","score-centering-2026","replayssm-2026","gated-delta-networks-2025","suffixreplay-2026","aide2-recursive-self-improvement-2026","self-distillation-continual-learning-2026","reuse-2026","cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
+paper_ids: ["flashattention-4-2603-05451","sageattention3-microscaling-fp4-2025","flashinfer-2025","recursive-language-models-2512-24601","mem1-memory-reasoning-2025","memorywalker-conditioning-consistency-2026","pithtrain-2605-31463","event-tensor-dynamic-megakernel-2026","kernelbench-efficient-gpu-kernels-2025","jet-rl-2026","tlt-adaptive-drafter-2026","stable-asynchrony-vcpo-2602-17616","juice-2610-28801","cvrr-latent-visual-reasoning-2026","vimod-visual-memory-2026","calif-reward-hacking-2026","rubrics-as-rewards-2025","rubric-reward-hacking-2026","rapidmoe-residual-offloading-2026","stepped-moe-2026","semantic-parallelism-2026","lifemem-workflow-memory-2026","adamem-2026","memoryarena-2026","base-model-token-cues-2026","thinking-leakage-2026","rl-feature-generalization-2026","vexact-zero-mismatch-2026","batch-invariance-2025","score-centering-2026","replayssm-2026","gated-delta-networks-2025","suffixreplay-2026","aide2-recursive-self-improvement-2026","self-distillation-continual-learning-2026","reuse-2026","cadencerl-2026","visr-2026","understanding-reasoning-pretraining-posttraining-2026","test-time-compute-optimal-2025","self-consistency-2023","lets-verify-step-by-step-2024","star-2022","hybridflow-2025","sglang-2024","ray-2018","distserve-2024"]
 ---
 
 # 每日论文推荐
@@ -21,6 +21,7 @@ paper_ids: ["recursive-language-models-2512-24601","mem1-memory-reasoning-2025",
 
 ## 历史推荐（最新在前）
 
+- [[CN/reading/daily/2026-11-06|2026-11-06 · Attention 怎样变快：减少等待、降低精度、重新分工]] — 主读: FlashAttention-4: Algorithm and Kernel Pipelining Co-Design for Asymmetric Hardware Scaling
 - [[CN/reading/daily/2026-11-05|2026-11-05 · Agent 怎样处理长材料：分开读、记重点、正确训练]] — 主读: Recursive Language Models
 - [[CN/reading/daily/2026-11-04|2026-11-04 · 让 Agent 改训练框架，怎样做到省力又可信？]] — 主读: PithTrain: A Compact and Agent-Native MoE Training System
 - [[CN/reading/daily/2026-11-03|2026-11-03 · FP8 rollout 为什么会影响学习：从 Jet-RL 看精度、长尾与异步训练]] — 主读: Jet-RL: Enabling On-Policy FP8 Reinforcement Learning with Unified Training and Rollout Precision Flow

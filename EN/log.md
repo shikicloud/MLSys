@@ -165,3 +165,6 @@ updated: 2026-06-15
 
 ## 2026-11-05
 - [READING] Main reading: the revised RLM paper; optional readings: MEM1 and MemoryWalker. Bilingual notes explain external-input access, RL-trained memory updates, and training replay after context edits, distinguishing original dates, revisions, metrics, and consistency limits.
+
+## 2026-11-06
+- [READING] Main reading: FlashAttention-4; optional readings: SageAttention3 and FlashInfer. Bilingual notes explain Blackwell attention pipelines, low-precision accuracy limits, and variable-length serving schedules, distinguishing paper versions, hardware conditions, and kernel versus end-to-end metrics.
